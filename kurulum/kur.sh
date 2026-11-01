@@ -71,10 +71,14 @@ main() {
 		[ -n "$DEPO" ] || hata "hangi imajı çekeceğimi bilmiyorum; geliştirme için: sudo IMAJ=<imaj>:<etiket> sh $0"
 		IMAJ=ghcr.io/$(printf '%s' "$DEPO" | tr 'A-Z' 'a-z'):$ETIKET
 	fi
+	# Güncelleme ipucu: sürüm dosyası (kur.sh) anonim indirilebiliyorsa curl satırı yazılır.
+	# Depo özel ise o dosya 404 verir; o zaman SSH ile taze klon + aynı imajı çeken satır yazılır.
 	if [ -n "$IMAJ_VERILDI" ]; then
 		GUNCELLE="sudo IMAJ=$IMAJ sh $0"
-	else
+	elif curl -fsS -o /dev/null --max-time 5 "https://github.com/$DEPO/releases/latest/download/kur.sh" 2>/dev/null; then
 		GUNCELLE="curl -fsSL https://github.com/$DEPO/releases/latest/download/kur.sh | sudo sh"
+	else
+		GUNCELLE="rm -rf /tmp/$KONTEYNER && git clone --depth 1 git@github.com:$DEPO.git /tmp/$KONTEYNER && sed 's|^DEPO=.*|DEPO=$DEPO|' /tmp/$KONTEYNER/kurulum/kur.sh | sudo sh"
 	fi
 
 	# 1) Ayarlar: varsa dokunma; yoksa oluştur ve dış IP'yi bul

@@ -26,7 +26,22 @@ curl -fsSL https://github.com/KULLANICI/DEPO/releases/latest/download/kur.sh | s
 
 `kur.sh` imajı `ghcr.io/KULLANICI/DEPO`'dan çeker, ilk seferde `/var/lib/chat/.env` oluşturur (sunucunun dış IP'si kendiliğinden bulunup yazılır) ve konteyneri açar. `main`'e her push'ta Actions imajı derler, `kur.sh` ile uçtan uca dener, `ghcr.io`'ya `v1`, `v2`… ve `latest` etiketleriyle yükler, `kur.sh`'yi GitHub sürümü olarak yayınlar.
 
-**İlk kurulumdan sonra bir kez:** GHCR paketi varsayılan olarak **özeldir**. Sunucu giriş yapmadan çekebilsin diye public yap: GitHub → profilin → **Packages** → `ses-kanali` → Package settings → **Change visibility** → Public. Public değilse `kur.sh` `docker login ghcr.io` ister.
+**Depo özel ise** yukarıdaki `curl` satırı çalışmaz: sürüm dosyası yalnızca giriş yapmış kullanıcıya iner (anonim istek 404). O durumda aynı güncellemeyi SSH ile taze klon yaparak çalıştır (sunucuda GitHub'a eklenmiş bir SSH anahtarı gerekir):
+
+```sh
+rm -rf /tmp/ses-kanali && git clone --depth 1 git@github.com:KULLANICI/DEPO.git /tmp/ses-kanali \
+  && sed "s|^DEPO=.*|DEPO=KULLANICI/DEPO|" /tmp/ses-kanali/kurulum/kur.sh | sudo sh
+```
+
+Bu satır da imajı `ghcr.io`'dan çeker ve `.env`'e dokunmaz; `kur.sh` çalıştıktan sonra ekrana hangi güncelleme satırının çalıştığını kendisi yazar (depo public ise `curl`, özel ise `git clone` satırı).
+
+**İlk kurulumdan sonra bir kez:** GHCR paketi varsayılan olarak **özeldir**. Public yaparsan sunucu giriş yapmadan çekebilir: GitHub → profilin → **Packages** → `ses-kanali` → Package settings → **Change visibility** → Public. Özel kalacaksa bir kez giriş yap (token: GitHub → Settings → Developer settings → Personal access tokens → `read:packages`):
+
+```sh
+echo <token> | sudo docker login ghcr.io -u KULLANICI --password-stdin
+```
+
+Kimlik `/root/.docker/config.json`'da tutulur (`sudo` ile çalışan `docker compose pull` bunu kullanır); token'ı diskte ayrıca saklamana gerek yok.
 
 Ayarları değiştirmek için:
 
