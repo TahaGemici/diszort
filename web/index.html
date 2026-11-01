@@ -2,7 +2,7 @@
 <html lang="tr">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="color-scheme" content="dark">
 <title>Ses Kanalı</title>
 <link rel="icon" href="/favicon.svg" type="image/svg+xml">
@@ -11,29 +11,85 @@
 <script src="/ana.js" defer></script>
 </head>
 <body>
-<main class="kart">
-	<h1>🔊 Ses Kanalı</h1>
-	<p class="alt">Hesap yok: adını yaz, odaya gir, konuş. Odada en fazla <span id="max">10</span> kişi olur.</p>
 
-	<form id="giris">
+<!-- Giriş: yalnızca ad. Hesap yok. -->
+<div id="giris-ekrani" class="perde">
+	<form id="giris" class="giris-kart">
+		<h1>🔊 Ses Kanalı</h1>
+		<p class="alt">Hesap yok: adını yaz, bütün yazılı ve sesli kanallar açılsın. Yazılı kanallar sunucuda saklanır, sesin doğrudan (P2P) akar.</p>
 		<label for="ad">Adın</label>
 		<input id="ad" placeholder="örn. taha" maxlength="32" autocomplete="nickname" required>
-		<label for="oda">Oda</label>
-		<input id="oda" placeholder="örn. muhabbet" maxlength="64" required>
-		<button id="gir" type="submit">Odaya gir</button>
+		<button id="gir" type="submit">Sunucuya gir</button>
+		<p id="giris-durum" class="durum" role="status" aria-live="polite"></p>
+		<noscript><p class="alt">Bu sayfa JavaScript ister.</p></noscript>
 	</form>
+</div>
 
-	<section id="kanal" hidden>
-		<div class="baslik">
-			<b id="oda-adi"></b>
-			<button id="kopyala" class="kucuk" type="button" title="Oda bağlantısını kopyala">🔗 Bağlantı</button>
+<!-- Sunucu: kanal listesi + sohbet + üyeler -->
+<div id="uygulama" hidden>
+	<aside id="kenar" aria-hidden="true"><div class="sunucu-ikon" title="Ses Kanalı">🔊</div></aside>
+
+	<aside id="kanal-panosu">
+		<header class="sunucu-baslik">
+			<b>Ses Kanalı</b>
+			<span id="cevrimici-sayac" class="sayac" title="Çevrimiçi kişi">0</span>
+			<button id="kenar-kapat" class="ikon-dugme mobil" type="button" aria-label="Kanalları kapat">✕</button>
+		</header>
+		<div class="kanal-kaydir">
+			<div class="bolum-baslik">Yazılı Kanallar</div>
+			<div id="yazi-kanallari" class="kanal-listesi"></div>
+			<div class="bolum-baslik">Sesli Kanallar</div>
+			<div id="ses-kanallari" class="kanal-listesi"></div>
 		</div>
-		<div id="kisiler"></div>
-		<button id="ayril" class="ikincil" type="button">Kanaldan çık</button>
-	</section>
+		<div class="ben-kart">
+			<span id="ben-avatar" class="avatar kucuk-avatar">?</span>
+			<span class="ben-bilgi">
+				<b id="ben-ad">—</b>
+				<small id="ben-alt">bağlı</small>
+			</span>
+			<button id="ben-mikrofon" class="ikon-dugme" type="button" title="Mikrofonu kapat/aç" aria-label="Mikrofonu kapat veya aç" aria-pressed="false">🎤</button>
+			<button id="ben-kapat" class="ikon-dugme tehlike" type="button" title="Sesli kanaldan ayrıl" aria-label="Sesli kanaldan ayrıl" hidden>📞</button>
+		</div>
+	</aside>
 
-	<p id="durum" role="status" aria-live="polite"></p>
-	<noscript><p>Bu sayfa JavaScript ister.</p></noscript>
-</main>
+	<main id="ana">
+		<header id="kanal-ust">
+			<button id="menu" class="ikon-dugme mobil" type="button" aria-label="Kanalları göster">☰</button>
+			<b id="kanal-ad">#genel</b>
+			<span id="kanal-aciklama"></span>
+			<span id="baglanti-durumu" class="etiket" hidden></span>
+		</header>
+
+		<div id="mesaj-alani">
+			<button id="daha-eski" type="button" class="daha-eski" hidden>Daha eski mesajları yükle</button>
+			<div id="mesajlar" aria-live="polite"></div>
+		</div>
+
+		<div id="ses-karti" hidden>
+			<div class="bolum-baslik">Sesli: <b id="ses-kart-kanal"></b></div>
+			<div id="ses-kisiler"><div id="ben-ses-satir" class="ses-kisi"></div></div>
+		</div>
+
+		<div id="yaziyor" class="yaziyor"></div>
+
+		<form id="yazma">
+			<button id="dosya-sec" class="ikon-dugme" type="button" title="Dosya ekle" aria-label="Dosya ekle">＋</button>
+			<input id="dosya" type="file" hidden>
+			<textarea id="metin" rows="1" maxlength="2000" placeholder="Mesaj yaz… (Enter gönderir, Shift+Enter alt satır)" aria-label="Mesaj"></textarea>
+			<button id="gonder" type="submit" class="gonder" title="Gönder" aria-label="Gönder">➤</button>
+		</form>
+		<div id="yukleme" class="yukleme" hidden>
+			<div class="yukleme-cubuk"><div id="yukleme-dolgu"></div></div>
+			<span id="yukleme-yazi"></span>
+		</div>
+	</main>
+
+	<aside id="uye-panosu">
+		<div class="bolum-baslik">Çevrimiçi — <span id="uye-sayi">0</span></div>
+		<div id="uye-listesi"></div>
+	</aside>
+</div>
+
+<p id="durum" class="durum tost" role="status" aria-live="polite"></p>
 </body>
 </html>

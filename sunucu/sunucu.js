@@ -1,9 +1,11 @@
-// Ses Kanalı sunucusu. Tek süreç:
+// Ses Kanalı sunucusu — Discord'umsu tek sunucu: yazılı kanallar + sesli kanallar.
 //   - web sayfasını sunar (web/),
-//   - /rtc WebSocket'inde tarayıcıların birbirini bulmasını sağlar (WebRTC signaling, mesh),
+//   - /rtc WebSocket'inde yazılı sohbeti iletir ve kaydeder (SQLite), sesli kanallar için
+//     WebRTC signaling yapar (mesh: ses tarayıcılar arasında P2P akar),
+//   - /api/yukle ile dosya alır (/veri/yuklemeler), /dosya/<id> ile sunar,
 //   - coturn'ü (STUN/TURN) başlatıp izler ve tarayıcılara geçici TURN şifresi verir (/api/ice).
-// Ses tarayıcılar arasında doğrudan (P2P) akar; doğrudan bağlanamayanlar TURN üzerinden geçer.
 //
+// Yalnızca yazılı kanallar diske yazılır; ses/görüntü kaydedilmez.
 // Ayarlar .env'den okunur (sunucuda /var/lib/chat/.env, konteynerde /veri/.env); hepsi isteğe bağlı.
 // Kendi bilgisayarında:  npm install && node sunucu/sunucu.js   ->  http://127.0.0.1:8080
 'use strict';
@@ -16,6 +18,7 @@ const os = require('node:os');
 const dgram = require('node:dgram');
 const { spawn } = require('node:child_process');
 const { WebSocketServer, WebSocket } = require('ws');
+const veritabani = require('./veritabani');
 
 // ---------------------------------------------------------------- ayarlar
 
@@ -81,6 +84,7 @@ function surumBul() {
 const HOST = ayar('HOST', '127.0.0.1');
 const PORT = sayiAyar('PORT', 8080, 1, 65535);
 const MAX_KISI = sayiAyar('MAX_KISI', 10, 2, 50);
+const DOSYA_MB = sayiAyar('DOSYA_MB', 25, 1, 200);
 const TURN_PORT = sayiAyar('TURN_PORT', 3478, 1, 65535);
 const RELAY_MIN_PORT = sayiAyar('RELAY_MIN_PORT', 49152, 1024, 65535);
 const RELAY_MAX_PORT = sayiAyar('RELAY_MAX_PORT', 61000, RELAY_MIN_PORT, 65535);
@@ -88,6 +92,10 @@ const DIS_IP = ayar('DIS_IP');
 const IC_IP = ayar('IC_IP') || icIpBul();
 const TURN_ADRESI = ayar('TURN_ADRESI') || DIS_IP; // tarayıcıya verilen STUN/TURN adresi (boşsa sayfanın adresi)
 const SURUM = surumBul();
+const VERI_KLASORU = ayar('VERI_KLASORU') || (fs.existsSync('/veri') ? '/veri' : path.join(KOK, 'veri'));
+const YUKLEME_KLASORU = path.join(VERI_KLASORU, 'yuklemeler');
+const DOSYA_SINIRI = DOSYA_MB * 1024 * 1024;
+const EN_AZ_BOS_ALAN = 300 * 1024 * 1024; // yükleme için sunucuda en az bu kadar boş yer kalsın
 
 for (const [ad, deger] of [['DIS_IP', DIS_IP], ['IC_IP', IC_IP]]) {
 	if (deger && !ipv4mu(deger)) {
@@ -96,10 +104,28 @@ for (const [ad, deger] of [['DIS_IP', DIS_IP], ['IC_IP', IC_IP]]) {
 	}
 }
 
+// ---------------------------------------------------------------- kanallar
+// Tek sunucu, sabit kanal listesi. Yeni kanal eklemek: buraya bir satır (id benzersiz olmalı).
+// Yazılı kanalların geçmişi veritabanında tutulur; sesli kanallar yalnızca o anki kişileri taşır.
+
+const KANALLAR = [
+	{ id: 'genel', ad: 'genel', tur: 'yazi', aciklama: 'Sunucunun genel sohbeti' },
+	{ id: 'muhabbet', ad: 'muhabbet', tur: 'yazi', aciklama: 'Günlük muhabbet, geyik' },
+	{ id: 'sesli-sohbet', ad: 'Sesli Sohbet', tur: 'ses' },
+	{ id: 'muzik', ad: 'Müzik', tur: 'ses' },
+	{ id: 'oyun', ad: 'Oyun', tur: 'ses' },
+];
+const YAZI_KANALLARI = new Map(KANALLAR.filter((k) => k.tur === 'yazi').map((k) => [k.id, k]));
+const SES_KANALLARI = new Map(KANALLAR.filter((k) => k.tur === 'ses').map((k) => [k.id, k]));
+if (!YAZI_KANALLARI.size || !SES_KANALLARI.size) {
+	console.error('Kanal listesinde hem yazılı hem sesli kanal olmalı.');
+	process.exit(1);
+}
+
 // TURN şifreleri bu sırdan türetilir (coturn "use-auth-secret"). Her açılışta yenisi üretilir:
 // coturn da her açılışta yeniden başladığı için eski şifrelere gerek kalmaz; diskte saklanacak sır yoktur.
 const TURN_SIRRI = crypto.randomBytes(32).toString('hex');
-const TURN_SURESI = 24 * 60 * 60; // verilen TURN şifresi bu kadar saniye geçerli (uzun görüşmeler kopmasın)
+const TURN_SURESI = 24 * 60 * 60;
 
 // ---------------------------------------------------------------- web dosyaları
 
@@ -140,7 +166,7 @@ const GUVENLIK_BASLIKLARI = {
 	'Referrer-Policy': 'no-referrer',
 	'Permissions-Policy': 'microphone=(self), camera=(), geolocation=()',
 	'Content-Security-Policy':
-		"default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; " +
+		"default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; " +
 		"media-src 'self' blob:; connect-src 'self' wss: ws:; base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
 };
 
@@ -239,7 +265,7 @@ function turnBaslat() {
 		turn = null;
 		turnDurumu = 'kapalı';
 		if (kapaniyor || !vardi) return;
-		// coturn düştüyse sunucu da çıkar; systemd konteyneri iki saniye sonra yeniden başlatır.
+		// coturn düştüyse sunucu da çıkar; Docker konteyneri iki saniye sonra yeniden başlatır.
 		console.error(`[turn] coturn beklenmedik şekilde kapandı (${sinyal || kod}); sunucu da kapanıyor.`);
 		process.exit(1);
 	});
@@ -295,65 +321,208 @@ function iceSunuculari(req) {
 	};
 }
 
-// ---------------------------------------------------------------- signaling (WebSocket /rtc)
+// ---------------------------------------------------------------- signaling + sohbet (/rtc)
 //
-// İstemci -> sunucu:  {type:'join', room, name}   {type:'sdp', to, sdp}   {type:'ice', to, ice}   {type:'ping'}
-// Sunucu -> istemci:  {type:'joined', room, peers:[isim...], max}   {type:'peer-joined', name}
-//                     {type:'peer-left', name}   {type:'sdp', from, sdp}   {type:'ice', from, ice}
-//                     {type:'error', message}   {type:'pong'}
+// İstemci -> sunucu:
+//   {type:'giris', ad, id}                     adı al (bir kez); 'hazir' yanıtı gelir
+//   {type:'yazi', kanal, metin}                yazılı kanala mesaj gönder
+//   {type:'gecmis', kanal, once}               eski mesajları iste (once: en eski bilinen id)
+//   {type:'yaziyor', kanal}                    "yazıyor" göstergesi
+//   {type:'ses-gir', kanal} / {type:'ses-cik'} sesli kanala gir/çık
+//   {type:'sdp', to, sdp} / {type:'ice', to, ice}   WebRTC (aynı sesli kanaldaki kişiye)
+//   {type:'sessiz', sessiz}                    mikrofon kapalı mı (diğerlerine gösterilir)
+//   {type:'ping'}
+// Sunucu -> istemci:
+//   {type:'hazir', ad, kanallar, kimler, max, dosyaMb, jeton}
+//   {type:'kanallar', kanallar} / {type:'kimler', kimler}
+//   {type:'yazi', kanal, mesaj} / {type:'gecmis', kanal, mesajlar, bitti}
+//   {type:'yaziyor', kanal, ad}
+//   {type:'ses-girdi', kanal, kisiler} / {type:'ses-kisi-girdi', kanal, ad} / {type:'ses-kisi-cikti', kanal, ad}
+//   {type:'sessiz', ad, sessiz}
+//   {type:'sdp', from, sdp} / {type:'ice', from, ice}
+//   {type:'hata', message} / {type:'pong'}
 
-const odalar = new Map(); // oda adı -> Map<isim, ws>
+const sesliKanallar = new Map(); // kanal id -> Map<ad, ws>
+const jetonlar = new Map(); // yükleme jetonu -> ws
 const wss = new WebSocketServer({ noServer: true, maxPayload: 64 * 1024 });
+let db = null;
 
 function gonder(ws, nesne) {
 	if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(nesne));
 }
-function herkese(oda, nesne, haric) {
-	for (const ws of (odalar.get(oda) || new Map()).values()) if (ws !== haric) gonder(ws, nesne);
+function herkes(nesne, haric) {
+	for (const ws of wss.clients) if (ws !== haric && ws.ad) gonder(ws, nesne);
 }
-function ayril(ws) {
-	if (!ws.oda) return;
-	const uyeler = odalar.get(ws.oda);
-	if (uyeler && uyeler.get(ws.isim) === ws) {
-		uyeler.delete(ws.isim);
-		console.log(`[kanal] ${ws.oda}: ${ws.isim} çıktı (${uyeler.size}/${MAX_KISI})`);
-		if (uyeler.size === 0) odalar.delete(ws.oda);
-		else herkese(ws.oda, { type: 'peer-left', name: ws.isim });
-	}
-	ws.oda = null;
-	ws.isim = null;
+function kanalHerkes(kanal, nesne, haric) {
+	for (const ws of (sesliKanallar.get(kanal) || new Map()).values()) if (ws !== haric) gonder(ws, nesne);
 }
 
-function katil(ws, m) {
-	const oda = String(m.room ?? '').trim().slice(0, 64);
-	const isim = String(m.name ?? '').trim().slice(0, 32) || 'misafir';
-	if (!oda) return gonder(ws, { type: 'error', message: 'Oda adı gerekli.' });
-	if (ws.oda === oda && ws.isim === isim) return;
-	const kimlik = String(m.id ?? '').slice(0, 64);
-	const uyeler = odalar.get(oda) || new Map();
-	const eski = uyeler.get(isim);
-	if (eski && eski !== ws) {
-		// Aynı sekme yeniden bağlandıysa (ağ değişti, sunucu bağlantısı koptu) eski bağlantı düşürülür.
-		if (!kimlik || eski.kimlik !== kimlik) return gonder(ws, { type: 'error', message: `"${isim}" adı bu odada zaten var; başka bir ad seç.` });
-		ayril(eski);
-		eski.terminate();
+function kanalDurumu() {
+	return KANALLAR.map((k) => {
+		const o = { id: k.id, ad: k.ad, tur: k.tur };
+		if (k.aciklama) o.aciklama = k.aciklama;
+		if (k.tur === 'ses') o.kisiler = [...(sesliKanallar.get(k.id) || new Map()).values()].map((ws) => ({ ad: ws.ad, sessiz: !!ws.sessiz }));
+		return o;
+	});
+}
+function kimler() {
+	const liste = [];
+	for (const ws of wss.clients) if (ws.ad) liste.push({ ad: ws.ad, sessiz: !!ws.sessiz, ses: ws.sesKanal || null });
+	return liste.sort((a, b) => a.ad.localeCompare(b.ad, 'tr'));
+}
+// Kim girdi/çıktı, hangi sesli kanalda kim var: herkese tek seferde.
+function durumYayinla() {
+	const kanallar = kanalDurumu();
+	const kim = kimler();
+	for (const ws of wss.clients) {
+		if (!ws.ad) continue;
+		gonder(ws, { type: 'kanallar', kanallar });
+		gonder(ws, { type: 'kimler', kimler: kim });
 	}
-	if (uyeler.size >= MAX_KISI) return gonder(ws, { type: 'error', message: `Oda dolu (en fazla ${MAX_KISI} kişi).` });
-	ayril(ws);
+}
+
+function sesCikar(ws) {
+	const kanal = ws.sesKanal;
+	if (!kanal) return;
+	ws.sesKanal = null;
+	const uyeler = sesliKanallar.get(kanal);
+	if (uyeler && uyeler.get(ws.ad) === ws) {
+		uyeler.delete(ws.ad);
+		if (!uyeler.size) sesliKanallar.delete(kanal);
+		else kanalHerkes(kanal, { type: 'ses-kisi-cikti', kanal, ad: ws.ad });
+		console.log(`[ses] ${kanal}: ${ws.ad} çıktı`);
+	}
+}
+
+// Bağlantı kapanınca adı ve sesli kanal üyeliğini bırak.
+function ayril(ws) {
+	const vardi = ws.ad || ws.sesKanal;
+	sesCikar(ws);
+	if (!ws.ad) return;
+	const kimlik = ws.kimlik;
+	ws.ad = null;
+	if (ws.jeton) jetonlar.delete(ws.jeton);
+	if (vardi) durumYayinla();
+	return kimlik;
+}
+
+function adSahibi(ad) {
+	for (const ws of wss.clients) if (ws.ad === ad) return ws;
+	return null;
+}
+
+function girisYap(ws, m) {
+	const ad = String(m.ad ?? '')
+		.replace(/[\u0000-\u001f\u007f]/g, '')
+		.trim()
+		.slice(0, 32);
+	if (!ad) return gonder(ws, { type: 'hata', message: 'Ad gerekli.' });
+	const kimlik = String(m.id ?? '').slice(0, 64);
+	const sahibi = adSahibi(ad);
+	if (sahibi && sahibi !== ws) {
+		// Aynı sekme yeniden bağlandıysa (ağ değişti, sunucu yeniden başladı) eski bağlantı düşürülür.
+		if (!kimlik || sahibi.kimlik !== kimlik) {
+			return gonder(ws, { type: 'hata', message: `"${ad}" adı şu anda kullanılıyor; başka bir ad seç.` });
+		}
+		ayril(sahibi);
+		sahibi.terminate();
+	}
+	if (ws.ad && ws.ad !== ad) ayril(ws);
+	if (ws.jeton) jetonlar.delete(ws.jeton);
+	ws.ad = ad;
 	ws.kimlik = kimlik;
+	ws.jeton = crypto.randomBytes(16).toString('hex');
+	ws.yaziPencere = 0;
+	ws.yaziAdet = 0;
+	jetonlar.set(ws.jeton, ws);
+	console.log(`[kanal] ${ad} bağlandı`);
+	gonder(ws, {
+		type: 'hazir',
+		ad,
+		kanallar: kanalDurumu(),
+		kimler: kimler(),
+		max: MAX_KISI,
+		dosyaMb: DOSYA_MB,
+		jeton: ws.jeton,
+	});
+	durumYayinla();
+}
+
+async function yaziGonder(ws, m) {
+	if (!ws.ad) return gonder(ws, { type: 'hata', message: 'Önce adını gir.' });
+	const kanal = String(m.kanal ?? '');
+	if (!YAZI_KANALLARI.has(kanal)) return gonder(ws, { type: 'hata', message: 'Bilinmeyen kanal.' });
+	let metin = String(m.metin ?? '')
+		.replace(/\r\n/g, '\n')
+		// Kontrol karakterleri (satır sonu ve sekme hariç) metne karışmasın.
+		.replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, '')
+		.trim();
+	if (!metin) return;
+	if (metin.length > 2000) metin = metin.slice(0, 2000);
+	const simdi = Date.now();
+	if (simdi - (ws.yaziPencere || 0) > 10000) {
+		ws.yaziPencere = simdi;
+		ws.yaziAdet = 0;
+	}
+	if (++ws.yaziAdet > 12) return gonder(ws, { type: 'hata', message: 'Çok hızlı yazıyorsun; birkaç saniye bekle.' });
+	try {
+		const mesaj = await db.mesajEkle({ kanal, ad: ws.ad, metin });
+		herkes({ type: 'yazi', kanal, mesaj });
+	} catch (e) {
+		console.error('[veritabanı] mesaj yazılamadı:', e.message);
+		gonder(ws, { type: 'hata', message: 'Mesaj kaydedilemedi; tekrar dene.' });
+	}
+}
+
+async function gecmisGonder(ws, m) {
+	const kanal = String(m.kanal ?? '');
+	if (!YAZI_KANALLARI.has(kanal)) return gonder(ws, { type: 'hata', message: 'Bilinmeyen kanal.' });
+	const once = Number(m.once) > 0 ? Math.floor(Number(m.once)) : 0;
+	try {
+		const mesajlar = await db.mesajlar(kanal, once, 50);
+		gonder(ws, { type: 'gecmis', kanal, mesajlar, bitti: mesajlar.length < 50 });
+	} catch (e) {
+		console.error('[veritabanı] geçmiş okunamadı:', e.message);
+		gonder(ws, { type: 'hata', message: 'Sohbet geçmişi okunamadı.' });
+	}
+}
+
+function sesGir(ws, m) {
+	if (!ws.ad) return gonder(ws, { type: 'hata', message: 'Önce adını gir.' });
+	const kanal = String(m.kanal ?? '');
+	if (!SES_KANALLARI.has(kanal)) return gonder(ws, { type: 'hata', message: 'Bilinmeyen sesli kanal.' });
+	if (ws.sesKanal === kanal) {
+		return gonder(ws, { type: 'ses-girdi', kanal, kisiler: [...sesliKanallar.get(kanal).keys()].filter((a) => a !== ws.ad) });
+	}
+	sesCikar(ws);
+	const uyeler = sesliKanallar.get(kanal) || new Map();
+	if (uyeler.size >= MAX_KISI) {
+		return gonder(ws, { type: 'hata', message: `Sesli kanal dolu (en fazla ${MAX_KISI} kişi).` });
+	}
 	const digerleri = [...uyeler.keys()];
-	uyeler.set(isim, ws);
-	odalar.set(oda, uyeler);
-	ws.oda = oda;
-	ws.isim = isim;
-	console.log(`[kanal] ${oda}: ${isim} girdi (${uyeler.size}/${MAX_KISI})`);
-	gonder(ws, { type: 'joined', room: oda, peers: digerleri, max: MAX_KISI });
-	herkese(oda, { type: 'peer-joined', name: isim }, ws);
+	uyeler.set(ws.ad, ws);
+	sesliKanallar.set(kanal, uyeler);
+	ws.sesKanal = kanal;
+	ws.sessiz = false;
+	console.log(`[ses] ${kanal}: ${ws.ad} girdi (${uyeler.size}/${MAX_KISI})`);
+	gonder(ws, { type: 'ses-girdi', kanal, kisiler: digerleri });
+	kanalHerkes(kanal, { type: 'ses-kisi-girdi', kanal, ad: ws.ad }, ws);
+	durumYayinla();
+}
+
+function sdpIlet(ws, m, tur) {
+	if (!ws.sesKanal) return;
+	const hedef = String(m.to ?? '');
+	const uyeler = sesliKanallar.get(ws.sesKanal);
+	const karsi = uyeler && uyeler.get(hedef);
+	if (!karsi || karsi === ws) return;
+	gonder(karsi, tur === 'sdp' ? { type: 'sdp', from: ws.ad, sdp: m.sdp } : { type: 'ice', from: ws.ad, ice: m.ice });
 }
 
 wss.on('connection', (ws) => {
-	ws.oda = null;
-	ws.isim = null;
+	ws.ad = null;
+	ws.sesKanal = null;
+	ws.sessiz = false;
 	ws.canli = true;
 	ws.on('pong', () => (ws.canli = true));
 	ws.on('message', (veri, ikili) => {
@@ -366,18 +535,37 @@ wss.on('connection', (ws) => {
 		}
 		if (!m || typeof m !== 'object') return;
 		switch (m.type) {
-			case 'join':
-				katil(ws, m);
+			case 'giris':
+				girisYap(ws, m);
+				break;
+			case 'yazi':
+				yaziGonder(ws, m);
+				break;
+			case 'gecmis':
+				gecmisGonder(ws, m);
+				break;
+			case 'yaziyor':
+				if (ws.ad && YAZI_KANALLARI.has(String(m.kanal ?? ''))) {
+					herkes({ type: 'yaziyor', kanal: String(m.kanal), ad: ws.ad }, ws);
+				}
+				break;
+			case 'ses-gir':
+				sesGir(ws, m);
+				break;
+			case 'ses-cik':
+				sesCikar(ws);
+				durumYayinla();
 				break;
 			case 'sdp':
-			case 'ice': {
-				// Mesh: her mesaj tek bir kişiye ('to') gider.
-				if (!ws.oda) return;
-				const hedef = odalar.get(ws.oda)?.get(String(m.to));
-				if (!hedef || hedef === ws) return;
-				gonder(hedef, m.type === 'sdp' ? { type: 'sdp', from: ws.isim, sdp: m.sdp } : { type: 'ice', from: ws.isim, ice: m.ice });
+			case 'ice':
+				sdpIlet(ws, m, m.type);
 				break;
-			}
+			case 'sessiz':
+				if (!ws.ad) return;
+				ws.sessiz = !!m.sessiz;
+				herkes({ type: 'sessiz', ad: ws.ad, sessiz: ws.sessiz });
+				durumYayinla();
+				break;
 			case 'ping':
 				gonder(ws, { type: 'pong' });
 				break;
@@ -399,31 +587,199 @@ const nabiz = setInterval(() => {
 	}
 }, 30000);
 
+// ---------------------------------------------------------------- dosya paylaşımı
+
+// Yalnızca bu türler tarayıcıda doğrudan gösterilir; geri kalanı indirme olarak sunulur.
+// (HTML/SVG gibi betik çalıştırabilen türler asla satır içi gösterilmez.)
+const SATIR_ICI = {
+	png: 'image/png',
+	jpg: 'image/jpeg',
+	jpeg: 'image/jpeg',
+	gif: 'image/gif',
+	webp: 'image/webp',
+	mp3: 'audio/mpeg',
+	ogg: 'audio/ogg',
+	oga: 'audio/ogg',
+	m4a: 'audio/mp4',
+	wav: 'audio/wav',
+	mp4: 'video/mp4',
+	webm: 'video/webm',
+};
+
+const uzanti = (ad) => (String(ad).split('.').pop() || '').toLowerCase();
+const dosyaOnbellek = new Map(); // id -> kayıt (her dosya için veritabanına gitmemek adına)
+
+function guvenliAd(ham) {
+	return (
+		String(ham)
+			.replace(/[\u0000-\u001f\u007f]/g, '')
+			.replace(/[\\/]/g, '_')
+			.replace(/^\.+/, '')
+			.trim()
+			.slice(0, 120) || 'dosya'
+	);
+}
+
+function bosAlan() {
+	try {
+		const s = fs.statfsSync(VERI_KLASORU);
+		return s.bavail * s.bsize;
+	} catch {
+		return Number.MAX_SAFE_INTEGER;
+	}
+}
+
+function govdeOku(req, sinir) {
+	return new Promise((coz, red) => {
+		const parcalar = [];
+		let toplam = 0;
+		req.on('data', (p) => {
+			toplam += p.length;
+			if (toplam > sinir) {
+				red(Object.assign(new Error('Dosya çok büyük'), { kod: 413 }));
+				req.destroy();
+				return;
+			}
+			parcalar.push(p);
+		});
+		req.on('end', () => coz(Buffer.concat(parcalar)));
+		req.on('error', red);
+	});
+}
+
+function jsonYanit(res, kod, nesne) {
+	yanit(res, kod, JSON.stringify(nesne) + '\n', { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
+}
+
+async function yukle(req, res, sorgu) {
+	const jeton = String(req.headers.authorization || '').replace(/^Bearer\s+/i, '');
+	const sahibi = jetonlar.get(jeton);
+	if (!sahibi || !sahibi.ad) return jsonYanit(res, 401, { hata: 'Oturum bulunamadı; sayfayı yenile.' });
+	const kanal = String(sorgu.get('kanal') || '');
+	if (!YAZI_KANALLARI.has(kanal)) return jsonYanit(res, 400, { hata: 'Bilinmeyen kanal.' });
+	const bildirilen = Number(req.headers['content-length'] || 0);
+	if (bildirilen > DOSYA_SINIRI) return jsonYanit(res, 413, { hata: `Dosya çok büyük (en fazla ${DOSYA_MB} MB).` });
+	if (bosAlan() < EN_AZ_BOS_ALAN) return jsonYanit(res, 507, { hata: 'Sunucuda boş yer kalmadı; dosya yüklenemiyor.' });
+
+	let govde;
+	try {
+		govde = await govdeOku(req, DOSYA_SINIRI);
+	} catch (e) {
+		return jsonYanit(res, e.kod === 413 ? 413 : 400, { hata: e.kod === 413 ? `Dosya çok büyük (en fazla ${DOSYA_MB} MB).` : 'Dosya okunamadı.' });
+	}
+	if (!govde.length) return jsonYanit(res, 400, { hata: 'Boş dosya.' });
+
+	let hamAd = 'dosya';
+	try {
+		hamAd = decodeURIComponent(String(req.headers['x-dosya-adi'] || 'dosya'));
+	} catch {}
+	const dosyaAd = guvenliAd(hamAd);
+	const tur = SATIR_ICI[uzanti(dosyaAd)] || String(req.headers['content-type'] || 'application/octet-stream').split(';')[0].slice(0, 100);
+	const id = crypto.randomBytes(9).toString('hex');
+
+	try {
+		await fs.promises.writeFile(path.join(YUKLEME_KLASORU, id), govde, { mode: 0o600 });
+		const kayit = { id, kanal, dosyaAd, boyut: govde.length, tur };
+		await db.dosyaEkle(kayit);
+		dosyaOnbellek.set(id, kayit);
+		const mesaj = await db.mesajEkle({ kanal, ad: sahibi.ad, metin: '', dosya: kayit });
+		herkes({ type: 'yazi', kanal, mesaj });
+		console.log(`[dosya] ${sahibi.ad} → ${kanal}: ${dosyaAd} (${govde.length} bayt)`);
+		jsonYanit(res, 200, { id, ad: dosyaAd, boyut: govde.length, mesaj });
+	} catch (e) {
+		console.error('[dosya] yüklenemedi:', e.message);
+		// Yarım kalan dosya diskte kalmasın (kayıt veritabanına giremedi).
+		fs.promises.unlink(path.join(YUKLEME_KLASORU, id)).catch(() => {});
+		dosyaOnbellek.delete(id);
+		jsonYanit(res, 500, { hata: 'Dosya kaydedilemedi.' });
+	}
+}
+
+async function dosyaGonder(req, res, id) {
+	let kayit = dosyaOnbellek.get(id);
+	if (!kayit) {
+		try {
+			kayit = await db.dosyaGetir(id);
+		} catch {}
+		if (kayit) dosyaOnbellek.set(id, kayit);
+	}
+	if (!kayit) return yanit(res, 404, 'Dosya bulunamadı\n', { 'Content-Type': 'text/plain; charset=utf-8' });
+	const tam = path.join(YUKLEME_KLASORU, kayit.id);
+	let boyut;
+	try {
+		boyut = (await fs.promises.stat(tam)).size;
+	} catch {
+		return yanit(res, 404, 'Dosya bulunamadı\n', { 'Content-Type': 'text/plain; charset=utf-8' });
+	}
+	const satirIci = SATIR_ICI[uzanti(kayit.dosyaAd)];
+	const basliklar = {
+		'Content-Type': satirIci || 'application/octet-stream',
+		'Content-Length': boyut,
+		// İçerik değişmez (id başına tek dosya): uzun süre önbellekte kalabilir.
+		'Cache-Control': 'private, max-age=31536000, immutable',
+		'X-Content-Type-Options': 'nosniff',
+		'Content-Security-Policy': "default-src 'none'; sandbox",
+		'Content-Disposition': `${satirIci ? 'inline' : 'attachment'}; filename*=UTF-8''${encodeURIComponent(kayit.dosyaAd)}`,
+	};
+	res.writeHead(200, { ...GUVENLIK_BASLIKLARI, ...basliklar });
+	if (req.method === 'HEAD') return res.end();
+	const akis = fs.createReadStream(tam);
+	akis.on('error', () => res.destroy());
+	akis.pipe(res);
+}
+
 // ---------------------------------------------------------------- HTTP
 
 const sunucu = http.createServer((req, res) => {
+	let url;
 	let yol;
 	try {
-		yol = decodeURIComponent(new URL(req.url, 'http://x').pathname);
+		url = new URL(req.url, 'http://x');
+		yol = decodeURIComponent(url.pathname);
 	} catch {
 		return yanit(res, 400, 'Hatalı istek\n', { 'Content-Type': 'text/plain; charset=utf-8' });
 	}
+
+	if (req.method === 'POST' && yol === '/api/yukle') return yukle(req, res, url.searchParams).catch(() => jsonYanit(res, 500, { hata: 'Beklenmeyen hata.' }));
 	if (req.method !== 'GET' && req.method !== 'HEAD') {
 		return yanit(res, 405, 'İzin yok\n', { 'Content-Type': 'text/plain; charset=utf-8', Allow: 'GET, HEAD' });
 	}
 	if (yol === '/saglik') {
-		const kisi = [...odalar.values()].reduce((t, u) => t + u.size, 0);
+		const kisi = [...sesliKanallar.values()].reduce((t, u) => t + u.size, 0);
 		const iyi = turnDurumu === 'çalışıyor' || turn === null;
-		return yanit(res, iyi ? 200 : 503, JSON.stringify({ durum: iyi ? 'tamam' : 'sorunlu', surum: SURUM, turn: turnDurumu, oda: odalar.size, kisi }) + '\n', {
-			'Content-Type': 'application/json; charset=utf-8',
-			'Cache-Control': 'no-store',
-		});
+		const govde = {
+			durum: iyi ? 'tamam' : 'sorunlu',
+			surum: SURUM,
+			turn: turnDurumu,
+			oda: sesliKanallar.size, // dolu sesli kanal sayısı
+			kisi,
+			cevrimici: kimler().length,
+			veritabani: db ? 'açık' : 'kapalı',
+		};
+		const sayilar = db ? db.sayilar() : Promise.resolve({ mesaj: 0, dosya: 0 });
+		return sayilar.then(
+			(s) =>
+				yanit(res, iyi ? 200 : 503, JSON.stringify({ ...govde, mesaj: s.mesaj, dosya: s.dosya }) + '\n', {
+					'Content-Type': 'application/json; charset=utf-8',
+					'Cache-Control': 'no-store',
+				}),
+			() =>
+				yanit(res, iyi ? 200 : 503, JSON.stringify(govde) + '\n', {
+					'Content-Type': 'application/json; charset=utf-8',
+					'Cache-Control': 'no-store',
+				}),
+		);
 	}
 	if (yol === '/api/ice') {
 		return yanit(res, 200, JSON.stringify(iceSunuculari(req)), {
 			'Content-Type': 'application/json; charset=utf-8',
 			'Cache-Control': 'no-store',
 		});
+	}
+	if (yol.startsWith('/dosya/')) {
+		const id = yol.slice('/dosya/'.length).replace(/\/$/, '');
+		if (!/^[a-f0-9]{18}$/.test(id)) return yanit(res, 404, 'Bulunamadı\n', { 'Content-Type': 'text/plain; charset=utf-8' });
+		return dosyaGonder(req, res, id).catch(() => yanit(res, 500, 'Dosya okunamadı\n', { 'Content-Type': 'text/plain; charset=utf-8' }));
 	}
 	dosyaSun(req, res, yol);
 });
@@ -440,19 +796,24 @@ sunucu.on('upgrade', (req, soket, bas) => {
 	wss.handleUpgrade(req, soket, bas, (ws) => wss.emit('connection', ws, req));
 });
 
-function kapat(sinyal) {
+async function kapat(sinyal) {
 	if (kapaniyor) return;
 	kapaniyor = true;
 	console.log(`Kapanıyor (${sinyal}).`);
 	clearInterval(nabiz);
 	for (const ws of wss.clients) ws.close(1001, 'sunucu kapanıyor');
 	sunucu.close();
-	const bitir = () => process.exit(0);
+	const bitir = async () => {
+		try {
+			await db?.kapat();
+		} catch {}
+		process.exit(0);
+	};
 	if (turn) {
 		turn.once('exit', bitir);
 		turn.kill('SIGTERM');
 		setTimeout(bitir, 3000).unref();
-	} else bitir();
+	} else await bitir();
 }
 process.on('SIGTERM', () => kapat('SIGTERM'));
 process.on('SIGINT', () => kapat('SIGINT'));
@@ -462,15 +823,36 @@ sunucu.on('error', (e) => {
 	process.exit(1);
 });
 
-turnBaslat();
-sunucu.listen(PORT, HOST, async () => {
-	const turnTamam = await turnHazirBekle();
-	if (!turnTamam && turn) {
-		console.error(`[turn] coturn UDP ${TURN_PORT}'te yanıt vermiyor.`);
+async function main() {
+	try {
+		db = veritabani.ac(VERI_KLASORU);
+		await db.hazir;
+	} catch (e) {
+		console.error('Veritabanı açılamadı: ' + e.message);
 		process.exit(1);
 	}
-	const turnBilgi = turnTamam
-		? `STUN/TURN udp/${TURN_PORT} (aktarım ${RELAY_MIN_PORT}-${RELAY_MAX_PORT}, dış IP ${DIS_IP || 'yok'}, iç IP ${IC_IP || 'yok'})`
-		: 'STUN/TURN kapalı';
-	console.log(`Ses kanalı çalışıyor: http://${HOST}:${PORT}  sürüm ${SURUM}, oda başına en fazla ${MAX_KISI} kişi, ${turnBilgi}`);
-});
+	try {
+		await fs.promises.mkdir(YUKLEME_KLASORU, { recursive: true });
+	} catch (e) {
+		console.error('Yükleme klasörü açılamadı: ' + e.message);
+		process.exit(1);
+	}
+
+	turnBaslat();
+	sunucu.listen(PORT, HOST, async () => {
+		const turnTamam = await turnHazirBekle();
+		if (!turnTamam && turn) {
+			console.error(`[turn] coturn UDP ${TURN_PORT}'te yanıt vermiyor.`);
+			process.exit(1);
+		}
+		const turnBilgi = turnTamam
+			? `STUN/TURN udp/${TURN_PORT} (aktarım ${RELAY_MIN_PORT}-${RELAY_MAX_PORT}, dış IP ${DIS_IP || 'yok'}, iç IP ${IC_IP || 'yok'})`
+			: 'STUN/TURN kapalı';
+		console.log(
+			`Ses Kanalı çalışıyor: http://${HOST}:${PORT}  sürüm ${SURUM}, sesli kanal başına en fazla ${MAX_KISI} kişi, ` +
+				`dosya sınırı ${DOSYA_MB} MB, veri ${VERI_KLASORU}, ${turnBilgi}`,
+		);
+	});
+}
+
+main();

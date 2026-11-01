@@ -1,6 +1,7 @@
 # Ses Kanalı — derleme
 #   make           kendi bilgisayarında node ile çalıştırır (node, npm ve coturn gerekir) -> http://127.0.0.1:8080
 #   make test      çalışan sunucuyu dener (ADRES=http://... ile başka bir adres)
+#   make arayuz    arayüzü tarayıcısız dener (jsdom; DOM, kanal seçimi, sesli kanal satırları)
 #   make docker    Docker imajını derleyip çalıştırır -> http://127.0.0.1:8080
 #   make durdur    Docker konteynerini durdurur
 #   make temizle   node_modules ve yerel veri/ çıktısını siler
@@ -17,6 +18,10 @@ node_modules: package.json
 test:
 	node test/dene.js $(ADRES)
 
+arayuz: node_modules
+	npm install --no-save --no-audit --no-fund jsdom
+	node test/arayuz.js
+
 docker:
 	docker compose up --build -d
 
@@ -26,4 +31,4 @@ durdur:
 temizle:
 	rm -rf node_modules veri
 
-.PHONY: calistir test docker durdur temizle
+.PHONY: calistir test arayuz docker durdur temizle

@@ -8,9 +8,10 @@ FROM debian:trixie-slim
 ARG SURUM=yerel
 ENV SURUM=$SURUM
 
-# node (sunucu + web), node-ws (WebSocket kütüphanesi, Debian paketi) ve coturn (STUN/TURN).
+# node (sunucu + web), node-ws (WebSocket), node-sqlite3 (sohbet veritabanı) ve coturn (STUN/TURN).
+# Hepsi Debian paketi: npm derlemesi/indirmesi yok, imaj çevrimdışı da derlenebilir.
 RUN apt-get update \
-	&& apt-get install -y --no-install-recommends nodejs node-ws coturn \
+	&& apt-get install -y --no-install-recommends nodejs node-ws node-sqlite3 coturn \
 	&& apt-get clean \
 	&& rm -rf /var/lib/apt/lists/* /var/cache/apt/* /var/log/* /usr/share/doc/* /usr/share/man/* /usr/share/info/*
 
@@ -21,10 +22,11 @@ COPY web/ /usr/share/chat/web/
 # root gerekmez. chmod: depodan gelen dosyalar dar izinli olabilir; kullanıcı okuyabilsin.
 RUN useradd --system --uid 1000 --home /nonexistent --shell /usr/sbin/nologin seskanali \
 	&& chmod -R u=rwX,go=rX /usr/share/chat \
-	&& node -e "require('ws')" \
+	&& node -e "require('ws'); require('sqlite3')" \
 	&& turnserver --version >/dev/null
 
-# Ayarlar: sunucudaki /var/lib/chat buraya bağlanır; sunucu /veri/.env dosyasını okur.
+# Ayarlar ve sohbet veritabanı: sunucudaki /var/lib/chat buraya bağlanır (kalıcı).
+# Sunucu /veri/.env dosyasını okur; yazılı kanallar /veri/sohbet.db, dosyalar /veri/yuklemeler/.
 ENV AYAR_DOSYASI=/veri/.env
 VOLUME /veri
 
