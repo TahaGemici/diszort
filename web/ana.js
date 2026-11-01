@@ -4,7 +4,12 @@
 'use strict';
 
 const $ = (id) => document.getElementById(id);
-const durum = (metin) => ($('durum').textContent = metin);
+// hata=true: durum satırı kırmızı gösterilir (kullanıcı hatayı normal bilgiden ayırsın).
+const durum = (metin, hata = false) => {
+	const e = $('durum');
+	e.textContent = metin;
+	e.classList.toggle('hata', hata);
+};
 
 // Aynı sekme yeniden bağlanınca sunucu eski bağlantıyı tanısın ("bu ad zaten var" demesin).
 const SEKME = sessionStorage.getItem('sekme') || crypto.getRandomValues(new Uint32Array(4)).join('-');
@@ -17,16 +22,26 @@ let mikrofon = null;
 let ice = { iceServers: [] };
 let yenidenDene = 0;
 let istatistikZamanlayici = null;
+let kendiOlcer = null;
 const kisiler = new Map(); // ad -> { pc, satir, ses, etiket, adaylar[] }
 
 // ---------------------------------------------------------------- giriş
 
 $('ad').value = localStorage.getItem('ad') || '';
-if (location.hash.length > 1) $('oda').value = decodeURIComponent(location.hash.slice(1));
+// Bozuk bir bağlantı (#%E0%A4%A gibi) decodeURIComponent'i patlatıp bütün betiği durdurmasın.
+if (location.hash.length > 1) {
+	try {
+		$('oda').value = decodeURIComponent(location.hash.slice(1));
+	} catch {
+		$('oda').value = location.hash.slice(1);
+	}
+}
 (($('ad').value && $('oda').value) ? $('gir') : $('ad').value ? $('oda') : $('ad')).focus();
 
 $('giris').addEventListener('submit', async (e) => {
 	e.preventDefault();
+	// Çift gönderim (Enter'a iki kez basmak) ikinci bir "sen" satırı ve ikinci mikrofon açardı.
+	if (mikrofon || oda) return;
 	benimAdim = $('ad').value.trim().slice(0, 32);
 	oda = $('oda').value.trim().slice(0, 64);
 	if (!benimAdim || !oda) return;
@@ -42,7 +57,8 @@ $('giris').addEventListener('submit', async (e) => {
 		});
 	} catch (hata) {
 		$('gir').disabled = false;
-		durum('Mikrofon izni verilmedi; ses kanalı için gerekli.');
+		const neden = hata && hata.name === 'NotFoundError' ? 'Mikrofon bulunamadı' : 'Mikrofon izni verilmedi';
+		durum(neden + '; ses kanalı için mikrofon gerekli.', true);
 		return;
 	}
 	history.replaceState(null, '', '#' + encodeURIComponent(oda));
@@ -132,11 +148,16 @@ function mesaj(m) {
 			iceGeldi(m.from, m.ice);
 			break;
 		case 'error':
-			durum('Hata: ' + m.message);
+			durum(m.message, true);
 			if (!kisiler.size) {
-				// Giremedik (oda dolu, ad alınmış...): giriş ekranına dön.
+				// Giremedik (oda dolu, ad alınmış...): giriş ekranına dön. Mikrofonu da bırak,
+				// yoksa kullanılmayan mikrofonun ışığı yanık kalıyor ve yeniden girişte ikinci satır oluşuyordu.
 				oda = '';
 				if (ws) ws.close();
+				herkesiKapat();
+				if (mikrofon) mikrofon.getTracks().forEach((t) => t.stop());
+				mikrofon = null;
+				$('kisiler').replaceChildren();
 				$('kanal').hidden = true;
 				$('giris').hidden = false;
 				$('gir').disabled = false;
@@ -152,7 +173,7 @@ const teklifEdenBenim = (ad) => benimAdim > ad;
 
 function kisiEkle(ad) {
 	if (ad === benimAdim || kisiler.has(ad)) return;
-	const k = { pc: null, satir: null, ses: null, etiket: null, adaylar: [] };
+	const k = { pc: null, satir: null, ses: null, etiket: null, adaylar: [], akis: null, olcer: null, sesDugmesi: null, kuyruk: Promise.resolve() };
 	kisiler.set(ad, k);
 	satirOlustur(ad, k);
 	pcOlustur(ad, k);
@@ -162,10 +183,21 @@ function kisiEkle(ad) {
 function kisiCikar(ad) {
 	const k = kisiler.get(ad);
 	if (!k) return;
-	k.pc.close();
-	k.satir.remove();
-	k.ses.remove();
+	if (k.olcer) k.olcer.dur();
+	try {
+		k.pc?.close();
+	} catch {}
+	if (k.ses) {
+		k.ses.srcObject = null;
+		k.ses.remove();
+	}
+	if (k.satir) k.satir.remove();
 	kisiler.delete(ad);
+	// Oda boşaldıysa ölçüm sayacı boşuna dönmesin.
+	if (!kisiler.size && istatistikZamanlayici) {
+		clearInterval(istatistikZamanlayici);
+		istatistikZamanlayici = null;
+	}
 }
 
 function herkesiKapat() {
@@ -177,16 +209,21 @@ function pcOlustur(ad, k) {
 	k.pc = pc;
 	pc.onicecandidate = (e) => e.candidate && gonder({ type: 'ice', to: ad, ice: e.candidate });
 	pc.ontrack = (e) => {
-		k.ses.srcObject = e.streams[0] || new MediaStream([e.track]);
-		k.ses.play().catch(() => {});
+		k.akis = e.streams[0] || new MediaStream([e.track]);
+		k.ses.srcObject = k.akis;
+		sesiBaslat(k);
+		// Gelen sesi ölç (ses bu yoldan geçmez; yalnızca seviye okunur) → konuşanın noktası yanar.
+		if (k.olcer) k.olcer.dur();
+		k.olcer = seviyeOlcer(k.akis, k.satir, null, () => !k.ses.muted);
 	};
 	pc.onconnectionstatechange = () => {
 		if (pc.connectionState === 'connected') bitHiziAyarla(pc);
 		if (pc.connectionState === 'failed') {
 			k.etiket.textContent = 'bağlanamadı';
 			k.etiket.className = 'etiket hata';
-			// Ağ değişmiş olabilir: teklif eden taraf ICE'ı yeniden başlatır.
-			if (teklifEdenBenim(ad)) pc.restartIce();
+			// Ağ değişmiş olabilir: teklif eden taraf ICE'ı yeniden başlatır (teklif verilebilecek
+			// bir durumdaysa; "have-local-offer" iken restartIce hata verirdi).
+			if (teklifEdenBenim(ad) && pc.signalingState === 'stable') pc.restartIce();
 		}
 	};
 	if (teklifEdenBenim(ad)) {
@@ -202,13 +239,23 @@ function pcOlustur(ad, k) {
 	}
 }
 
-async function sdpGeldi(ad, sdp) {
+function sdpGeldi(ad, sdp) {
 	let k = kisiler.get(ad);
 	if (!k) {
 		kisiEkle(ad);
 		k = kisiler.get(ad);
 	}
+	// Aynı kişiden art arda gelen teklifler sırayla işlensin; ICE yenilemesi araya girerse
+	// setRemoteDescription "yanlış durumda" hatası verirdi.
+	k.kuyruk = k.kuyruk.then(() => sdpIsle(ad, k, sdp)).catch((hata) => console.warn('sdp', ad, hata));
+	return k.kuyruk;
+}
+
+async function sdpIsle(ad, k, sdp) {
 	const pc = k.pc;
+	if (!pc || pc.signalingState === 'closed') return;
+	// Elimizde teklif yokken gelen "answer" (eski/gecikmiş) yok sayılır.
+	if (sdp.type === 'answer' && pc.signalingState !== 'have-local-offer') return;
 	await pc.setRemoteDescription(sdp);
 	for (const aday of k.adaylar.splice(0)) await pc.addIceCandidate(aday).catch(() => {});
 	if (sdp.type === 'offer') {
@@ -257,33 +304,46 @@ function el(etiket, sinif, metin) {
 }
 
 function kendiSatirim() {
-	const satir = el('div', 'kisi');
+	// Giriş hatasından sonra yeniden girildiğinde eski "sen" satırı kalmasın.
+	document.querySelectorAll('.kisi.benim').forEach((e) => e.remove());
+	const satir = el('div', 'kisi benim');
 	const seviye = el('span', 'seviye bosluk');
 	const dugme = el('button', 'kucuk', '🎤');
 	dugme.type = 'button';
 	dugme.title = 'Mikrofonu kapat/aç';
+	dugme.setAttribute('aria-label', 'Mikrofonu kapat veya aç');
+	const ciz = () => {
+		const parca = mikrofon && mikrofon.getAudioTracks()[0];
+		const acik = !parca || parca.enabled;
+		dugme.textContent = acik ? '🎤' : '🎤✕';
+		dugme.classList.toggle('kapali', !acik);
+		dugme.setAttribute('aria-pressed', String(!acik));
+	};
 	dugme.onclick = () => {
-		const parca = mikrofon.getAudioTracks()[0];
+		const parca = mikrofon && mikrofon.getAudioTracks()[0];
 		if (!parca) return;
 		parca.enabled = !parca.enabled;
-		dugme.classList.toggle('kapali', !parca.enabled);
-		dugme.textContent = parca.enabled ? '🎤' : '🎤✕';
+		ciz();
 	};
+	ciz();
 	satir.append(el('span', 'nokta'), el('b', 'ad', benimAdim), el('span', 'etiket', 'sen'), seviye, dugme);
 	$('kisiler').prepend(satir);
-	seviyeOlcer(mikrofon, seviye, satir);
+	if (kendiOlcer) kendiOlcer.dur();
+	kendiOlcer = seviyeOlcer(mikrofon, satir, seviye, () => !mikrofon || mikrofon.getAudioTracks()[0]?.enabled !== false);
 }
 
 function satirOlustur(ad, k) {
 	const satir = el('div', 'kisi');
 	const etiket = el('span', 'etiket', 'bağlanıyor…');
-	const sus = el('button', 'kucuk bosluk', '🔊');
+	const sus = el('button', 'kucuk bosluk sus', '🔊');
 	sus.type = 'button';
 	sus.title = 'Bu kişiyi sustur/aç';
+	sus.setAttribute('aria-label', ad + ' kişisini sustur veya aç');
 	const ses = el('audio');
 	ses.autoplay = true;
 	const seviye = el('input', 'ses');
 	Object.assign(seviye, { type: 'range', min: 0, max: 100, value: 100, title: 'Ses seviyesi' });
+	seviye.setAttribute('aria-label', ad + ' kişisinin ses seviyesi');
 	sus.onclick = () => {
 		ses.muted = !ses.muted;
 		sus.classList.toggle('kapali', ses.muted);
@@ -295,21 +355,55 @@ function satirOlustur(ad, k) {
 	Object.assign(k, { satir, ses, etiket });
 }
 
-// Kendi mikrofonunun seviyesi. Analiz yalnızca ölçer; gönderilen ses WebAudio'dan geçmez.
-function seviyeOlcer(akis, yazi, satir) {
+// Tarayıcı sesi kendiliğinden başlatmazsa (Safari, telefon) satıra bir kez basılacak "sesi aç" düğmesi ekler.
+function sesiBaslat(k) {
+	const basla = () =>
+		k.ses.play().then(() => {
+			if (k.sesDugmesi) {
+				k.sesDugmesi.remove();
+				k.sesDugmesi = null;
+			}
+		});
+	basla().catch(() => {
+		if (k.sesDugmesi) return;
+		const dugme = el('button', 'kucuk uyari', '🔈 sesi aç');
+		dugme.type = 'button';
+		dugme.title = 'Tarayıcı sesi kendiliğinden başlatmadı; bir kez buraya bas';
+		dugme.onclick = () => basla().catch(() => {});
+		const sus = k.satir.querySelector('.sus');
+		if (sus) sus.after(dugme);
+		else k.satir.append(dugme);
+		k.sesDugmesi = dugme;
+	});
+}
+
+// Ses seviyesi. Yalnızca ölçer; gönderilen/çalınan ses WebAudio'dan geçmez (geçseydi yankı ve
+// gürültü giderme kapanır, ses robotikleşirdi). yazi: kendi satırındaki "42%" yazısı (uzak kişide yok).
+// acikMi: mikrofon kapalı ya da kişi susturulmuşsa nokta yanmasın.
+function seviyeOlcer(akis, satir, yazi, acikMi) {
+	let ac = null;
 	try {
-		const ac = new AudioContext();
+		ac = new AudioContext();
 		const analiz = ac.createAnalyser();
 		analiz.fftSize = 256;
 		ac.createMediaStreamSource(akis).connect(analiz);
 		const veri = new Uint8Array(analiz.frequencyBinCount);
-		setInterval(() => {
+		const zaman = setInterval(() => {
 			analiz.getByteFrequencyData(veri);
 			const yuzde = Math.round((Math.max(...veri) / 255) * 100);
-			yazi.textContent = yuzde + '%';
-			satir.classList.toggle('konusuyor', yuzde > 35 && mikrofon.getAudioTracks()[0]?.enabled);
+			if (yazi) yazi.textContent = yuzde + '%';
+			satir.classList.toggle('konusuyor', yuzde > 35 && (!acikMi || acikMi()));
 		}, 200);
-	} catch {}
+		return {
+			dur() {
+				clearInterval(zaman);
+				satir.classList.remove('konusuyor');
+				if (ac) ac.close().catch(() => {});
+			},
+		};
+	} catch {
+		return { dur() {} };
+	}
 }
 
 // Her kişi için bağlantı türü (doğrudan / TURN aktarımı) ve gecikme.

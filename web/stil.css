@@ -16,14 +16,16 @@ body {
 	color: var(--yazi);
 	display: flex;
 	min-height: 100vh;
-	align-items: center;
-	justify-content: center;
+	padding: 16px;
 }
+/* Ortalama margin:auto ile: içerik ekrandan kısa olduğunda ortada durur, uzun olduğunda
+   (kalabalık oda, telefon) sayfa yukarıdan aşağı normal biçimde kaydırılır. */
 .kart {
 	background: var(--panel);
 	padding: 24px;
 	border-radius: 14px;
-	width: min(440px, 94vw);
+	width: min(440px, 100%);
+	margin: auto;
 	box-shadow: 0 6px 24px #0008;
 }
 h1 { font-size: 20px; margin: 0 0 4px; }
@@ -87,4 +89,17 @@ button.kucuk.kapali { color: var(--tehlike); border-color: var(--tehlike); }
 .etiket.aktarim { color: #e0b060; }
 .etiket.hata { color: var(--tehlike); }
 .seviye { font-size: 11px; color: var(--soluk); }
-.ses { width: 70px; accent-color: var(--vurgu); }
+/* Genel input kuralı (dolgu, kenarlık, koyu zemin) kaydırıcıya da uygulanınca metin kutusu gibi
+   görünüyordu; kaydırıcı kendi ince çubuğuyla çizilsin. */
+.kisi input.ses {
+	width: 84px;
+	height: 20px;
+	padding: 0;
+	border: 0;
+	background: none;
+	accent-color: var(--vurgu);
+	flex: none;
+}
+/* Dikkat isteyen küçük düğme (ör. tarayıcı sesi kendiliğinden başlatmadıysa "sesi aç"). */
+button.kucuk.uyari { color: var(--vurgu); border-color: var(--vurgu); }
+#durum.hata { color: var(--tehlike); }
