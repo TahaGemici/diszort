@@ -1,0 +1,6 @@
+# Derleme çıktıları
+/node_modules/
+/package-lock.json
+/veri/
+# Yerel ayarlar
+/.env

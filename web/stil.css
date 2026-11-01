@@ -1,0 +1,90 @@
+:root {
+	--zemin: #17100c;
+	--panel: #241a14;
+	--yazi: #e8ddd0;
+	--soluk: #9a8a7a;
+	--vurgu: #d9a05b;
+	--tehlike: #e06c5b;
+	--cizgi: #3a2e24;
+}
+* { box-sizing: border-box; }
+[hidden] { display: none !important; }
+body {
+	margin: 0;
+	font: 16px/1.45 system-ui, sans-serif;
+	background: var(--zemin);
+	color: var(--yazi);
+	display: flex;
+	min-height: 100vh;
+	align-items: center;
+	justify-content: center;
+}
+.kart {
+	background: var(--panel);
+	padding: 24px;
+	border-radius: 14px;
+	width: min(440px, 94vw);
+	box-shadow: 0 6px 24px #0008;
+}
+h1 { font-size: 20px; margin: 0 0 4px; }
+.alt { color: var(--soluk); font-size: 13px; margin: 0 0 10px; }
+label { display: block; font-size: 13px; color: var(--soluk); margin: 10px 0 4px; }
+input {
+	width: 100%;
+	padding: 10px;
+	border-radius: 8px;
+	border: 1px solid var(--cizgi);
+	background: var(--zemin);
+	color: var(--yazi);
+	font-size: 15px;
+}
+button {
+	width: 100%;
+	margin-top: 14px;
+	padding: 10px;
+	border-radius: 8px;
+	border: 0;
+	background: var(--vurgu);
+	color: var(--panel);
+	font-weight: 600;
+	font-size: 15px;
+	cursor: pointer;
+}
+button.ikincil { background: var(--cizgi); color: var(--yazi); }
+button:disabled { opacity: .5; cursor: not-allowed; }
+button.kucuk {
+	width: auto;
+	margin: 0;
+	padding: 4px 8px;
+	font-size: 12px;
+	font-weight: 400;
+	background: none;
+	border: 1px solid var(--cizgi);
+	color: var(--yazi);
+	border-radius: 6px;
+}
+button.kucuk.kapali { color: var(--tehlike); border-color: var(--tehlike); }
+.baslik { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 8px; }
+.baslik b { overflow-wrap: anywhere; }
+#durum { margin: 10px 0 0; font-size: 13px; color: var(--soluk); min-height: 20px; }
+#kisiler { display: flex; flex-direction: column; gap: 6px; }
+.kisi {
+	display: flex;
+	align-items: center;
+	flex-wrap: wrap;
+	gap: 6px 8px;
+	background: var(--zemin);
+	border-radius: 8px;
+	padding: 8px 10px;
+	font-size: 14px;
+}
+.kisi .ad { min-width: 70px; overflow-wrap: anywhere; }
+.kisi .bosluk { margin-left: auto; }
+.nokta { width: 8px; height: 8px; border-radius: 50%; background: #7ec27e; box-shadow: 0 0 6px #7ec27e88; flex: none; }
+.konusuyor .nokta { background: var(--vurgu); box-shadow: 0 0 8px var(--vurgu); }
+.etiket { font-size: 11px; padding: 2px 6px; border-radius: 6px; background: var(--cizgi); color: #c9bfae; }
+.etiket.dogrudan { color: #8fd18f; }
+.etiket.aktarim { color: #e0b060; }
+.etiket.hata { color: var(--tehlike); }
+.seviye { font-size: 11px; color: var(--soluk); }
+.ses { width: 70px; accent-color: var(--vurgu); }

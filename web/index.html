@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="tr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark">
+<title>Ses Kanalı</title>
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="icon" href="/favicon.ico" sizes="48x48">
+<link rel="stylesheet" href="/stil.css">
+<script src="/ana.js" defer></script>
+</head>
+<body>
+<main class="kart">
+	<h1>🔊 Ses Kanalı</h1>
+	<p class="alt">Hesap yok: adını yaz, odaya gir, konuş. Odada en fazla <span id="max">10</span> kişi olur.</p>
+
+	<form id="giris">
+		<label for="ad">Adın</label>
+		<input id="ad" placeholder="örn. taha" maxlength="32" autocomplete="nickname" required>
+		<label for="oda">Oda</label>
+		<input id="oda" placeholder="örn. muhabbet" maxlength="64" required>
+		<button id="gir" type="submit">Odaya gir</button>
+	</form>
+
+	<section id="kanal" hidden>
+		<div class="baslik">
+			<b id="oda-adi"></b>
+			<button id="kopyala" class="kucuk" type="button" title="Oda bağlantısını kopyala">🔗 Bağlantı</button>
+		</div>
+		<div id="kisiler"></div>
+		<button id="ayril" class="ikincil" type="button">Kanaldan çık</button>
+	</section>
+
+	<p id="durum" role="status" aria-live="polite"></p>
+	<noscript><p>Bu sayfa JavaScript ister.</p></noscript>
+</main>
+</body>
+</html>

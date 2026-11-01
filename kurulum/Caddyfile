@@ -1,0 +1,10 @@
+# /etc/caddy/Caddyfile — Ses Kanalı'nın önündeki HTTPS. Konteyner sunucunun 127.0.0.1:8080 adresini dinler.
+# "chat.ornek.com" yerine kendi alan adını yaz, sonra:  sudo systemctl reload caddy
+# Caddy sertifikayı otomatik alır/yeniler ve /rtc WebSocket bağlantısını kendiliğinden taşır.
+# Mikrofon izni yalnızca HTTPS'te çalışır.
+
+chat.ornek.com {
+	encode zstd gzip
+	reverse_proxy 127.0.0.1:8080
+	header Strict-Transport-Security "max-age=31536000"
+}

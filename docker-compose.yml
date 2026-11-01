@@ -1,0 +1,15 @@
+# Yerel ve elle kullanım içindir:   docker compose up --build -d   ->  http://127.0.0.1:8080
+#
+# Sunucuya kurulumda kur.sh bunu değil, kendi yazdığı /var/lib/chat/docker-compose.yml dosyasını
+# kullanır: imajı burada derlemek yerine ghcr.io'dan çeker, ayarları /var/lib/chat/.env'den alır.
+services:
+  ses-kanali:
+    build: .
+    image: ses-kanali:yerel
+    container_name: ses-kanali
+    # TURN çok sayıda UDP portu kullanır ve gerçek IP'yi duyurması gerekir; köprü ağı olmaz.
+    network_mode: host
+    restart: unless-stopped
+    volumes:
+      # .env yoksa da çalışır (varsayılanlar: HOST=127.0.0.1, PORT=8080, TURN_PORT=3478).
+      - ./veri:/veri

@@ -1,0 +1,12 @@
+# İmaja girmeyecekler: imaj yalnızca sunucu/ ve web/ içerir.
+.git
+.github
+kurulum
+test
+node_modules
+veri
+cikti
+*.zip
+README.md
+Makefile
+docker-compose.yml

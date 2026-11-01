@@ -1,0 +1,29 @@
+# Ses Kanalı — derleme
+#   make           kendi bilgisayarında node ile çalıştırır (node, npm ve coturn gerekir) -> http://127.0.0.1:8080
+#   make test      çalışan sunucuyu dener (ADRES=http://... ile başka bir adres)
+#   make docker    Docker imajını derleyip çalıştırır -> http://127.0.0.1:8080
+#   make durdur    Docker konteynerini durdurur
+#   make temizle   node_modules ve yerel veri/ çıktısını siler
+
+ADRES ?= http://127.0.0.1:8080
+
+calistir: node_modules
+	node sunucu/sunucu.js
+
+node_modules: package.json
+	npm install --no-audit --no-fund
+	touch node_modules
+
+test:
+	node test/dene.js $(ADRES)
+
+docker:
+	docker compose up --build -d
+
+durdur:
+	docker compose down
+
+temizle:
+	rm -rf node_modules veri
+
+.PHONY: calistir test docker durdur temizle

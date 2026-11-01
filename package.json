@@ -1,0 +1,16 @@
+{
+  "name": "ses-kanali",
+  "private": true,
+  "description": "Hesapsız, tarayıcıdan girilen sesli oda (mesh WebRTC + coturn)",
+  "license": "MIT",
+  "scripts": {
+    "start": "node sunucu/sunucu.js",
+    "test": "node test/dene.js"
+  },
+  "dependencies": {
+    "ws": "^8.18.0"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

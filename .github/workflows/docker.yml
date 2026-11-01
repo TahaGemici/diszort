@@ -1,0 +1,103 @@
+# Ses Kanalı: main'e her push'ta Docker imajı derlenir, kur.sh ile uçtan uca denenir,
+# ghcr.io'ya (v1, v2, ... ve latest) yüklenir ve kur.sh GitHub sürümü olarak yayınlanır.
+#
+# Sunucuda kurmak, başlatmak ve güncellemek (tek komut, son sürümü çeker):
+#   curl -fsSL https://github.com/KULLANICI/DEPO/releases/latest/download/kur.sh | sudo sh
+name: docker
+
+on:
+  push:
+    branches: [main]
+    paths-ignore: ['**.md']
+  workflow_dispatch:
+
+concurrency:
+  group: docker # sürümler sırayla çıksın
+  cancel-in-progress: false
+
+env:
+  SURUM: v${{ github.run_number }}
+
+defaults:
+  run:
+    shell: bash # -e -o pipefail: borudaki bir komut hata verirse adım da başarısız olur
+
+jobs:
+  derle:
+    name: Derle, dene, yayınla
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write # GitHub sürümü
+      packages: write # ghcr.io
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Sözdizimi
+        run: |
+          node --check sunucu/sunucu.js
+          node --check web/ana.js
+          node --check test/dene.js
+          sh -n kurulum/kur.sh
+          docker compose -f docker-compose.yml config --quiet
+
+      - name: Deneme bağımlılığı (test/dene.js için ws)
+        run: npm install --no-audit --no-fund
+
+      - name: İmajı derle
+        run: docker build --build-arg SURUM="$SURUM" -t "ses-kanali:$SURUM" .
+
+      - name: kur.sh ile kur (yerel imaj)
+        run: |
+          sudo sh -c "IMAJ=ses-kanali:$SURUM sh kurulum/kur.sh" | tee kur.log
+          grep -q 'Ayar dosyası oluşturuldu' kur.log
+          grep -q 'Docker konteynerinde çalışıyor' kur.log
+
+      - name: Web, signaling, STUN ve TURN
+        run: |
+          node test/dene.js http://127.0.0.1:8080
+          sudo docker top ses-kanali -o pid,uid,comm | tee ps.log
+          # Kök olmayan kullanıcı (imaj: uid 1000) ile çalışmalı
+          grep -Eq '^ *[0-9]+ +1000 +node$' ps.log
+          grep -Eq '^ *[0-9]+ +1000 +turnserver$' ps.log
+
+      - name: Durdurunca düzgün kapanıyor mu
+        run: |
+          sudo docker stop ses-kanali
+          sudo docker logs ses-kanali | tee gunluk.log
+          grep -q 'Kapanıyor (SIGTERM)' gunluk.log
+          KOD=$(sudo docker inspect -f '{{.State.ExitCode}}' ses-kanali)
+          if [ "$KOD" != 0 ]; then echo "düzgün kapanmadı (çıkış kodu $KOD)"; exit 1; fi
+
+      - name: Yeniden kurulumda .env kalır
+        run: |
+          echo 'MAX_KISI=7' | sudo tee -a /var/lib/chat/.env
+          sudo sh -c "IMAJ=ses-kanali:$SURUM sh kurulum/kur.sh" | tee kur2.log
+          if grep -q 'Ayar dosyası oluşturuldu' kur2.log; then echo ".env yeniden oluşturuldu"; exit 1; fi
+          sudo grep -q '^MAX_KISI=7' /var/lib/chat/.env
+          MAX_KISI=7 node test/dene.js http://127.0.0.1:8080
+
+      - name: ghcr.io'ya yükle
+        if: github.ref == 'refs/heads/main'
+        run: |
+          IMAJ=ghcr.io/$(printf '%s' "$GITHUB_REPOSITORY" | tr 'A-Z' 'a-z')
+          echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+          docker tag "ses-kanali:$SURUM" "$IMAJ:$SURUM"
+          docker tag "ses-kanali:$SURUM" "$IMAJ:latest"
+          docker push "$IMAJ:$SURUM"
+          docker push "$IMAJ:latest"
+
+      - name: GitHub sürümü (kur.sh)
+        if: github.ref == 'refs/heads/main'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          sed "s|^DEPO=.*|DEPO=$GITHUB_REPOSITORY|" kurulum/kur.sh > kur.sh
+          sh -n kur.sh
+          IMAJ=ghcr.io/$(printf '%s' "$GITHUB_REPOSITORY" | tr 'A-Z' 'a-z')
+          NOTLAR=$(printf 'Kurmak ya da güncellemek için sunucuda:\n\n    curl -fsSL https://github.com/%s/releases/latest/download/kur.sh | sudo sh\n\nBu sürüme dönmek için sonuna `-s %s` ekle. İmaj: %s:%s' "$GITHUB_REPOSITORY" "$SURUM" "$IMAJ" "$SURUM")
+          if gh release view "$SURUM" >/dev/null 2>&1; then # aynı çalıştırma yeniden denendiyse
+            gh release upload "$SURUM" kur.sh --clobber
+          else
+            gh release create "$SURUM" kur.sh --target "$GITHUB_SHA" --title "${GH_REPO#*/} $SURUM" --notes "$NOTLAR"
+          fi
