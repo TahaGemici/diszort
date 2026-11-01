@@ -65,6 +65,7 @@ jobs:
         run: |
           set -e
           ONCE=$(curl -fsS http://127.0.0.1:8080/saglik | sed -n 's/.*"mesaj":\([0-9]*\).*/\1/p')
+          echo "yeniden başlatmadan önce mesaj: ${ONCE:-yok}"
           test "${ONCE:-0}" -gt 0
           sudo docker restart ses-kanali
           YENI=
@@ -73,8 +74,8 @@ jobs:
             YENI=$(curl -fsS http://127.0.0.1:8080/saglik | sed -n 's/.*"mesaj":\([0-9]*\).*/\1/p') || true
             [ -n "$YENI" ] && break
           done
+          echo "yeniden başlatmadan sonra mesaj: ${YENI:-yok}"
           test "${YENI:-0}" -ge "$ONCE"
-          echo "mesaj: $ONCE -> $YENI"
           test -f /var/lib/chat/sohbet.db
           test -d /var/lib/chat/yuklemeler
           sudo docker logs ses-kanali | grep -q '\[veritabanı\]'
