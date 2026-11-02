@@ -263,7 +263,7 @@ async function turnAl(port, kullanici, sifre) {
 		const istek = await yonetici.bekle((m) => m.type === 'giris-istegi' && m.ad === 'ayse-' + kimlik);
 		yonetici.yolla({ type: 'giris-karari', id: istek.id, kabul: true });
 		const h = await ws.bekle('hazir');
-		assert.match(h.anahtar, /^[0-9a-f]{48}$/, 'kişiye özel anahtar üretilmeli');
+		assert.match(h.anahtar, /^[0-9a-f]{128}$/, 'kişiye özel anahtar üretilmeli (512 bit)');
 		assert.equal(h.ad, 'ayse-' + kimlik);
 		ws.close();
 		onaylananlar.add('ayse-' + kimlik);
@@ -290,7 +290,7 @@ async function turnAl(port, kullanici, sifre) {
 
 	await dene('beyaz liste: geçersiz anahtar kapıyı çaldırır (anahtarGecersiz)', async () => {
 		const ws = await istemci();
-		ws.yolla({ type: 'giris', ad: 'sahte-' + kimlik, id: 's1', anahtar: 'f'.repeat(48) });
+		ws.yolla({ type: 'giris', ad: 'sahte-' + kimlik, id: 's1', anahtar: 'f'.repeat(128) });
 		const bekle = await ws.bekle('bekleniyor');
 		assert.equal(bekle.anahtarGecersiz, true, 'geçersiz anahtar bildirilmeli');
 		ws.close();
@@ -334,6 +334,34 @@ async function turnAl(port, kullanici, sifre) {
 		const bekle = await ws2.bekle('bekleniyor');
 		assert.equal(bekle.anahtarGecersiz, true, 'iptal edilen anahtar geçersiz olmalı');
 		ws2.close();
+	});
+
+	await dene('beyaz liste: hatalı denemeden sonra 10 saniye beklenir', async () => {
+		const ws = await istemci();
+		ws.yolla({ type: 'giris', ad: 'bekle-' + kimlik, id: 'w1', anahtar: 'e'.repeat(128) });
+		const ilk = await ws.bekle((m) => m.type === 'bekleniyor' || m.type === 'giris-red');
+		assert.ok(ilk, 'ilk hatalı deneme işlenmeli');
+		// Bekleme süresi dolmadan gelen ikinci deneme sunucuda reddedilmeli.
+		ws.yolla({ type: 'giris', ad: 'bekle-' + kimlik, id: 'w1', anahtar: 'd'.repeat(128) });
+		const red = await ws.bekle('giris-red', 2000);
+		assert.match(red.message, /saniye beklemelisin/, 'bekleme mesajı gelmeli');
+		ws.close();
+		await new Promise((r) => setTimeout(r, 200));
+	});
+
+	await dene('beyaz liste: kişi limiti arttırılıp azaltılabilir', async () => {
+		const once = yonetici.hazir.maxKullanici;
+		const hedef = once >= 50 ? once - 1 : once + 1;
+		yonetici.yolla({ type: 'kisi-limiti', deger: hedef });
+		const degisti = await yonetici.bekle((m) => m.type === 'kimler' && m.maxKullanici === hedef);
+		assert.equal(degisti.maxKullanici, hedef, 'limit değişmeli');
+		// Sınır dışı değer reddedilir.
+		yonetici.yolla({ type: 'kisi-limiti', deger: 1 });
+		const hata = await yonetici.bekle((m) => m.type === 'hata' && /arasında/.test(m.message || ''));
+		assert.ok(hata, 'sınır dışı değer reddedilmeli');
+		// Geri al (değer veritabanına yazılır, yeniden başlatmada korunur).
+		yonetici.yolla({ type: 'kisi-limiti', deger: once });
+		await yonetici.bekle((m) => m.type === 'kimler' && m.maxKullanici === once);
 	});
 
 	await dene('web sayfası', async () => {
@@ -540,6 +568,13 @@ async function turnAl(port, kullanici, sifre) {
 
 	await dene('sesli kanal dolunca reddedilir', async () => {
 		const max = Number(process.env.MAX_KISI || 10);
+		// Beyaz liste limiti bu testin kişi sayısına yetmiyorsa geçici olarak yükselt (sonunda geri alınır).
+		const kisiLimiti = yonetici.hazir.maxKullanici;
+		const gecici = Math.min(50, max + 3);
+		if (kisiLimiti < max + 2) {
+			yonetici.yolla({ type: 'kisi-limiti', deger: gecici });
+			await yonetici.bekle((m) => m.type === 'kimler' && m.maxKullanici === gecici);
+		}
 		// Hayalet üye kalmasın: sesli kanallar boşalana kadar bekle.
 		for (let i = 0; i < 40; i++) {
 			const s = await (await fetch(ADRES + '/saglik')).json();
@@ -557,6 +592,11 @@ async function turnAl(port, kullanici, sifre) {
 		fazla.yolla({ type: 'ses-gir', kanal: SES_KANAL });
 		assert.match((await fazla.bekle('hata')).message, /dolu/);
 		for (const w of [...acik, fazla]) w.close();
+		// Geçici olarak yükseltilen kişi limitini geri al.
+		if (kisiLimiti < max + 2) {
+			yonetici.yolla({ type: 'kisi-limiti', deger: kisiLimiti });
+			await yonetici.bekle((m) => m.type === 'kimler' && m.maxKullanici === kisiLimiti);
+		}
 	});
 
 

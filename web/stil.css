@@ -644,6 +644,21 @@ video.onizleme, audio.onizleme { cursor: default; }
 }
 .istek-dugmeler button.red { background: #3a2224; color: #ffb3b5; }
 .bolum-bilgi { font-size: 11px; color: var(--soluk); padding: 8px 8px 0; }
+.limit-satir { display: flex; align-items: center; gap: 6px; }
+.limit-dugme {
+	width: 22px;
+	height: 22px;
+	padding: 0;
+	line-height: 1;
+	border-radius: 6px;
+	border: 1px solid var(--cizgi);
+	background: none;
+	color: var(--yazi);
+	font-size: 14px;
+	cursor: pointer;
+}
+.limit-dugme:disabled { opacity: 0.35; cursor: default; }
+.limit-dugme:not(:disabled):hover { background: var(--secili, #2a2a2e); }
 #giris-iptal {
 	width: 100%;
 	margin-top: 8px;

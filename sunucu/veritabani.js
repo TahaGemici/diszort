@@ -48,6 +48,12 @@ CREATE TABLE IF NOT EXISTS dosya (
 	tur TEXT NOT NULL,
 	zaman INTEGER NOT NULL
 );
+
+-- Basit anahtar/değer ayarları (ör. kisi_limiti). .env yalnızca varsayılanı verir; buradaki değer onu geçersiz kılar.
+CREATE TABLE IF NOT EXISTS ayar (
+	ad TEXT PRIMARY KEY,
+	deger TEXT NOT NULL
+);
 `;
 
 function sayi(deger) {
@@ -170,6 +176,19 @@ function ac(klasor) {
 
 		async kisiSil(ad) {
 			await calistir('DELETE FROM kisi WHERE ad = ?', [ad]);
+		},
+
+		// --- basit ayarlar (anahtar/değer). Örn. kişi limiti beyaz listedekiler tarafından değiştirilir.
+		async ayarOku(ad) {
+			const satir = await tek('SELECT deger FROM ayar WHERE ad = ?', [ad]);
+			return satir ? satir.deger : null;
+		},
+
+		async ayarYaz(ad, deger) {
+			await calistir('INSERT INTO ayar (ad, deger) VALUES (?, ?) ON CONFLICT(ad) DO UPDATE SET deger = excluded.deger', [
+				ad,
+				String(deger),
+			]);
 		},
 
 		// --- kanallar (yazılı/sesli). Kanal listesi veritabanında tutulur; mesajlar 'kanal' id'siyle bağlanır.

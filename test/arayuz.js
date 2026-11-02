@@ -215,14 +215,14 @@ const kanallar = [
 		beyazListe: 2,
 		dosyaMb: 25,
 		jeton: 'a'.repeat(32),
-		anahtar: 'f'.repeat(48),
+		anahtar: 'f'.repeat(128),
 	};
 	s.oc.ws.onmessage({ data: JSON.stringify(hazir) });
 	await bekle(60);
 
 	denetle('giriş ekranı kapandı', d.getElementById('giris-ekrani').hidden);
 	denetle('uygulama açıldı', !d.getElementById('uygulama').hidden);
-	denetle('verilen anahtar localStorage’a yazıldı', w.localStorage.getItem('anahtar') === 'f'.repeat(48));
+	denetle('verilen anahtar localStorage’a yazıldı', w.localStorage.getItem('anahtar') === 'f'.repeat(128));
 	denetle('kendi adı yazıldı', d.getElementById('ben-ad').textContent === 'taha', d.getElementById('ben-ad').textContent);
 	denetle('yazılı kanallar çizildi', d.querySelectorAll('#yazi-kanallari .kanal-satir').length === 2, String(d.querySelectorAll('#yazi-kanallari .kanal-satir').length));
 	denetle('sesli kanallar çizildi', d.querySelectorAll('#ses-kanallari .kanal-satir').length === 2, String(d.querySelectorAll('#ses-kanallari .kanal-satir').length));
@@ -343,6 +343,21 @@ const kanallar = [
 	await bekle(30);
 	const atMesaji = s.oc.gonderilen.filter((m) => m.type === 'at').at(-1);
 	denetle('at mesajı gönderildi', atMesaji && atMesaji.ad === 'bora', JSON.stringify(atMesaji));
+
+	// --- 10b) kişi limiti arttır/azalt (beyaz listedekiler)
+	denetle('limit düğmeleri etkin', !d.getElementById('limit-cok').disabled && !d.getElementById('limit-az').disabled);
+	d.getElementById('limit-cok').dispatchEvent(new w.MouseEvent('click', { bubbles: true }));
+	await bekle(20);
+	const limitArti = s.oc.gonderilen.filter((m) => m.type === 'kisi-limiti').at(-1);
+	denetle('limit arttırma mesajı gönderildi', limitArti && limitArti.deger === 11, JSON.stringify(limitArti));
+	// Sunucu yeni limiti duyurur → gösterge güncellenmeli.
+	s.oc.ws.onmessage({ data: JSON.stringify({ type: 'kimler', kimler: [], beyazListe: 2, maxKullanici: 11 }) });
+	await bekle(20);
+	denetle('limit göstergesi güncellendi', /2\/11/.test(d.getElementById('beyaz-liste').textContent), d.getElementById('beyaz-liste').textContent);
+	d.getElementById('limit-az').dispatchEvent(new w.MouseEvent('click', { bubbles: true }));
+	await bekle(20);
+	const limitEksi = s.oc.gonderilen.filter((m) => m.type === 'kisi-limiti').at(-1);
+	denetle('limit azaltma mesajı gönderildi', limitEksi && limitEksi.deger === 10, JSON.stringify(limitEksi));
 
 	// --- 11) sesli kanala gir
 	const sesDugme = [...d.querySelectorAll('#ses-kanallari .kanal')].find((b) => b.textContent.includes('Sesli Sohbet'));

@@ -475,6 +475,8 @@ function uyeleriCiz() {
 		kap.append(d);
 	}
 	$('beyaz-liste').textContent = beyazListe ? `Beyaz liste ${beyazListe}/${maxKullanici}` : '';
+	$('limit-az').disabled = !bagliyim || maxKullanici <= 2;
+	$('limit-cok').disabled = !bagliyim || maxKullanici >= 50;
 	cevrimiciSayaci();
 }
 
@@ -602,6 +604,16 @@ document.addEventListener('keydown', (e) => {
 });
 $('yazi-ekle').addEventListener('click', () => kanalEkleIste('yazi'));
 $('ses-ekle').addEventListener('click', () => kanalEkleIste('ses'));
+
+// Kişi limiti: beyaz listedekiler arttırıp azaltabilir (sunucu değeri veritabanına yazar).
+$('limit-az').addEventListener('click', () => kisiLimitiDegistir(-1));
+$('limit-cok').addEventListener('click', () => kisiLimitiDegistir(1));
+
+function kisiLimitiDegistir(fark) {
+	const yeni = Math.min(50, Math.max(2, maxKullanici + fark));
+	if (yeni === maxKullanici) return;
+	gonder({ type: 'kisi-limiti', deger: yeni });
+}
 
 // ---------------------------------------------------------------- sohbet
 
@@ -1371,3 +1383,4 @@ window.addEventListener('pagehide', () => {
 window.addEventListener('beforeunload', () => {
 	if (mikrofon) mikrofon.getTracks().forEach((t) => t.stop());
 });
+

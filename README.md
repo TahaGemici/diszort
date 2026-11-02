@@ -5,7 +5,9 @@ dosya paylaşılabilir) + **sesli kanallar** (ses tarayıcılar arasında doğru
 
 - **Giriş (beyaz liste):** Adını yazarsın; içerideki herkese *"X girmek istiyor"* diye sorulur. Biri kabul
   ederse sana **yalnızca sende olan bir anahtar** verilir ve tarayıcında saklanır — sonraki girişlerde soru
-  sorulmaz. Reddedilirsen ya da içeride kimse yoksa giremezsin. En fazla **10 kişi** (`.env`: `MAX_KULLANICI`).
+  sorulmaz. Reddedilirsen ya da içeride kimse yoksa giremezsin. Beyaz liste en fazla **10 kişi** alır
+  (`.env`: `MAX_KULLANICI`); içeridekiler bu limiti sağdaki **− / +** düğmeleriyle arttırıp azaltabilir
+  (değer veritabanına yazılır, yeniden başlatmada korunur).
 - **Atma:** İçeridekiler birbirini atabilir (sağdaki üye listesinde `✕`); atılanın anahtarı iptal edilir.
 - **İlk anahtar:** Beyaz liste boşken sunucu ilk anahtarı üretir ve `/var/lib/chat/ilk-anahtar.txt` dosyasına
   yazar. Bağlantıyı bir kez açmak yeter: `https://…/#anahtar=<anahtar>` anahtarı tarayıcıya kaydeder.
@@ -130,15 +132,15 @@ docker compose down
 
 Adresi iki sekmede aç. (Tarayıcılar mikrofonu yalnızca HTTPS'te ya da `localhost`/`127.0.0.1`'de verir.)
 Çalışan bir sunucuyu dışarıdan denemek için: `make test` (ya da `node test/dene.js http://adres:port`).
-25 deneme yapılır: beyaz liste (anahtarlı giriş, kapıyı çalma, kabul/red, geçersiz anahtar, kimse yokken
-giriş, atma, liste doluluğu) + web sayfası, sağlık, `/api/ice`, STUN, TURN (doğru/yanlış şifre), giriş, yazılı sohbet
+27 deneme yapılır: beyaz liste (anahtarlı giriş, kapıyı çalma, kabul/red, geçersiz anahtar, kimse yokken
+giriş, atma, liste doluluğu, hatalı denemede 10 sn bekleme, kişi limitini değiştirme) + web sayfası, sağlık, `/api/ice`, STUN, TURN (doğru/yanlış şifre), giriş, yazılı sohbet
 (gönderme, iletme, geçmiş, hız sınırı), dosya paylaşımı (yetki, yükleme, indirme), sesli kanal signaling'i,
 aynı ad reddi, kanal doluluğu, kanal ekleme/silme (yazılı + sesli, doğrulama) ve çık-gir sonrası yeniden
 bağlanma. **Not:** denemeler gerçek veritabanına birkaç `(deneme)` mesajı ve küçük
 bir dosya bırakır.
 
 Arayüzü de tarayıcı açmadan deneyebilirsin: `make arayuz` (jsdom; giriş, kanal ekleme/silme penceresi,
-kanal seçimi, mesaj çizimi, giriş istekleri, atma, bağlantı istatistikleri, çık-gir — toplam 83 denetim).
+kanal seçimi, mesaj çizimi, giriş istekleri, atma, kişi limiti düğmeleri, bağlantı istatistikleri, çık-gir — toplam 87 denetim).
 Bu VPS'te gerçek tarayıcı çalıştırılmaz.
 
 ## Nasıl çalışır
@@ -159,16 +161,20 @@ tarayıcı ──UDP 3478──> coturn (konteynerde, sunucu.js başlatır) ─�
 - **Konteyner:** Tek süreç: `sunucu.js` web sayfasını, sohbeti, dosyaları ve signaling'i yönetir; coturn'ü
   kendisi başlatıp izler (biri düşerse konteyner iki saniyede yeniden başlar). Kök olmayan kullanıcı
   (uid 1000) ile çalışır. Sunucunun ağını paylaşır (`network_mode: host`): TURN çok sayıda UDP portu kullanır.
-- **Beyaz liste:** `kisi` tablosu (`ad` birincil anahtar, `anahtar` kişiye özel). Onayda anahtar üretilir;
-  aynı ad yeniden onaylanırsa anahtar döner (cihaz değişti). Anahtar `localStorage`'da tutulur, HTTPS
-  üzerinden gönderilir. Giriş denemeleri IP başına dakikada 100 ile, atma işlemleri 60 ile sınırlı.
+- **Beyaz liste:** `kisi` tablosu (`ad` birincil anahtar, `anahtar` kişiye özel). Onayda **512 bit**
+  (128 hex) anahtar üretilir; aynı ad yeniden onaylanırsa anahtar döner (cihaz değişti). Anahtar
+  `localStorage`'da tutulur, HTTPS üzerinden gönderilir. Hatalı anahtar denemesinden sonra o bağlantı
+  **10 saniye** yeni deneme yapamaz; 6 hatalı denemeden sonra bağlantı düşürülür (IP takibi yapılmaz).
+  Kapıyı çalma istekleri IP başına dakikada 600 ile, atma işlemleri 60 ile sınırlı. Kişi limiti
+  çalışırken değiştirilebilir (`ayar` tablosunda `kisi_limiti`); `.env` yalnızca varsayılanı verir.
 - **Kanallar:** Veritabanındaki `kanal` tablosunda (id, ad, tur, sıra). İlk kurulumda varsayılanlar
   yazılır; sonrasında arayüzden eklenip silinir (en fazla 40, ad 24 karakter, aynı türde aynı ad yok).
   Kanal kimliği addan üretilir ("Sesli Sohbet" → `sesli-sohbet`), çakışırsa sonuna sayı eklenir.
   Silme: yazılı kanalın mesaj/dosya kayıtları silinir ve dosyaları diskten kaldırılır; sesli kanaldaysa
   içindekilere `ses-kapatildi` gönderilir. Son yazılı/sesli kanal silinemez.
 - **Veritabanı:** `sunucu/veritabani.js`, `sohbet.db` (WAL). Tablolar: `mesaj` (kanal, ad, metin, dosya_id,
-  zaman) ve `dosya` (id, kanal, ad, boyut, tur, zaman). Ölçek küçük: tek dosya, indeks `(kanal, id)`.
+  zaman), `dosya` (id, kanal, ad, boyut, tur, zaman), `kisi` (beyaz liste), `kanal` (kanal listesi) ve
+  `ayar` (ad, deger — çalışırken değişen ayarlar, ör. `kisi_limiti`). Ölçek küçük: tek dosya, indeks `(kanal, id)`.
 - **Dosya güvenliği:** yükleme `Authorization: Bearer <jeton>` ister (jeton oturum açınca verilir, sayfa
   yenilenince yenilenir). Dosya adı temizlenir, dosyalar `<id>` olarak saklanır (yol oyunu imkânsız),
   yalnızca resim/ses/video uzantıları satır içi sunulur; HTML/SVG gibi türler `Content-Disposition: attachment`
@@ -188,6 +194,7 @@ tarayıcı ──UDP 3478──> coturn (konteynerde, sunucu.js başlatır) ─�
 | `giris-iptal` | kapıyı çalan isteğini geri çeker |
 | `at {ad}` | kişiyi beyaz listeden atar (anahtarı iptal edilir, bağlantısı düşer) |
 | `beyaz-liste` | beyaz listeyi ister (içeridekiler görebilir) |
+| `kisi-limiti {deger}` | beyaz listedekiler kişi limitini değiştirir (2–50; veritabanına yazılır, herkese duyurulur) |
 | `yazi {kanal, metin}` | yazılı kanala mesaj gönder (veritabanına yazılır, herkese iletilir) |
 | `gecmis {kanal, once}` | son 50 mesaj; `once` verilirse ondan daha eskiler |
 | `yaziyor {kanal}` | "yazıyor" göstergesi |
@@ -204,7 +211,7 @@ tarayıcı ──UDP 3478──> coturn (konteynerde, sunucu.js başlatır) ─�
 | `giris-red {message}` | giriş reddedildi (dolu, kimse yok, istek reddedildi…) |
 | `giris-istegi {id, ad}` / `istek-kapandi {id, kabul}` | içeridekilere gelen onay isteği ve sonucu |
 | `atildi {message}` | beyaz listeden atıldın (anahtarın iptal edildi) |
-| `kanallar` / `kimler` | kanal doluluğu / çevrimiçi kişiler değişti |
+| `kanallar` / `kimler` | kanal doluluğu / çevrimiçi kişiler değişti (`kimler` ayrıca `beyazListe` ve `maxKullanici` taşır) |
 | `yazi {kanal, mesaj}` / `gecmis {kanal, mesajlar, bitti}` | yeni mesaj / geçmiş |
 | `yaziyor`, `sessiz` | göstergeler |
 | `ses-girdi {kanal, kisiler}`, `ses-kisi-girdi`, `ses-kisi-cikti` | sesli kanal üyeleri |
@@ -225,8 +232,8 @@ Her çiftte teklifi adı alfabetik olarak büyük olan yapar (çakışma olmaz).
 | `sunucu/veritabani.js` | SQLite (mesaj + dosya kayıtları) |
 | `web/` | arayüz (`index.html`, `ana.js`, `stil.css`, simgeler) |
 | `.env.example` | ayarlar (sunucuda `/var/lib/chat/.env`) |
-| `test/dene.js` | çalışan sunucuyu uçtan uca dener (25 deneme) |
-| `test/arayuz.js` | arayüzü tarayıcısız dener (jsdom; 83 denetim) |
+| `test/dene.js` | çalışan sunucuyu uçtan uca dener (27 deneme) |
+| `test/arayuz.js` | arayüzü tarayıcısız dener (jsdom; 87 denetim) |
 | `.github/workflows/docker.yml` | push → derle, `kur.sh` ile dene, ghcr.io'ya yükle, sürüm çıkar |
 
 ## Sınırlar
