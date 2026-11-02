@@ -103,7 +103,17 @@ function kur({ url = 'https://chat.deneme/', depo = {} } = {}) {
 			this.localDescription = { type: 'offer', sdp: 'v=0' };
 			this.signalingState = 'have-local-offer';
 		}
-		async setRemoteDescription() {}
+		async setRemoteDescription(aciklama) {
+			this.remoteDescription = aciklama;
+			// Tarayıcı gibi: teklifteki ses m-line'ı için transceiver oluşur, varsayılan yön recvonly.
+			if (aciklama && aciklama.type === 'offer' && !this._transceivers.length) {
+				const tr = { mid: '0', direction: 'recvonly', receiver: { track: { kind: 'audio' } }, sender: { track: null, setStreams() {} } };
+				tr.sender.replaceTrack = async (t) => {
+					tr.sender.track = t;
+				};
+				this._transceivers.push(tr);
+			}
+		}
 		async addIceCandidate() {}
 		async getStats() {
 			// Artan sayaçlar: kayıp/bit hızı iki ölçüm arasındaki farktan hesaplanır.
@@ -386,6 +396,20 @@ const kanallar = [
 	denetle('ses kanalı sendrecv', !!(ilkTr && ilkTr.direction === 'sendrecv'), ilkTr && ilkTr.direction);
 	denetle('mikrofon düğmesi açıldı', d.getElementById('ben-mikrofon').disabled === false);
 	denetle('sessiz durumu bildirildi', s.oc.gonderilen.some((m) => m.type === 'sessiz'));
+
+	// Yanıtlayan taraf (adı büyük olan teklif eder → 'zeynep' > 'taha'): transceiver'ı ÖNCEDEN açmamalı,
+	// teklifteki m-line'ın transceiver'ını sendrecv'e çevirip mikrofonu ona bağlamalı.
+	// (Önceden açılan transceiver m-line ile eşleşmiyordu → yanıt recvonly → tek yönlü ses.)
+	s.oc.ws.onmessage({ data: JSON.stringify({ type: 'ses-kisi-girdi', ad: 'zeynep' }) });
+	await bekle(40);
+	const yPc = s.FakePC.hepsi[s.FakePC.hepsi.length - 1];
+	denetle('yanıtlayan tarafta önceden transceiver yok', yPc._transceivers.length === 0, String(yPc._transceivers.length));
+	s.oc.ws.onmessage({ data: JSON.stringify({ type: 'sdp', from: 'zeynep', sdp: { type: 'offer', sdp: 'v=0' } }) });
+	await bekle(120);
+	const yTr = yPc._transceivers.find((t) => t.mid != null);
+	denetle('teklifin m-line transceiver\'ı oluştu', !!yTr);
+	denetle('yanıtlayan ses kanalı sendrecv', !!(yTr && yTr.direction === 'sendrecv'), yTr && yTr.direction);
+	denetle('yanıtlayan mikrofonu bağladı', !!(yTr && yTr.sender.track));
 
 	// istatistikler: iki ölçüm arası fark gerekir (2 sn aralık) → ~4,5 sn bekle
 	await bekle(4600);

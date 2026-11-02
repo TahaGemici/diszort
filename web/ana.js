@@ -1195,15 +1195,16 @@ function pcOlustur(ad, k) {
 			}
 		};
 	}
-	// Ses kanalını HER ZAMAN sendrecv aç. Mikrofon hazırsa İZİYLE açılır: Firefox, izsiz
-	// transceiver'a verdiği YANITI "recvonly" olarak kilitleyebiliyor → karşı taraf hiç ses almıyor
-	// (adı büyük olan teklif ettiği için bilgisayar hep yanıtlayan tarafta kalıyordu = tek yönlü ses).
-	const parca = mikrofon && mikrofon.getAudioTracks()[0];
-	const tr = parca
-		? pc.addTransceiver(parca, { direction: 'sendrecv', streams: [mikrofon] })
-		: pc.addTransceiver('audio', { direction: 'sendrecv' });
-	k.transceiver = tr;
-	if (!parca) mikrofonuBagla(k);
+	// Ses kanalı: YALNIZ teklif eden taraf transceiver açar (mikrofon hazırsa iziyle).
+	// Yanıtlayan tarafta transceiver'ı teklifin kendisi oluşturur; önceden açılan transceiver
+	// Firefox'ta teklifin m-line'ıyla EŞLEŞMİYOR (mid null kalıyor) → yanıt "recvonly" çıkıyor,
+	// karşı taraf hiç ses almıyordu (adı büyük olan teklif ettiği için bilgisayar hep yanıtlayandı).
+	if (teklifEdenBenim(ad)) {
+		const parca = mikrofon && mikrofon.getAudioTracks()[0];
+		k.transceiver = parca
+			? pc.addTransceiver(parca, { direction: 'sendrecv', streams: [mikrofon] })
+			: pc.addTransceiver('audio', { direction: 'sendrecv' });
+	}
 }
 
 // Mikrofonu bu eşin ses kanalına bağla. Yön her zaman açıkça sendrecv yapılır; böylece
@@ -1211,8 +1212,11 @@ function pcOlustur(ad, k) {
 function mikrofonuBagla(k) {
 	const parca = mikrofon && mikrofon.getAudioTracks()[0];
 	if (!parca || !k || !k.pc) return Promise.resolve();
-	const tr = k.transceiver || k.pc.getTransceivers().find((t) => t.receiver.track.kind === 'audio');
+	// Önce teklif/yantıda m-line'a BAĞLANMIŞ (mid dolu) ses transceiver'ı; yoksa ilk ses transceiver'ı.
+	const sesler = k.pc.getTransceivers().filter((t) => t.receiver && t.receiver.track && t.receiver.track.kind === 'audio');
+	const tr = sesler.find((t) => t.mid !== null && t.mid !== undefined) || k.transceiver || sesler[0];
 	if (!tr || !tr.sender) return Promise.resolve();
+	k.transceiver = tr;
 	try {
 		tr.direction = 'sendrecv';
 	} catch {}
@@ -1442,6 +1446,7 @@ async function taniVeri() {
 			teklifEden: teklifEdenBenim(ad),
 			yon: tr ? tr.direction : null,
 			anlasilanYon: tr ? tr.currentDirection || null : null,
+			mid: tr && tr.mid != null ? String(tr.mid) : null,
 			gonderenIz: !!(tr && tr.sender && tr.sender.track),
 			aliciIz: !!(tr && tr.receiver && tr.receiver.track && tr.receiver.track.readyState),
 			caliyor: k.ses ? !k.ses.paused : null,
