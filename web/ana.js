@@ -1001,10 +1001,14 @@ async function sesAc(kanal) {
 	if (!mikrofon) {
 		durum('Mikrofon izni bekleniyor…');
 		try {
-			// Yankı/gürültü giderme ve otomatik kazanç açık kalsın; sesi WebAudio'dan GEÇİRME
-			// (geçirirse bu özellikler kapanır, ses robotikleşir).
+			// Yankı/gürültü giderme AÇIK, otomatik kazanç (AGC) KAPALI; ses WebAudio'dan
+			// GEÇİRİLMEZ (geçirilirse bu özellikler kapanır, ses robotikleşir).
+			// AGC tarayıcıda mikrofon düzeyini konuşma boyunca sürekli yukarı/aşağı çekiyordu:
+			// karşı taraf "sesin şiddeti oynuyor" duyuyordu (telefonda çok belirgindi).
+			// Kazanç artık sabit → duyulan ses doğal. Sessiz kalan mikrofon için karşı
+			// taraf kişinin yanındaki kaydırıcıyı (kalıcı) ya da sistem mikrofon düzeyini açar.
 			mikrofon = await navigator.mediaDevices.getUserMedia({
-				audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true, channelCount: 1 },
+				audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: false, channelCount: 1 },
 			});
 		} catch (hata) {
 			const neden = hata && hata.name === 'NotFoundError' ? 'Mikrofon bulunamadı' : 'Mikrofon izni verilmedi';
@@ -1138,6 +1142,13 @@ function satirOlustur(ad, k) {
 	Object.assign(seviye, { type: 'range', min: 0, max: 100, value: 100 });
 	seviye.title = 'Ses seviyesi';
 	seviye.setAttribute('aria-label', ad + ' kişisinin ses seviyesi');
+	// Kişi için ayarlanan seviye kalıcıdır (AGC kapalı: sessiz mikrofonu bir kez yükselt, yeter).
+	let baslangic = 100;
+	try {
+		const k = Number(localStorage.getItem('ses-seviye-' + ad));
+		if (Number.isFinite(k) && k >= 0 && k <= 100) baslangic = k;
+	} catch {}
+	seviye.value = String(baslangic);
 	const istatistik = el('span', 'ses-istatistik', 'bağlanıyor…');
 	const ses = el('audio', 'ses-akis');
 	ses.autoplay = true;
@@ -1152,7 +1163,13 @@ function satirOlustur(ad, k) {
 		sus.textContent = ses.muted ? '🔇' : '🔊';
 		satir.classList.toggle('sessiz', ses.muted);
 	};
-	seviye.oninput = () => (ses.volume = seviye.value / 100);
+	seviye.oninput = () => {
+		ses.volume = seviye.value / 100;
+		try {
+			localStorage.setItem('ses-seviye-' + ad, seviye.value);
+		} catch {}
+	};
+	ses.volume = baslangic / 100;
 	satir.append(el('span', 'nokta'), el('b', 'ad', ad), istatistik, sus, seviye, ses);
 	$('ses-kisiler').append(satir);
 	Object.assign(k, { satir, ses, seviye, istatistik });
@@ -1263,6 +1280,17 @@ async function sdpIsle(ad, k, sdp) {
 		await mikrofonuBagla(k);
 		await pc.setLocalDescription();
 		gonder({ type: 'sdp', to: ad, sdp: pc.localDescription });
+		// Yanıtın yönü anında teşhise yazılır: sendrecv değilse tek yönlü ses sınıfı
+		// logda kendini gösterir (10 saniyelik tani turunu beklemeden).
+		const tr = k.transceiver || pc.getTransceivers()[0];
+		taniGonder({ olay: 'yanit', es: ad, yon: tr ? tr.direction : null, anlasilan: tr ? tr.currentDirection || null : null, mid: tr && tr.mid != null ? String(tr.mid) : null, iz: !!(tr && tr.sender && tr.sender.track) });
+	} else if (sdp.type === 'answer') {
+		// Yanıt bizi gönderemeye kilitlediyse (recvonly/inactive) ses tek yönlüdür;
+		// anında loga yaz.
+		const tr = k.transceiver || pc.getTransceivers()[0];
+		if (tr && tr.currentDirection && tr.currentDirection !== 'sendrecv') {
+			taniGonder({ olay: 'tek-yon-yanit', es: ad, anlasilan: tr.currentDirection, mid: tr && tr.mid != null ? String(tr.mid) : null });
+		}
 	}
 }
 
@@ -1461,12 +1489,20 @@ async function taniVeri() {
 		});
 	}
 	const iz = mikrofon && mikrofon.getAudioTracks()[0];
+	// Mikrofon kısıtları GERÇEKTEN uygulandı mı? (autoGainControl=false bazı cihazlarda yok
+	// sayılabilir; "şiddet oynuyor" geri gelirse buradan görünür.)
+	let micAyarlar = null;
+	try {
+		const s = iz && iz.getSettings ? iz.getSettings() : null;
+		if (s) micAyarlar = { aec: s.echoCancellation ?? null, ns: s.noiseSuppression ?? null, agc: s.autoGainControl ?? null, kanal: s.channelCount ?? null, ornekHizi: s.sampleRate ?? null };
+	} catch {}
 	return {
 		ua: navigator.userAgent.slice(0, 110),
 		kanal: sesKanal,
 		mikrofon: !!mikrofon,
 		mikAcik: iz ? iz.enabled : null,
 		mikDurum: iz ? iz.readyState : null,
+		micAyarlar,
 		sesBaglami: sesBaglami ? sesBaglami.state : null,
 		iceSunucu: (ice.iceServers || []).map((s) => (s.urls || []).join('+')).join(',').slice(0, 160),
 		esler,
@@ -1619,6 +1655,7 @@ function istatistikBaslat() {
 						if (k.sifirGiden >= 2) {
 							parcalar.push('mikrofon gitmiyor');
 							sinif = 'kotu';
+							taniGonder({ olay: 'mik-gitmiyor', es: ad, gidenIz: !!(k.transceiver && k.transceiver.sender && k.transceiver.sender.track), yon: k.transceiver ? k.transceiver.currentDirection || null : null, mid: k.transceiver && k.transceiver.mid != null ? String(k.transceiver.mid) : null });
 						}
 					} else {
 						k.sifirGiden = 0;

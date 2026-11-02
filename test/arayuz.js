@@ -63,9 +63,17 @@ function kur({ url = 'https://chat.deneme/', depo = {} } = {}) {
 	window.fetch = async () => ({ ok: true, status: 200, json: async () => ({ iceServers: [] }) });
 	Object.defineProperty(window.navigator, 'mediaDevices', {
 		value: {
-			getUserMedia: async () => {
+			// AGC kapalı istenir (şiddet oynamasın); kısıtlar kaydedilir, sonradan denetlenir.
+			getUserMedia: async (kisitlar) => {
 				durum.mikrofon++;
-				const parca = { enabled: true, kind: 'audio', readyState: 'live', stop() { this.readyState = 'ended'; } };
+				durum.micKisit = kisitlar && kisitlar.audio ? { ...kisitlar.audio } : null;
+				const parca = {
+					enabled: true,
+					kind: 'audio',
+					readyState: 'live',
+					stop() { this.readyState = 'ended'; },
+					getSettings: () => ({ echoCancellation: true, noiseSuppression: true, autoGainControl: false, channelCount: 1 }),
+				};
 				return { getTracks: () => [parca], getAudioTracks: () => [parca] };
 			},
 		},
@@ -381,6 +389,8 @@ const kanallar = [
 	sesDugme.dispatchEvent(new w.MouseEvent('click', { bubbles: true }));
 	await bekle(60);
 	denetle('mikrofon istendi', s.oc.mikrofon === 1, String(s.oc.mikrofon));
+	denetle('AGC kapalı istendi', !!(s.oc.micKisit && s.oc.micKisit.autoGainControl === false), JSON.stringify(s.oc.micKisit));
+	denetle('yankı giderme açık istendi', !!(s.oc.micKisit && s.oc.micKisit.echoCancellation === true), JSON.stringify(s.oc.micKisit));
 	denetle('ses-gir gönderildi', s.oc.gonderilen.some((m) => m.type === 'ses-gir' && m.kanal === 'sesli-sohbet'));
 
 	s.oc.ws.onmessage({ data: JSON.stringify({ type: 'ses-girdi', kanal: 'sesli-sohbet', kisiler: ['bora'] }) });
@@ -388,6 +398,12 @@ const kanallar = [
 	denetle('ses kartı göründü', d.getElementById('ses-karti').hidden === false);
 	denetle('kendi satırı + eş satırı', d.querySelectorAll('#ses-kisiler .ses-kisi').length === 2, String(d.querySelectorAll('#ses-kisiler .ses-kisi').length));
 	denetle('eş satırında ses seviyesi kaydırıcısı', !!d.querySelector('#ses-kisiler input.ses-seviye'));
+	// Kaydırıcı kalıcı: değeri saklanır ve tekrar katılımda geri yüklenir.
+	const kaydirici = d.querySelector('#ses-kisiler input.ses-seviye');
+	kaydirici.value = '37';
+	kaydirici.dispatchEvent(new w.Event('input', { bubbles: true }));
+	denetle('ses seviyesi saklandı', w.localStorage.getItem('ses-seviye-bora') === '37', String(w.localStorage.getItem('ses-seviye-bora')));
+	denetle('ses seviyesi uygulandı', d.querySelector('#ses-kisiler audio.ses-akis').volume === 0.37, String(d.querySelector('#ses-kisiler audio.ses-akis').volume));
 	// Tek yönlü ses hatası sınıfı: ses kanalı MİKROFON İZİYLE açılmalı. İzsiz açılırsa Firefox
 	// yanıtı "recvonly"ye kilitliyor ve karşı taraf hiç ses almıyor.
 	const ilkPc = s.FakePC.hepsi[s.FakePC.hepsi.length - 1];
@@ -410,6 +426,14 @@ const kanallar = [
 	denetle('teklifin m-line transceiver\'ı oluştu', !!yTr);
 	denetle('yanıtlayan ses kanalı sendrecv', !!(yTr && yTr.direction === 'sendrecv'), yTr && yTr.direction);
 	denetle('yanıtlayan mikrofonu bağladı', !!(yTr && yTr.sender.track));
+
+	// Teşhis turu: micAyarlar (AGC kapalı gerçekte uygulandı mı) ile gönderilir.
+	await bekle(10500);
+	const tani = s.oc.gonderilen.filter((m) => m.type === 'tani');
+	const sonTani = tani.at(-1);
+	denetle('tanı gönderildi', tani.length > 0, String(tani.length));
+	denetle('tanıda mikrofon ayarları var', !!(sonTani && sonTani.veri && sonTani.veri.micAyarlar && sonTani.veri.micAyarlar.agc === false), JSON.stringify(sonTani && sonTani.veri && sonTani.veri.micAyarlar));
+	denetle('yanıt teşhisi gönderildi', s.oc.gonderilen.some((m) => m.type === 'tani' && m.veri.olay === 'yanit'), JSON.stringify(s.oc.gonderilen.filter((m) => m.type === 'tani').map((m) => m.veri.olay)));
 
 	// istatistikler: iki ölçüm arası fark gerekir (2 sn aralık) → ~4,5 sn bekle
 	await bekle(4600);
