@@ -73,6 +73,7 @@ function kur({ url = 'https://chat.deneme/', depo = {} } = {}) {
 	});
 	class FakePC {
 		constructor() {
+			FakePC.hepsi.push(this);
 			this.signalingState = 'stable';
 			this.connectionState = 'new';
 			this.remoteDescription = null;
@@ -134,6 +135,7 @@ function kur({ url = 'https://chat.deneme/', depo = {} } = {}) {
 			this.signalingState = 'closed';
 		}
 	}
+	FakePC.hepsi = [];
 	window.RTCPeerConnection = FakePC;
 	window.AudioContext = class {
 		constructor() {
@@ -154,7 +156,7 @@ function kur({ url = 'https://chat.deneme/', depo = {} } = {}) {
 	};
 
 	window.eval(BETIK);
-	return { window, d, ...durum, oc: durum };
+	return { window, d, ...durum, oc: durum, FakePC };
 }
 
 const kanallar = [
@@ -376,6 +378,12 @@ const kanallar = [
 	denetle('ses kartı göründü', d.getElementById('ses-karti').hidden === false);
 	denetle('kendi satırı + eş satırı', d.querySelectorAll('#ses-kisiler .ses-kisi').length === 2, String(d.querySelectorAll('#ses-kisiler .ses-kisi').length));
 	denetle('eş satırında ses seviyesi kaydırıcısı', !!d.querySelector('#ses-kisiler input.ses-seviye'));
+	// Tek yönlü ses hatası sınıfı: ses kanalı MİKROFON İZİYLE açılmalı. İzsiz açılırsa Firefox
+	// yanıtı "recvonly"ye kilitliyor ve karşı taraf hiç ses almıyor.
+	const ilkPc = s.FakePC.hepsi[s.FakePC.hepsi.length - 1];
+	const ilkTr = ilkPc && ilkPc._transceivers[0];
+	denetle('ses kanalı mikrofon iziyle açıldı', !!(ilkTr && ilkTr.sender.track), ilkTr && ilkTr.sender.track ? 'iz var' : 'iz yok');
+	denetle('ses kanalı sendrecv', !!(ilkTr && ilkTr.direction === 'sendrecv'), ilkTr && ilkTr.direction);
 	denetle('mikrofon düğmesi açıldı', d.getElementById('ben-mikrofon').disabled === false);
 	denetle('sessiz durumu bildirildi', s.oc.gonderilen.some((m) => m.type === 'sessiz'));
 

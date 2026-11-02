@@ -1195,25 +1195,28 @@ function pcOlustur(ad, k) {
 			}
 		};
 	}
-	// Ses kanalını HER ZAMAN izsiz aç: mikrofon sonradan gelse bile teklif/yanıt üretilir,
-	// mikrofon gelince replaceTrack ile bağlanır. Teklif eden ve yanıtlayan taraf böylece
-	// AYNI yolu izler (eskiden iki tarafta farklı kurulum vardı → tek yönlü ses riski).
-	const tr = pc.addTransceiver('audio', { direction: 'sendrecv' });
+	// Ses kanalını HER ZAMAN sendrecv aç. Mikrofon hazırsa İZİYLE açılır: Firefox, izsiz
+	// transceiver'a verdiği YANITI "recvonly" olarak kilitleyebiliyor → karşı taraf hiç ses almıyor
+	// (adı büyük olan teklif ettiği için bilgisayar hep yanıtlayan tarafta kalıyordu = tek yönlü ses).
+	const parca = mikrofon && mikrofon.getAudioTracks()[0];
+	const tr = parca
+		? pc.addTransceiver(parca, { direction: 'sendrecv', streams: [mikrofon] })
+		: pc.addTransceiver('audio', { direction: 'sendrecv' });
 	k.transceiver = tr;
-	mikrofonuBagla(k);
+	if (!parca) mikrofonuBagla(k);
 }
 
 // Mikrofonu bu eşin ses kanalına bağla. Yön her zaman açıkça sendrecv yapılır; böylece
 // yanıtlayan taraf "recvonly" cevabı verip sesin tek yönde kalmasına yol açamaz.
 function mikrofonuBagla(k) {
 	const parca = mikrofon && mikrofon.getAudioTracks()[0];
-	if (!parca || !k || !k.pc) return;
+	if (!parca || !k || !k.pc) return Promise.resolve();
 	const tr = k.transceiver || k.pc.getTransceivers().find((t) => t.receiver.track.kind === 'audio');
-	if (!tr || !tr.sender) return;
+	if (!tr || !tr.sender) return Promise.resolve();
 	try {
 		tr.direction = 'sendrecv';
 	} catch {}
-	tr.sender
+	return tr.sender
 		.replaceTrack(parca)
 		.then(() => {
 			try {
@@ -1251,7 +1254,9 @@ async function sdpIsle(ad, k, sdp) {
 	for (const aday of k.adaylar.splice(0)) await pc.addIceCandidate(aday).catch(() => {});
 	if (sdp.type === 'offer') {
 		// Mikrofonu teklifteki ses kanalına bağla (yeni bir kanal açmadan) ve yönü sendrecv yap.
-		mikrofonuBagla(k);
+		// ÖNEMLİ: replaceTrack bitmeden yanıt üretilirse Firefox "recvonly" yanıtı verip sesi
+		// tek yöne düşürüyor — o yüzden await.
+		await mikrofonuBagla(k);
 		await pc.setLocalDescription();
 		gonder({ type: 'sdp', to: ad, sdp: pc.localDescription });
 	}
@@ -1436,6 +1441,7 @@ async function taniVeri() {
 			sinyal: pc ? pc.signalingState : null,
 			teklifEden: teklifEdenBenim(ad),
 			yon: tr ? tr.direction : null,
+			anlasilanYon: tr ? tr.currentDirection || null : null,
 			gonderenIz: !!(tr && tr.sender && tr.sender.track),
 			aliciIz: !!(tr && tr.receiver && tr.receiver.track && tr.receiver.track.readyState),
 			caliyor: k.ses ? !k.ses.paused : null,
