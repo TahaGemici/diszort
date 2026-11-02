@@ -103,6 +103,13 @@ TURN_ADRESI=
 # Bir sesli kanalda en fazla kaç kişi olur. Herkes herkese bağlandığı için (mesh) 10'dan fazlası zorlar.
 MAX_KISI=10
 
+# Beyaz liste: en fazla kaç kişi (ad) olabilir. Her kişinin kendi anahtarı vardır; yeni kişi
+# içeridekilerin onayıyla eklenir.
+MAX_KULLANICI=10
+
+# Beyaz liste boşken ilk anahtarı alacak kişinin adı (anahtar: /var/lib/chat/ilk-anahtar.txt).
+YONETICI_ADI=taha
+
 # Yazılı kanallarda paylaşılabilecek en büyük dosya (MB). Dosyalar /var/lib/chat/yuklemeler'de tutulur.
 DOSYA_MB=25
 
@@ -125,6 +132,14 @@ AYARLAR
 		fi
 	else
 		echo "Ayarlar korunuyor: $VERI/.env"
+	fi
+	# Test/kurulum kolaylığı: bu değişkenler verilmişse .env'e yaz (CI uçtan uca denemede kullanır).
+	if [ -n "${ILK_ANAHTAR:-}" ]; then
+		if grep -q '^ILK_ANAHTAR=' "$VERI/.env"; then
+			sed -i "s|^ILK_ANAHTAR=.*|ILK_ANAHTAR=$ILK_ANAHTAR|" "$VERI/.env"
+		else
+			printf 'ILK_ANAHTAR=%s\n' "$ILK_ANAHTAR" >>"$VERI/.env"
+		fi
 	fi
 	chmod 0700 "$VERI"
 	chmod 0600 "$VERI/.env"

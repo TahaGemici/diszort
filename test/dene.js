@@ -18,12 +18,16 @@ const WebSocket = globalThis.WebSocket || require('ws');
 const ADRES = (process.argv[2] || process.env.ADRES || 'http://127.0.0.1:8080').replace(/\/$/, '');
 const WS_ADRES = ADRES.replace(/^http/, 'ws') + '/rtc';
 const TURN_HOST = process.env.TURN_HOST || '127.0.0.1';
+// Beyaz liste: testler yönetici anahtarıyla girer, diğer istemcileri o onaylar.
+const ANAHTAR = process.env.ILK_ANAHTAR || '';
 const YAZI_KANAL = process.env.YAZI_KANAL || 'genel';
 const SES_KANAL = process.env.SES_KANAL || 'sesli-sohbet';
 
 let gecen = 0;
 async function dene(ad, fn) {
 	try {
+		// Beyaz liste şişmesin: her testten önce önceki testlerin kişilerini at.
+		if (yonetici && onaylananlar.size >= 4) await kisileriTemizle();
 		await fn();
 		gecen++;
 		console.log('ok   ' + ad);
@@ -69,12 +73,76 @@ function istemci() {
 	});
 }
 
-// Adı al ve 'hazir' yanıtını bekle.
-async function gir(ad, id) {
+// Beyaz liste testleri: yönetici istemcisi kapıyı çalanları onaylar.
+let yonetici = null;
+const onaylananlar = new Set(); // testte beyaz listeye eklenen adlar (sonunda atılır)
+
+async function yoneticiGir() {
+	if (!ANAHTAR) throw new Error('ILK_ANAHTAR verilmedi; beyaz liste testleri için gerekli');
+	const ws = await istemci();
+	ws.yolla({ type: 'giris', ad: 'yonetici', id: 'adm', anahtar: ANAHTAR });
+	const h = await ws.bekle('hazir');
+	ws.hazir = h;
+	ws.anahtar = ANAHTAR;
+	return ws;
+}
+
+// Kapıyı çal → yönetici onaylasın → 'hazir' gelsin. anahtar verilirse doğrudan giriş denenir.
+async function gir(ad, id, anahtar) {
+	const ws = await istemci();
+	ws.anahtar = anahtar || '';
+	ws.yolla({ type: 'giris', ad, id, anahtar: ws.anahtar });
+	const ilk = await ws.bekle((m) => m.type === 'hazir' || m.type === 'giris-red' || m.type === 'bekleniyor');
+	if (ilk.type === 'hazir') {
+		ws.hazir = ilk;
+		return ws;
+	}
+	if (ilk.type === 'giris-red') {
+		ws.red = ilk;
+		return ws;
+	}
+	// Kapıyı çaldı: yönetici onaylasın.
+	const istek = await yonetici.bekle((m) => m.type === 'giris-istegi' && m.ad === ad);
+	yonetici.yolla({ type: 'giris-karari', id: istek.id, kabul: true });
+	ws.hazir = await ws.bekle('hazir');
+	ws.anahtar = ws.hazir.anahtar || ws.anahtar;
+	onaylananlar.add(ad);
+	return ws;
+}
+
+// Kapıyı çal, kararı verilmeden bekle (testin kendisi karar verir).
+async function kapiCal(ad, id) {
 	const ws = await istemci();
 	ws.yolla({ type: 'giris', ad, id });
-	ws.hazir = await ws.bekle('hazir');
+	ws.bekleniyor = await ws.bekle((m) => m.type === 'bekleniyor' || m.type === 'giris-red');
 	return ws;
+}
+
+// Beyaz listeyi sor ve yönetici dışındaki herkesi at (önceki çalıştırmalardan kalanlar dahil).
+async function hepsiniAt() {
+	if (!yonetici) return;
+	yonetici.yolla({ type: 'beyaz-liste' });
+	const liste = await yonetici.bekle('beyaz-liste');
+	for (const k of liste.kisiler || []) {
+		if (k.ad === yonetici.hazir.ad) continue;
+		yonetici.yolla({ type: 'at', ad: k.ad });
+		await new Promise((r) => setTimeout(r, 40));
+	}
+	onaylananlar.clear();
+	// Gerçekten temizlendi mi? (atma hız sınırına takılmış olabilir)
+	yonetici.yolla({ type: 'beyaz-liste' });
+	const son = await yonetici.bekle('beyaz-liste');
+	const kalan = (son.kisiler || []).filter((k) => k.ad !== yonetici.hazir.ad).map((k) => k.ad);
+	if (kalan.length) throw new Error('beyaz liste temizlenemedi: ' + kalan.join(', '));
+	}
+
+// Testte eklenen kişileri temizle (beyaz liste şişmesin).
+async function kisileriTemizle() {
+	for (const ad of [...onaylananlar]) {
+		yonetici.yolla({ type: 'at', ad });
+		await new Promise((r) => setTimeout(r, 40));
+		onaylananlar.delete(ad);
+	}
 }
 
 // ---------------------------------------------------------------- STUN/TURN yardımcıları
@@ -176,6 +244,96 @@ async function turnAl(port, kullanici, sifre) {
 	let turnPort;
 	let jeton = '';
 	const kimlik = 'deneme-' + crypto.randomBytes(4).toString('hex');
+
+
+	await dene('beyaz liste: yönetici anahtarıyla giriş', async () => {
+		if (!ANAHTAR) throw new Error('ILK_ANAHTAR yok (test ortamı: .env veya ortam değişkeni)');
+		yonetici = await yoneticiGir();
+		assert.equal(yonetici.hazir.ad, 'taha', 'ilk anahtarın sahibi YONETICI_ADI olmalı');
+		await hepsiniAt(); // önceki çalıştırmalardan kalan kişileri temizle
+		assert.ok(yonetici.hazir.beyazListe >= 1);
+	});
+
+	await dene('beyaz liste: anahtarsız giriş izin ister, kabul edilince anahtar verilir', async () => {
+		const ws = await istemci();
+		ws.yolla({ type: 'giris', ad: 'ayse-' + kimlik, id: 'a1' });
+		const bekle = await ws.bekle('bekleniyor');
+		assert.equal(bekle.anahtarGecersiz, false);
+		const istek = await yonetici.bekle((m) => m.type === 'giris-istegi' && m.ad === 'ayse-' + kimlik);
+		yonetici.yolla({ type: 'giris-karari', id: istek.id, kabul: true });
+		const h = await ws.bekle('hazir');
+		assert.match(h.anahtar, /^[0-9a-f]{48}$/, 'kişiye özel anahtar üretilmeli');
+		assert.equal(h.ad, 'ayse-' + kimlik);
+		ws.close();
+		onaylananlar.add('ayse-' + kimlik);
+
+		// Aynı anahtarla yeniden bağlan: izin sorulmadan girer.
+		const ws2 = await istemci();
+		ws2.yolla({ type: 'giris', ad: 'baska-ad', id: 'a2', anahtar: h.anahtar });
+		const h2 = await ws2.bekle('hazir');
+		assert.equal(h2.ad, 'ayse-' + kimlik, 'ad anahtardan gelir (yazılan ad yok sayılır)');
+		assert.equal(h2.anahtar, h.anahtar, 'geçerli anahtar aynen döner (yenisi üretilmez)');
+		ws2.close();
+	});
+
+	await dene('beyaz liste: istek reddedilirse girilemez', async () => {
+		const ws = await istemci();
+		ws.yolla({ type: 'giris', ad: 'reddedilen-' + kimlik, id: 'r1' });
+		await ws.bekle('bekleniyor');
+		const istek = await yonetici.bekle((m) => m.type === 'giris-istegi' && m.ad === 'reddedilen-' + kimlik);
+		yonetici.yolla({ type: 'giris-karari', id: istek.id, kabul: false });
+		const red = await ws.bekle('giris-red');
+		assert.match(red.message, /reddedildi/);
+		ws.close();
+	});
+
+	await dene('beyaz liste: geçersiz anahtar kapıyı çaldırır (anahtarGecersiz)', async () => {
+		const ws = await istemci();
+		ws.yolla({ type: 'giris', ad: 'sahte-' + kimlik, id: 's1', anahtar: 'f'.repeat(48) });
+		const bekle = await ws.bekle('bekleniyor');
+		assert.equal(bekle.anahtarGecersiz, true, 'geçersiz anahtar bildirilmeli');
+		ws.close();
+		// Bekleyen istek bağlantı kapanınca düşmeli.
+		await new Promise((r) => setTimeout(r, 200));
+	});
+
+	await dene('beyaz liste: içeride kimse yokken kapı çalınamaz', async () => {
+		// Yönetici dışındaki herkesi at, sonra yöneticiyi de kapat → kimse kalmadığında red.
+		await kisileriTemizle();
+		yonetici.close();
+		// Sunucunun bağlantıyı kapatmasını bekle (çevrimiçi 0 olana kadar).
+		for (let i = 0; i < 40; i++) {
+			const s = await (await fetch(ADRES + '/saglik')).json();
+			if (!s.cevrimici) break;
+			await new Promise((r) => setTimeout(r, 50));
+		}
+		try {
+			const ws = await istemci();
+			ws.yolla({ type: 'giris', ad: 'gec-kalan-' + kimlik, id: 'g1' });
+			const red = await ws.bekle('giris-red');
+			assert.match(red.message, /kimse yok/);
+			ws.close();
+		} finally {
+			yonetici = await yoneticiGir(); // geri al
+		}
+	});
+
+	await dene('beyaz liste: atılan kişinin anahtarı iptal edilir', async () => {
+		const ws = await gir('atilan-' + kimlik, 'x1');
+		const anahtari = ws.anahtar;
+		assert.ok(anahtari);
+		ws.close();
+		yonetici.yolla({ type: 'at', ad: 'atilan-' + kimlik });
+		await new Promise((r) => setTimeout(r, 200));
+		onaylananlar.delete('atilan-' + kimlik);
+
+		// Eski anahtar artık geçersiz → kapıyı çalmak zorunda.
+		const ws2 = await istemci();
+		ws2.yolla({ type: 'giris', ad: 'atilan-' + kimlik, id: 'x2', anahtar: anahtari });
+		const bekle = await ws2.bekle('bekleniyor');
+		assert.equal(bekle.anahtarGecersiz, true, 'iptal edilen anahtar geçersiz olmalı');
+		ws2.close();
+	});
 
 	await dene('web sayfası', async () => {
 		const r = await fetch(ADRES + '/');
@@ -367,13 +525,13 @@ async function turnAl(port, kullanici, sifre) {
 		a.close();
 	});
 
-	await dene('sesli kanal: aynı ad reddedilir, aynı sekme yeniden bağlanabilir', async () => {
+	await dene('sesli kanal: aynı ad reddedilir, aynı sekme anahtarla yeniden bağlanır', async () => {
 		const a = await gir('can-' + kimlik, 's1');
 		const b = await istemci();
 		b.yolla({ type: 'giris', ad: 'can-' + kimlik, id: 's2' });
-		assert.match((await b.bekle('hata')).message, /kullanılıyor/);
+		assert.match((await b.bekle('giris-red')).message, /kullanılıyor/);
 		b.close();
-		const a2 = await gir('can-' + kimlik, 's1'); // aynı sekme, yeni bağlantı
+		const a2 = await gir('can-' + kimlik, 's1', a.anahtar); // aynı sekme + anahtar → doğrudan giriş
 		assert.equal(a2.hazir.ad, 'can-' + kimlik);
 		a2.close();
 		a.close();
@@ -490,6 +648,33 @@ async function turnAl(port, kullanici, sifre) {
 		b.close();
 	});
 
+
+	await dene('beyaz liste: dolu iken yeni kişi alınmaz', async () => {
+		await hepsiniAt();
+		const saglik = await (await fetch(ADRES + '/saglik')).json();
+		const max = Number(saglik.maxKullanici || 10);
+		const eklenen = [];
+		for (let i = 0; i < max - 1; i++) {
+			const ad = `dolu${i}-` + kimlik;
+			const ws = await istemci();
+			ws.yolla({ type: 'giris', ad, id: 'd' + i });
+			const ilk = await ws.bekle((m) => ['bekleniyor', 'giris-red'].includes(m.type));
+			if (ilk.type !== 'bekleniyor') throw new Error('dolu döngüsü ' + i + ': ' + JSON.stringify(ilk));
+			const istek = await yonetici.bekle((m) => m.type === 'giris-istegi' && m.ad === ad);
+			yonetici.yolla({ type: 'giris-karari', id: istek.id, kabul: true });
+			await ws.bekle('hazir');
+			ws.close();
+			eklenen.push(ad);
+		}
+		// Liste doldu: kapıyı çalan kişi içeriye bile sorulmadan reddedilir.
+		const ws = await istemci();
+		ws.yolla({ type: 'giris', ad: 'fazla-' + kimlik, id: 'f1' });
+		assert.match((await ws.bekle('giris-red')).message, /dolu/);
+		ws.close();
+		await hepsiniAt();
+	});
+
+	await kisileriTemizle();
 	console.log(process.exitCode ? 'BAŞARISIZ' : `Hepsi geçti (${gecen}).`);
 	setTimeout(() => process.exit(), 200);
 })();

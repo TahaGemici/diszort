@@ -19,6 +19,7 @@
 		<label for="ad">Adın</label>
 		<input id="ad" maxlength="32" autocomplete="nickname" required>
 		<button id="gir" type="submit">Sunucuya gir</button>
+		<button id="giris-iptal" class="ikincil" type="button" hidden>İsteği geri çek</button>
 		<p id="giris-durum" class="durum" role="status" aria-live="polite"></p>
 		<noscript><p>Bu sayfa JavaScript ister.</p></noscript>
 	</form>
@@ -89,8 +90,12 @@
 	<aside id="uye-panosu">
 		<div class="bolum-baslik">Çevrimiçi — <span id="uye-sayi">0</span></div>
 		<div id="uye-listesi"></div>
+		<div id="beyaz-liste" class="bolum-bilgi"></div>
 	</aside>
 </div>
+
+<!-- İçeri girmek isteyenler: içeridekiler kabul eder ya da reddeder -->
+<div id="istekler" class="istekler" aria-live="polite"></div>
 
 <!-- Kanal ekleme / silme onayı için küçük pencere -->
 <div id="pencere" class="pencere" hidden>

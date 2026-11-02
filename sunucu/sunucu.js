@@ -85,6 +85,11 @@ const HOST = ayar('HOST', '127.0.0.1');
 const PORT = sayiAyar('PORT', 8080, 1, 65535);
 const MAX_KISI = sayiAyar('MAX_KISI', 10, 2, 50);
 const DOSYA_MB = sayiAyar('DOSYA_MB', 25, 1, 200);
+// Beyaz liste: en fazla bu kadar kişi (ad) olabilir; her kişinin kendi anahtarı vardır.
+const MAX_KULLANICI = sayiAyar('MAX_KULLANICI', 10, 2, 50);
+const YONETICI_ADI = ayar('YONETICI_ADI', 'taha'); // beyaz liste boşken ilk anahtarı alacak kişi
+const ILK_ANAHTAR = ayar('ILK_ANAHTAR'); // test/kurulum için sabit ilk anahtar (üretimde boş bırak)
+const SITE_ADRESI = ayar('SITE_ADRESI', 'https://chat.tahagemici.com'); // ilk anahtar bağlantısında kullanılır
 const TURN_PORT = sayiAyar('TURN_PORT', 3478, 1, 65535);
 const RELAY_MIN_PORT = sayiAyar('RELAY_MIN_PORT', 49152, 1024, 65535);
 const RELAY_MAX_PORT = sayiAyar('RELAY_MAX_PORT', 61000, RELAY_MIN_PORT, 65535);
@@ -96,6 +101,11 @@ const VERI_KLASORU = ayar('VERI_KLASORU') || (fs.existsSync('/veri') ? '/veri' :
 const YUKLEME_KLASORU = path.join(VERI_KLASORU, 'yuklemeler');
 const DOSYA_SINIRI = DOSYA_MB * 1024 * 1024;
 const EN_AZ_BOS_ALAN = 300 * 1024 * 1024; // yükleme için sunucuda en az bu kadar boş yer kalsın
+
+if (ILK_ANAHTAR && ILK_ANAHTAR.length < 16) {
+	console.error('Ayar hatası: ILK_ANAHTAR en az 16 karakter olmalı (ya da boş bırak).');
+	process.exit(1);
+}
 
 for (const [ad, deger] of [['DIS_IP', DIS_IP], ['IC_IP', IC_IP]]) {
 	if (deger && !ipv4mu(deger)) {
@@ -384,6 +394,8 @@ function kanalDurumu() {
 		return o;
 	});
 }
+let beyazListeSayisi = 0; // son bilinen beyaz liste boyutu (yanıtlarda gösterilir)
+
 function kimler() {
 	const liste = [];
 	for (const ws of wss.clients) if (ws.ad) liste.push({ ad: ws.ad, sessiz: !!ws.sessiz, ses: ws.sesKanal || null });
@@ -396,7 +408,7 @@ function durumYayinla() {
 	for (const ws of wss.clients) {
 		if (!ws.ad) continue;
 		gonder(ws, { type: 'kanallar', kanallar });
-		gonder(ws, { type: 'kimler', kimler: kim });
+		gonder(ws, { type: 'kimler', kimler: kim, beyazListe: beyazListeSayisi, maxKullanici: MAX_KULLANICI });
 	}
 }
 
@@ -430,40 +442,217 @@ function adSahibi(ad) {
 	return null;
 }
 
-function girisYap(ws, m) {
-	const ad = String(m.ad ?? '')
+// ---------------------------------------------------------------- giriş: beyaz liste + kapıyı çalma
+//
+// Anahtarı olan (beyaz listedeki) kişi doğrudan girer. Anahtarı olmayan ya da anahtarı geçersiz olan
+// kişi "kapıyı çalar": içerideki herkese sorulur, biri kabul ederse o kişiye özel yeni bir anahtar
+// üretilir (istemci localStorage'ında saklar). Reddedilirse ya da kimse içeride değilse giremez.
+
+const bekleyenler = new Map(); // istek id -> { ad, ip, zaman, ws, kimlik }
+const kapiDenemeleri = new Map(); // ip -> { baslangic, adet } (dakikalık giriş denemesi sayacı)
+const beklemeSuresi = 120000; // 2 dakika içinde karar verilmezse düşer
+
+function temizAd(ham) {
+	return String(ham ?? '')
 		.replace(/[\u0000-\u001f\u007f]/g, '')
 		.trim()
 		.slice(0, 32);
-	if (!ad) return gonder(ws, { type: 'hata', message: 'Ad gerekli.' });
-	const kimlik = String(m.id ?? '').slice(0, 64);
-	const sahibi = adSahibi(ad);
-	if (sahibi && sahibi !== ws) {
-		// Aynı sekme yeniden bağlandıysa (ağ değişti, sunucu yeniden başladı) eski bağlantı düşürülür.
-		if (!kimlik || sahibi.kimlik !== kimlik) {
-			return gonder(ws, { type: 'hata', message: `"${ad}" adı şu anda kullanılıyor; başka bir ad seç.` });
-		}
-		ayril(sahibi);
-		sahibi.terminate();
+}
+
+function oturumAc(ws, ad, kimlik, anahtar) {
+	// Aynı adla açık başka bir bağlantı varsa (sekme yenilendi / yeniden onaylandı) onu düşür.
+	const eski = adSahibi(ad);
+	if (eski && eski !== ws) {
+		ayril(eski);
+		eski.terminate();
 	}
-	if (ws.ad && ws.ad !== ad) ayril(ws);
 	if (ws.jeton) jetonlar.delete(ws.jeton);
 	ws.ad = ad;
-	ws.kimlik = kimlik;
+	ws.kimlik = kimlik || '';
 	ws.jeton = crypto.randomBytes(16).toString('hex');
 	ws.yaziPencere = 0;
 	ws.yaziAdet = 0;
 	jetonlar.set(ws.jeton, ws);
-	console.log(`[kanal] ${ad} bağlandı`);
 	gonder(ws, {
 		type: 'hazir',
 		ad,
 		kanallar: kanalDurumu(),
 		kimler: kimler(),
 		max: MAX_KISI,
+		maxKullanici: MAX_KULLANICI,
+		beyazListe: beyazListeSayisi,
 		dosyaMb: DOSYA_MB,
 		jeton: ws.jeton,
+		anahtar: anahtar || undefined,
 	});
+	durumYayinla();
+}
+
+// Bekleyen isteği kapat ve herkese haber ver.
+function istekKapat(id, kabul, ad) {
+	const kayit = bekleyenler.get(id);
+	if (!kayit) return null;
+	bekleyenler.delete(id);
+	kayit.ws.knockId = null;
+	for (const x of wss.clients) if (x.ad) gonder(x, { type: 'istek-kapandi', id, kabul: !!kabul, ad: kayit.ad });
+	return kayit;
+}
+
+async function kapiCal(ws, ad, anahtarGecersiz) {
+	let kisiSayisi = 0;
+	try {
+		kisiSayisi = await db.kisiSayisi();
+	} catch {}
+	if (kisiSayisi >= MAX_KULLANICI) {
+		return gonder(ws, { type: 'giris-red', message: `Sunucu dolu (en fazla ${MAX_KULLANICI} kişi).` });
+	}
+	const cevrimici = [...wss.clients].filter((x) => x.ad);
+	if (!cevrimici.length) {
+		return gonder(ws, { type: 'giris-red', message: 'Şu an içeride kimse yok; biraz sonra tekrar dene.' });
+	}
+	// Aynı IP'den istek yağmasın: aynı anda en fazla 3 bekleyen, dakikada en fazla 100 deneme.
+	// (Aynı ev/NAT arkasındaki birkaç kişi birbirini engellemesin diye pencere geniş tutuldu.)
+	const ip = ws.ip || '';
+	if (ip) {
+		const ayniIp = [...bekleyenler.values()].filter((b) => b.ip === ip);
+		if (ayniIp.length >= 3) return gonder(ws, { type: 'giris-red', message: 'Çok fazla istek; biraz bekle.' });
+		const simdi = Date.now();
+		const kayit = kapiDenemeleri.get(ip) || { baslangic: simdi, adet: 0 };
+		if (simdi - kayit.baslangic > 60000) {
+			kayit.baslangic = simdi;
+			kayit.adet = 0;
+		}
+		if (++kayit.adet > 100) {
+			kapiDenemeleri.set(ip, kayit);
+			return gonder(ws, { type: 'giris-red', message: 'Çok fazla giriş denemesi; bir dakika bekle.' });
+		}
+		kapiDenemeleri.set(ip, kayit);
+	}
+	// Aynı ad için eski bekleyen isteği düşür.
+	for (const [id, b] of bekleyenler) if (b.ad === ad) istekKapat(id, false, ad);
+
+	const id = crypto.randomBytes(6).toString('hex');
+	bekleyenler.set(id, { ad, ip, zaman: Date.now(), ws, kimlik: ws.kimlik || '' });
+	ws.knockId = id;
+	gonder(ws, { type: 'bekleniyor', ad, anahtarGecersiz: !!anahtarGecersiz });
+	for (const x of cevrimici) gonder(x, { type: 'giris-istegi', id, ad });
+	console.log(`[kapı] ${ad} izin istiyor (${cevrimici.length} kişiye soruldu${anahtarGecersiz ? ', anahtar geçersiz' : ''})`);
+}
+
+async function girisYap(ws, m) {
+	const ad = temizAd(m.ad);
+	const kimlik = String(m.id ?? '').slice(0, 64);
+	const anahtar = String(m.anahtar ?? '').trim().slice(0, 64);
+	ws.kimlik = kimlik;
+
+	// 1) Geçerli anahtar → doğrudan giriş (ad, anahtarın sahibinden gelir).
+	if (anahtar) {
+		let kisi = null;
+		try {
+			kisi = await db.kisiAnahtarla(anahtar);
+		} catch (e) {
+			console.error('[beyaz liste] anahtar okunamadı:', e.message);
+		}
+		if (kisi) {
+			const sahibi = adSahibi(kisi.ad);
+			if (sahibi && sahibi !== ws) {
+				// Aynı sekme yeniden bağlandıysa eski bağlantıyı düşür; başka cihazsa reddet.
+				if (!kimlik || sahibi.kimlik !== kimlik) {
+					return gonder(ws, { type: 'giris-red', message: `"${kisi.ad}" şu anda başka bir cihazdan bağlı.` });
+				}
+				ayril(sahibi);
+				sahibi.terminate();
+			}
+			if (ws.ad && ws.ad !== kisi.ad) ayril(ws);
+			oturumAc(ws, kisi.ad, kimlik, anahtar);
+			console.log(`[giriş] ${kisi.ad} anahtarıyla girdi`);
+			try {
+				db.kisiSonGiris(kisi.ad);
+			} catch {}
+			return;
+		}
+	}
+
+	// 2) Anahtarsız / geçersiz anahtar → kapıyı çal.
+	if (!ad) {
+		return gonder(ws, { type: 'giris-red', message: anahtar ? 'Anahtar geçersiz; adını yazıp izin iste.' : 'Ad gerekli.' });
+	}
+	const sahibi = adSahibi(ad);
+	if (sahibi && sahibi !== ws && (!kimlik || sahibi.kimlik !== kimlik)) {
+		return gonder(ws, { type: 'giris-red', message: `"${ad}" adı şu anda kullanılıyor; başka bir ad seç.` });
+	}
+	await kapiCal(ws, ad, !!anahtar);
+}
+
+// İçerideki biri kabul/red verir.
+async function girisKarari(ws, m) {
+	if (!ws.ad) return gonder(ws, { type: 'hata', message: 'Önce giriş yap.' });
+	const id = String(m.id ?? '');
+	const kayit = bekleyenler.get(id);
+	if (!kayit) return gonder(ws, { type: 'hata', message: 'Bu giriş isteği artık geçerli değil.' });
+
+	if (!m.kabul) {
+		istekKapat(id, false, kayit.ad);
+		gonder(kayit.ws, { type: 'giris-red', message: 'Giriş isteğin reddedildi.' });
+		console.log(`[kapı] ${kayit.ad} reddedildi (${ws.ad})`);
+		return;
+	}
+
+	let sayi = 0;
+	let mevcut = null;
+	try {
+		sayi = await db.kisiSayisi();
+		mevcut = await db.kisiAd(kayit.ad);
+	} catch {}
+	if (sayi >= MAX_KULLANICI && !mevcut) {
+		gonder(ws, { type: 'hata', message: `Beyaz liste dolu (${sayi}/${MAX_KULLANICI}); önce birini at.` });
+		istekKapat(id, false, kayit.ad);
+		gonder(kayit.ws, { type: 'giris-red', message: `Sunucu dolu (en fazla ${MAX_KULLANICI} kişi).` });
+		return;
+	}
+
+	const yeniAnahtar = crypto.randomBytes(24).toString('hex');
+	try {
+		await db.kisiKaydet({ ad: kayit.ad, anahtar: yeniAnahtar });
+	} catch (e) {
+		console.error('[beyaz liste] kişi kaydedilemedi:', e.message);
+		return gonder(ws, { type: 'hata', message: 'Kişi kaydedilemedi; tekrar dene.' });
+	}
+	beyazListeSayisi = mevcut ? sayi : sayi + 1;
+	istekKapat(id, true, kayit.ad);
+	if (kayit.ws.readyState !== WebSocket.OPEN) return;
+	oturumAc(kayit.ws, kayit.ad, kayit.kimlik, yeniAnahtar);
+	console.log(`[kapı] ${kayit.ad} kabul edildi (${ws.ad}) → anahtar verildi`);
+}
+
+// Beyaz listeden at: anahtar iptal edilir, bağlantı düşürülür.
+async function kisiAt(ws, m) {
+	if (!ws.ad) return gonder(ws, { type: 'hata', message: 'Önce giriş yap.' });
+	const ad = String(m.ad ?? '').trim().slice(0, 32);
+	if (!ad) return gonder(ws, { type: 'hata', message: 'Kim atılacak?' });
+	if (ad === ws.ad) return gonder(ws, { type: 'hata', message: 'Kendini atamazsın; çıkmak için sekmeyi kapat.' });
+	if (!kisiHizi(ws)) return;
+	let kayit = null;
+	let sayi = 0;
+	try {
+		kayit = await db.kisiAd(ad);
+		sayi = await db.kisiSayisi();
+	} catch {}
+	if (!kayit) return gonder(ws, { type: 'hata', message: 'Bu kişi beyaz listede değil.' });
+	if (sayi <= 1) return gonder(ws, { type: 'hata', message: 'Son kişi atılamaz.' });
+	try {
+		await db.kisiSil(ad);
+	} catch (e) {
+		console.error('[beyaz liste] silinemedi:', e.message);
+		return gonder(ws, { type: 'hata', message: 'Kişi silinemedi; tekrar dene.' });
+	}
+	beyazListeSayisi = Math.max(0, sayi - 1);
+	const hedef = adSahibi(ad);
+	console.log(`[beyaz liste] ${ws.ad} → ${ad} atıldı`);
+	if (hedef) {
+		gonder(hedef, { type: 'atildi', message: 'Sunucudan atıldın; tekrar girmek için izin istemen gerek.' });
+		setTimeout(() => hedef.terminate(), 300);
+	}
 	durumYayinla();
 }
 
@@ -541,6 +730,20 @@ function sdpIlet(ws, m, tur) {
 
 // --- kanal ekleme / silme (hesap yok: giriş yapan herkes yapabilir; saatte 10 işlemle sınırlı)
 
+// Atma işlemleri kanal işlemlerinden ayrı sayılır (temizlik sırasında 10/dk sınırına takılmasın).
+function kisiHizi(ws) {
+	const simdi = Date.now();
+	if (simdi - (ws.kisiPencere || 0) > 60000) {
+		ws.kisiPencere = simdi;
+		ws.kisiAdet = 0;
+	}
+	if (++ws.kisiAdet > 60) {
+		gonder(ws, { type: 'hata', message: 'Çok sık atma işlemi; biraz bekle.' });
+		return false;
+	}
+	return true;
+}
+
 function kanalHizi(ws) {
 	const simdi = Date.now();
 	if (simdi - (ws.kanalPencere || 0) > 60000) {
@@ -616,7 +819,10 @@ async function kanalSilHandler(ws, m) {
 	durumYayinla();
 }
 
-wss.on('connection', (ws) => {
+wss.on('connection', (ws, req) => {
+	ws.ip = String((req && req.headers && req.headers['x-forwarded-for']) || '')
+		.split(',')[0]
+		.trim() || (req && req.socket ? req.socket.remoteAddress : '') || '';
 	ws.ad = null;
 	ws.sesKanal = null;
 	ws.sessiz = false;
@@ -634,6 +840,21 @@ wss.on('connection', (ws) => {
 		switch (m.type) {
 			case 'giris':
 				girisYap(ws, m);
+				break;
+			case 'giris-karari':
+				girisKarari(ws, m);
+				break;
+			case 'giris-iptal':
+				if (ws.knockId) istekKapat(ws.knockId, false, null);
+				break;
+			case 'at':
+				kisiAt(ws, m);
+				break;
+			case 'beyaz-liste':
+				if (!ws.ad) return;
+				db.kisiler()
+					.then((kisiler) => gonder(ws, { type: 'beyaz-liste', kisiler, maxKullanici: MAX_KULLANICI }))
+					.catch(() => gonder(ws, { type: 'hata', message: 'Beyaz liste okunamadı.' }));
 				break;
 			case 'yazi':
 				yaziGonder(ws, m);
@@ -674,9 +895,25 @@ wss.on('connection', (ws) => {
 				break;
 		}
 	});
-	ws.on('close', () => ayril(ws));
-	ws.on('error', () => ayril(ws));
+	ws.on('close', () => {
+		if (ws.knockId) istekKapat(ws.knockId, false, null);
+		ayril(ws);
+	});
+	ws.on('error', () => {
+		if (ws.knockId) istekKapat(ws.knockId, false, null);
+		ayril(ws);
+	});
 });
+
+// Kapıda bekleyen istekler 2 dakikada bir düşsün (kimse karar vermezse).
+const kapiZamanlayici = setInterval(() => {
+	const simdi = Date.now();
+	for (const [id, b] of bekleyenler) {
+		if (simdi - b.zaman < beklemeSuresi) continue;
+		istekKapat(id, false, b.ad);
+		gonder(b.ws, { type: 'giris-red', message: 'İstek zaman aşımına düştü; tekrar dene.' });
+	}
+}, 15000);
 
 // Kopan bağlantıları (telefon uykuya geçti, ağ değişti...) 30 saniyede bir temizle.
 const nabiz = setInterval(() => {
@@ -858,12 +1095,13 @@ const sunucu = http.createServer((req, res) => {
 			kisi,
 			cevrimici: kimler().length,
 			kanal: kanallar.length,
+			maxKullanici: MAX_KULLANICI,
 			veritabani: db ? 'açık' : 'kapalı',
 		};
-		const sayilar = db ? db.sayilar() : Promise.resolve({ mesaj: 0, dosya: 0 });
+		const sayilar = db ? Promise.all([db.sayilar(), db.kisiSayisi()]) : Promise.resolve([{ mesaj: 0, dosya: 0 }, 0]);
 		return sayilar.then(
-			(s) =>
-				yanit(res, iyi ? 200 : 503, JSON.stringify({ ...govde, mesaj: s.mesaj, dosya: s.dosya }) + '\n', {
+			([s, kisiSayisi]) =>
+				yanit(res, iyi ? 200 : 503, JSON.stringify({ ...govde, mesaj: s.mesaj, dosya: s.dosya, beyazListe: kisiSayisi }) + '\n', {
 					'Content-Type': 'application/json; charset=utf-8',
 					'Cache-Control': 'no-store',
 				}),
@@ -905,6 +1143,7 @@ async function kapat(sinyal) {
 	kapaniyor = true;
 	console.log(`Kapanıyor (${sinyal}).`);
 	clearInterval(nabiz);
+	clearInterval(kapiZamanlayici);
 	for (const ws of wss.clients) ws.close(1001, 'sunucu kapanıyor');
 	sunucu.close();
 	const bitir = async () => {
@@ -945,6 +1184,29 @@ async function main() {
 		console.log(`[kanal] ${kanallar.length} kanal: ${kanallar.map((k) => k.id).join(', ')}`);
 	} catch (e) {
 		console.error('Kanallar yüklenemedi: ' + e.message);
+		process.exit(1);
+	}
+	// Beyaz liste boşsa ilk (yönetici) anahtarı üret; kullanıcı dosyadan okuyup bağlantıyla girer.
+	try {
+		beyazListeSayisi = await db.kisiSayisi();
+		if (!beyazListeSayisi) {
+			const anahtar = ILK_ANAHTAR || crypto.randomBytes(24).toString('hex');
+			await db.kisiKaydet({ ad: YONETICI_ADI, anahtar, yonetici: 1 });
+			beyazListeSayisi = 1;
+			const dosya = path.join(VERI_KLASORU, 'ilk-anahtar.txt');
+			const adres = SITE_ADRESI.replace(/\/$/, '');
+			const metin =
+				'Beyaz liste boştu; ilk anahtar oluşturuldu.\n\n' +
+				`Kişi: ${YONETICI_ADI}\n` +
+				`Anahtar: ${anahtar}\n` +
+				`Giriş bağlantısı: ${adres}/#anahtar=${anahtar}\n\n` +
+				'Bağlantıyı bir kez aç: anahtar tarayıcına yazılır ve bir daha sormaz.\n' +
+				'Bu dosyayı kaydettikten sonra silebilirsin.\n';
+			await fs.promises.writeFile(dosya, metin, { mode: 0o600 });
+			console.log(`[beyaz liste] ilk anahtar oluşturuldu (${YONETICI_ADI}) → ${dosya}`);
+		}
+	} catch (e) {
+		console.error('Beyaz liste hazırlanamadı: ' + e.message);
 		process.exit(1);
 	}
 	try {

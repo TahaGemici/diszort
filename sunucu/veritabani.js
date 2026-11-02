@@ -23,6 +23,15 @@ CREATE TABLE IF NOT EXISTS mesaj (
 );
 CREATE INDEX IF NOT EXISTS mesaj_kanal ON mesaj (kanal, id);
 
+-- Beyaz liste: ad = kişi kimliği, anahtar = cihaz anahtarı (onayda üretilir, yeniden onayda döner).
+CREATE TABLE IF NOT EXISTS kisi (
+	ad TEXT PRIMARY KEY,
+	anahtar TEXT NOT NULL UNIQUE,
+	olusturma INTEGER NOT NULL,
+	son_giris INTEGER,
+	yonetici INTEGER NOT NULL DEFAULT 0
+);
+
 CREATE TABLE IF NOT EXISTS kanal (
 	id TEXT PRIMARY KEY,
 	ad TEXT NOT NULL,
@@ -126,6 +135,41 @@ function ac(klasor) {
 						[kanal, adet],
 					);
 			return satirlar.reverse().map(mesajCevir);
+		},
+
+		// --- beyaz liste (kişiler + anahtarları)
+		async kisiSayisi() {
+			const s = await tek('SELECT COUNT(*) AS n FROM kisi');
+			return s ? s.n : 0;
+		},
+
+		async kisiler() {
+			return hepsi('SELECT ad, olusturma, son_giris, yonetici FROM kisi ORDER BY olusturma, ad');
+		},
+
+		async kisiAnahtarla(anahtar) {
+			return tek('SELECT ad, anahtar, yonetici FROM kisi WHERE anahtar = ?', [anahtar]);
+		},
+
+		async kisiAd(ad) {
+			return tek('SELECT ad, anahtar, yonetici FROM kisi WHERE ad = ?', [ad]);
+		},
+
+		// Kişiyi beyaz listeye ekler; ad zaten varsa anahtarı yenilenir (cihaz değişti / yeniden onay).
+		async kisiKaydet({ ad, anahtar, yonetici = 0 }) {
+			await calistir(
+				'INSERT INTO kisi (ad, anahtar, olusturma, son_giris, yonetici) VALUES (?, ?, ?, ?, ?) ' +
+					'ON CONFLICT(ad) DO UPDATE SET anahtar = excluded.anahtar, son_giris = excluded.son_giris',
+				[ad, anahtar, Date.now(), Date.now(), yonetici ? 1 : 0],
+			);
+		},
+
+		async kisiSonGiris(ad) {
+			await calistir('UPDATE kisi SET son_giris = ? WHERE ad = ?', [Date.now(), ad]);
+		},
+
+		async kisiSil(ad) {
+			await calistir('DELETE FROM kisi WHERE ad = ?', [ad]);
 		},
 
 		// --- kanallar (yazılı/sesli). Kanal listesi veritabanında tutulur; mesajlar 'kanal' id'siyle bağlanır.

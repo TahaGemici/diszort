@@ -41,6 +41,10 @@ try {
 
 let ws = null;
 let benimAdim = '';
+let anahtar = ''; // beyaz liste anahtarı (localStorage'da kalır)
+let bekleyenIstek = false; // kapıyı çaldık, karar bekleniyor
+let beyazListe = 0;
+let maxKullanici = 10;
 let jeton = '';
 let bagliyim = false;
 let durduruldu = false; // ad alınamadı gibi kalıcı hata: yeniden bağlanmayı durdur
@@ -67,25 +71,80 @@ const yaziyorlar = new Map(); // ad -> son "yazıyor" zamanı
 
 try {
 	$('ad').value = localStorage.getItem('ad') || '';
+	anahtar = localStorage.getItem('anahtar') || '';
 } catch {}
-$('ad').focus();
+// Kurulum bağlantısı: https://…/#anahtar=XXXX → anahtarı sakla, adresten temizle.
+if (location.hash.length > 1) {
+	const m = location.hash.slice(1).match(/(?:^|&)anahtar=([^&]+)/);
+	if (m) {
+		try {
+			anahtar = decodeURIComponent(m[1]);
+		} catch {
+			anahtar = m[1];
+		}
+		try {
+			localStorage.setItem('anahtar', anahtar);
+		} catch {}
+		girisDurum('Anahtar kaydedildi.');
+		history.replaceState(null, '', location.pathname);
+	}
+}
+// Anahtarı olan otomatik girer: ad sormadan bağlan (ad sunucudan gelir).
+if (anahtar) {
+	$('gir').disabled = true;
+	girisDurum('Anahtar doğrulanıyor…');
+	baglan();
+} else {
+	$('ad').focus();
+}
 
 $('giris').addEventListener('submit', async (e) => {
 	e.preventDefault();
-	if (bagliyim || ws) return;
+	if (bagliyim || bekleyenIstek) return;
 	const ad = $('ad').value.trim().slice(0, 32);
 	if (!ad) return;
 	benimAdim = ad;
 	try {
 		localStorage.setItem('ad', ad);
 	} catch {}
-	$('gir').disabled = true;
 	durduruldu = false;
 	yenidenDene = 0;
-	girisDurum('Bağlanılıyor…');
-	await iceYukle();
+	girisDurum('İçeridekilere soruluyor…');
+	girisBekliyor(true);
+	if (ws) {
+		ws.onclose = null;
+		try {
+			ws.close();
+		} catch {}
+		ws = null;
+	}
 	baglan();
 });
+
+// Kapıyı çaldıktan sonra vazgeç.
+$('giris-iptal').addEventListener('click', () => {
+	gonder({ type: 'giris-iptal' });
+	girisBekliyor(false);
+	durduruldu = true;
+	if (ws) {
+		ws.onclose = null;
+		try {
+			ws.close();
+		} catch {}
+		ws = null;
+	}
+	girisDurum('İstek geri çekildi.');
+	$('ad').focus();
+});
+
+// Giriş ekranı durumu: beklerken ad alanı kilitli, "İsteği geri çek" görünür.
+function girisBekliyor(bekle) {
+	bekleyenIstek = bekle;
+	$('ad').disabled = bekle;
+	$('gir').disabled = bekle;
+	$('giris-iptal').hidden = !bekle;
+	if (!bekle) $('gir').disabled = false;
+}
 
 async function iceYukle() {
 	try {
@@ -96,10 +155,11 @@ async function iceYukle() {
 
 // ---------------------------------------------------------------- sunucu bağlantısı
 
-function baglan() {
+async function baglan() {
+	if (!ice.iceServers || !ice.iceServers.length) await iceYukle();
 	baglantiRozeti('bağlanılıyor…');
 	ws = new WebSocket((location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + '/rtc');
-	ws.onopen = () => ws.send(JSON.stringify({ type: 'giris', ad: benimAdim, id: SEKME }));
+	ws.onopen = () => ws.send(JSON.stringify({ type: 'giris', ad: benimAdim, id: SEKME, anahtar }));
 	ws.onmessage = (olay) => {
 		let m;
 		try {
@@ -142,8 +202,28 @@ function mesaj(m) {
 		case 'hazir': {
 			const ilk = !bagliyim;
 			bagliyim = true;
+			bekleyenIstek = false;
+			durduruldu = false;
 			yenidenDene = 0;
 			jeton = m.jeton;
+			// Yeni anahtar verildiyse sakla; bir daha izin sorulmaz.
+			if (m.anahtar) {
+				anahtar = m.anahtar;
+				try {
+					localStorage.setItem('anahtar', anahtar);
+				} catch {}
+			}
+			if (m.ad) {
+				benimAdim = m.ad;
+				$('ad').value = m.ad;
+				try {
+					localStorage.setItem('ad', m.ad);
+				} catch {}
+			}
+			beyazListe = m.beyazListe != null ? m.beyazListe : beyazListe;
+			maxKullanici = m.maxKullanici || maxKullanici;
+			girisBekliyor(false);
+			girisDurum('');
 			sunucu = { max: m.max || 10, dosyaMb: m.dosyaMb || 25 };
 			kanallar = m.kanallar || [];
 			kimlerListesi = m.kimler || [];
@@ -191,7 +271,68 @@ function mesaj(m) {
 			break;
 		case 'kimler':
 			kimlerListesi = m.kimler || [];
+			if (m.beyazListe != null) beyazListe = m.beyazListe;
+			if (m.maxKullanici) maxKullanici = m.maxKullanici;
 			uyeleriCiz();
+			break;
+		case 'bekleniyor':
+			// Kapıyı çaldık: içeridekiler karar verene kadar bekle. Bağlantı koparsa kendiliğinden
+			// yeniden bağlanma (istek zaten düşmüş olur), kullanıcı yeniden denesin.
+			bekleyenIstek = true;
+			durduruldu = true;
+			girisBekliyor(true);
+			$('giris-ekrani').hidden = false;
+			$('uygulama').hidden = true;
+			girisDurum(m.anahtarGecersiz ? 'Anahtar geçersiz; izin bekleniyor…' : 'İçeridekilere soruldu; izin bekleniyor…');
+			break;
+		case 'giris-red':
+			girisBekliyor(false);
+			bagliyim = false;
+			if (ws) {
+				ws.onclose = null;
+				try {
+					ws.close();
+				} catch {}
+				ws = null;
+			}
+			// Geçersiz anahtar tarayıcıda kalırsa her açılışta reddedilir; temizle.
+			if (/anahtar/i.test(m.message || '')) {
+				anahtar = '';
+				try {
+					localStorage.removeItem('anahtar');
+				} catch {}
+			}
+			$('uygulama').hidden = true;
+			$('giris-ekrani').hidden = false;
+			girisDurum(m.message || 'Giriş reddedildi.', true);
+			$('ad').focus();
+			break;
+		case 'giris-istegi':
+			istekEkle(m.id, m.ad);
+			break;
+		case 'istek-kapandi': {
+			istekSil(m.id);
+			if (m.kabul) durum(`${m.ad} içeri alındı.`);
+			break;
+		}
+		case 'atildi':
+			durduruldu = true;
+			anahtar = '';
+			try {
+				localStorage.removeItem('anahtar');
+			} catch {}
+			bagliyim = false;
+			sesKapat(false);
+			if (ws) {
+				ws.onclose = null;
+				try {
+					ws.close();
+				} catch {}
+				ws = null;
+			}
+			$('uygulama').hidden = true;
+			$('giris-ekrani').hidden = false;
+			girisDurum(m.message || 'Sunucudan atıldın; tekrar izin iste.', true);
 			break;
 		case 'yazi':
 			mesajGeldi(m.kanal, m.mesaj);
@@ -322,8 +463,18 @@ function uyeleriCiz() {
 		const d = el('div', 'uye');
 		d.append(el('span', 'nokta' + (k.sessiz ? ' kapali' : '')), el('span', 'ad', k.ad + (k.ad === benimAdim ? ' (sen)' : '')));
 		if (k.ses) d.append(el('span', 'etiket', kanalBilgi(k.ses)?.ad || 'ses'));
+		// Beyaz listedekiler birbirini atabilir (kendini atmak yok).
+		if (k.ad !== benimAdim) {
+			const at = el('button', 'uye-at', '✕');
+			at.type = 'button';
+			at.title = 'Sunucudan at (anahtarı iptal edilir)';
+			at.setAttribute('aria-label', k.ad + ' kişisini sunucudan at');
+			at.onclick = () => kisiAtIste(k.ad);
+			d.append(at);
+		}
 		kap.append(d);
 	}
+	$('beyaz-liste').textContent = beyazListe ? `Beyaz liste ${beyazListe}/${maxKullanici}` : '';
 	cevrimiciSayaci();
 }
 
@@ -337,6 +488,52 @@ function baslikGuncelle() {
 	document.title = (toplam ? `(${toplam}) ` : '') + 'Ses Kanalı';
 }
 
+
+// ---------------------------------------------------------------- giriş istekleri (kapıyı çalanlar)
+
+const istekler = new Map(); // istek id -> { ad, kart }
+
+function istekEkle(id, ad) {
+	if (istekler.has(id)) return;
+	const kart = el('div', 'istek');
+	const satir = el('div');
+	satir.append(el('b', null, ad), document.createTextNode(' girmek istiyor.'));
+	const dugmeler = el('div', 'istek-dugmeler');
+	const kabul = el('button', null, 'Kabul et');
+	kabul.type = 'button';
+	kabul.onclick = () => {
+		gonder({ type: 'giris-karari', id, kabul: true });
+		istekSil(id);
+	};
+	const red = el('button', 'red', 'Reddet');
+	red.type = 'button';
+	red.onclick = () => {
+		gonder({ type: 'giris-karari', id, kabul: false });
+		istekSil(id);
+	};
+	dugmeler.append(kabul, red);
+	kart.append(satir, dugmeler);
+	$('istekler').append(kart);
+	istekler.set(id, { ad, kart });
+}
+
+function istekSil(id) {
+	const k = istekler.get(id);
+	if (!k) return;
+	k.kart.remove();
+	istekler.delete(id);
+}
+
+function kisiAtIste(ad) {
+	pencereAc({
+		baslik: 'Sunucudan at',
+		metin: `"${ad}" beyaz listeden çıkarılacak ve anahtarı iptal edilecek. Tekrar girmek için izin istemesi gerekir.`,
+		girdi: false,
+		tamam: 'At',
+		tehlike: true,
+		onay: () => gonder({ type: 'at', ad }),
+	});
+}
 
 // ---------------------------------------------------------------- pencere (kanal ekle / sil)
 

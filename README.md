@@ -3,7 +3,12 @@
 Hesapsız, tarayıcıdan girilen Discord'umsu sunucu: **yazılı kanallar** (geçmişi veritabanında tutulur,
 dosya paylaşılabilir) + **sesli kanallar** (ses tarayıcılar arasında doğrudan, P2P akar).
 
-- **Giriş:** Yalnızca adını yazarsın. Hesap, şifre, davet yok. Bütün kanallar açılır.
+- **Giriş (beyaz liste):** Adını yazarsın; içerideki herkese *"X girmek istiyor"* diye sorulur. Biri kabul
+  ederse sana **yalnızca sende olan bir anahtar** verilir ve tarayıcında saklanır — sonraki girişlerde soru
+  sorulmaz. Reddedilirsen ya da içeride kimse yoksa giremezsin. En fazla **10 kişi** (`.env`: `MAX_KULLANICI`).
+- **Atma:** İçeridekiler birbirini atabilir (sağdaki üye listesinde `✕`); atılanın anahtarı iptal edilir.
+- **İlk anahtar:** Beyaz liste boşken sunucu ilk anahtarı üretir ve `/var/lib/chat/ilk-anahtar.txt` dosyasına
+  yazar. Bağlantıyı bir kez açmak yeter: `https://…/#anahtar=<anahtar>` anahtarı tarayıcıya kaydeder.
 - **Arayüz:** Solda yazılı (`#genel`, `#muhabbet`) ve sesli (Sesli Sohbet, Müzik, Oyun) kanallar;
   ortada sohbet; sağda çevrimiçi kişiler; sesli kanaldayken altta katılımcı kartı.
 - **Kanal ekle / sil:** Her bölümün başındaki `＋` ile yazılı veya sesli kanal açılır; kanal adının
@@ -103,7 +108,8 @@ sudo systemctl reload caddy
 | Yol (sunucu) | İçinde |
 |---|---|
 | `/var/lib/chat/.env` | ayarlar |
-| `/var/lib/chat/sohbet.db` (+ `-wal`, `-shm`) | kanal listesi, yazılı kanalların mesajları ve dosya kayıtları (SQLite) |
+| `/var/lib/chat/sohbet.db` (+ `-wal`, `-shm`) | beyaz liste (kişiler + anahtarlar), kanal listesi, mesajlar ve dosya kayıtları (SQLite) |
+| `/var/lib/chat/ilk-anahtar.txt` | beyaz liste boşken üretilen ilk anahtar (okuduktan sonra silinebilir) |
 | `/var/lib/chat/yuklemeler/` | paylaşılan dosyaların kendisi (`<id>` adıyla) |
 
 Hepsi `/var/lib/chat` altında, konteynerde `/veri`. Konteyner silinse/yeniden kurulsa da korunur;
@@ -124,14 +130,15 @@ docker compose down
 
 Adresi iki sekmede aç. (Tarayıcılar mikrofonu yalnızca HTTPS'te ya da `localhost`/`127.0.0.1`'de verir.)
 Çalışan bir sunucuyu dışarıdan denemek için: `make test` (ya da `node test/dene.js http://adres:port`).
-18 deneme yapılır: web sayfası, sağlık, `/api/ice`, STUN, TURN (doğru/yanlış şifre), giriş, yazılı sohbet
+25 deneme yapılır: beyaz liste (anahtarlı giriş, kapıyı çalma, kabul/red, geçersiz anahtar, kimse yokken
+giriş, atma, liste doluluğu) + web sayfası, sağlık, `/api/ice`, STUN, TURN (doğru/yanlış şifre), giriş, yazılı sohbet
 (gönderme, iletme, geçmiş, hız sınırı), dosya paylaşımı (yetki, yükleme, indirme), sesli kanal signaling'i,
 aynı ad reddi, kanal doluluğu, kanal ekleme/silme (yazılı + sesli, doğrulama) ve çık-gir sonrası yeniden
 bağlanma. **Not:** denemeler gerçek veritabanına birkaç `(deneme)` mesajı ve küçük
 bir dosya bırakır.
 
 Arayüzü de tarayıcı açmadan deneyebilirsin: `make arayuz` (jsdom; giriş, kanal ekleme/silme penceresi,
-kanal seçimi, mesaj çizimi, sesli kanal satırları, bağlantı istatistikleri, çık-gir — toplam 72 denetim).
+kanal seçimi, mesaj çizimi, giriş istekleri, atma, bağlantı istatistikleri, çık-gir — toplam 83 denetim).
 Bu VPS'te gerçek tarayıcı çalıştırılmaz.
 
 ## Nasıl çalışır
@@ -152,6 +159,9 @@ tarayıcı ──UDP 3478──> coturn (konteynerde, sunucu.js başlatır) ─�
 - **Konteyner:** Tek süreç: `sunucu.js` web sayfasını, sohbeti, dosyaları ve signaling'i yönetir; coturn'ü
   kendisi başlatıp izler (biri düşerse konteyner iki saniyede yeniden başlar). Kök olmayan kullanıcı
   (uid 1000) ile çalışır. Sunucunun ağını paylaşır (`network_mode: host`): TURN çok sayıda UDP portu kullanır.
+- **Beyaz liste:** `kisi` tablosu (`ad` birincil anahtar, `anahtar` kişiye özel). Onayda anahtar üretilir;
+  aynı ad yeniden onaylanırsa anahtar döner (cihaz değişti). Anahtar `localStorage`'da tutulur, HTTPS
+  üzerinden gönderilir. Giriş denemeleri IP başına dakikada 100 ile, atma işlemleri 60 ile sınırlı.
 - **Kanallar:** Veritabanındaki `kanal` tablosunda (id, ad, tur, sıra). İlk kurulumda varsayılanlar
   yazılır; sonrasında arayüzden eklenip silinir (en fazla 40, ad 24 karakter, aynı türde aynı ad yok).
   Kanal kimliği addan üretilir ("Sesli Sohbet" → `sesli-sohbet`), çakışırsa sonuna sayı eklenir.
@@ -173,7 +183,11 @@ tarayıcı ──UDP 3478──> coturn (konteynerde, sunucu.js başlatır) ─�
 
 | İstemci → sunucu | Anlamı |
 |---|---|
-| `giris {ad, id}` | adı al (bir kez). `id` sekme kimliği: aynı sekme yeniden bağlanınca eski bağlantı düşer |
+| `giris {ad, id, anahtar}` | anahtar geçerliyse doğrudan girer; yoksa kapıyı çalar (`bekleniyor`) |
+| `giris-karari {id, kabul}` | içerideki biri isteği kabul/red eder (kabulde anahtar üretilir) |
+| `giris-iptal` | kapıyı çalan isteğini geri çeker |
+| `at {ad}` | kişiyi beyaz listeden atar (anahtarı iptal edilir, bağlantısı düşer) |
+| `beyaz-liste` | beyaz listeyi ister (içeridekiler görebilir) |
 | `yazi {kanal, metin}` | yazılı kanala mesaj gönder (veritabanına yazılır, herkese iletilir) |
 | `gecmis {kanal, once}` | son 50 mesaj; `once` verilirse ondan daha eskiler |
 | `yaziyor {kanal}` | "yazıyor" göstergesi |
@@ -185,7 +199,11 @@ tarayıcı ──UDP 3478──> coturn (konteynerde, sunucu.js başlatır) ─�
 
 | Sunucu → istemci | Anlamı |
 |---|---|
-| `hazir {ad, kanallar, kimler, max, dosyaMb, jeton}` | giriş kabul edildi; kanal listesi + yükleme jetonu |
+| `hazir {ad, kanallar, kimler, max, dosyaMb, jeton, anahtar?}` | giriş kabul edildi; `anahtar` yalnızca yeni verildiğinde gelir |
+| `bekleniyor {ad, anahtarGecersiz}` | kapıyı çaldın, içeridekilerin kararı bekleniyor |
+| `giris-red {message}` | giriş reddedildi (dolu, kimse yok, istek reddedildi…) |
+| `giris-istegi {id, ad}` / `istek-kapandi {id, kabul}` | içeridekilere gelen onay isteği ve sonucu |
+| `atildi {message}` | beyaz listeden atıldın (anahtarın iptal edildi) |
 | `kanallar` / `kimler` | kanal doluluğu / çevrimiçi kişiler değişti |
 | `yazi {kanal, mesaj}` / `gecmis {kanal, mesajlar, bitti}` | yeni mesaj / geçmiş |
 | `yaziyor`, `sessiz` | göstergeler |
@@ -207,8 +225,8 @@ Her çiftte teklifi adı alfabetik olarak büyük olan yapar (çakışma olmaz).
 | `sunucu/veritabani.js` | SQLite (mesaj + dosya kayıtları) |
 | `web/` | arayüz (`index.html`, `ana.js`, `stil.css`, simgeler) |
 | `.env.example` | ayarlar (sunucuda `/var/lib/chat/.env`) |
-| `test/dene.js` | çalışan sunucuyu uçtan uca dener (18 deneme) |
-| `test/arayuz.js` | arayüzü tarayıcısız dener (jsdom; 72 denetim) |
+| `test/dene.js` | çalışan sunucuyu uçtan uca dener (25 deneme) |
+| `test/arayuz.js` | arayüzü tarayıcısız dener (jsdom; 83 denetim) |
 | `.github/workflows/docker.yml` | push → derle, `kur.sh` ile dene, ghcr.io'ya yükle, sürüm çıkar |
 
 ## Sınırlar
