@@ -18,7 +18,10 @@ concurrency:
 env:
   SURUM: v${{ github.run_number }}
   # Uçtan uca denemede beyaz liste ilk anahtarı (üretimde .env'de boş bırakılır).
-  ILK_ANAHTAR: ci-anahtar-${{ github.run_number }}-0123456789abcdef
+  # Sunucu yalnızca 512 bit (128 hex) anahtar kabul eder; bu yüzden test anahtarı da 128 hex.
+  ILK_ANAHTAR: '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef'
+  # Giriş freni: üretimde 10000 ms (10 saniyede 1). Denemeler çok sayıda giriş yaptığı için kısa.
+  GIRIS_ARALIK_MS: '500'
   # Sesli kanal doluluk denemesi 10 kişi + 1 fazla ister; beyaz liste sınırı buna izin vermeli.
   MAX_KULLANICI: '15'
 
@@ -53,7 +56,7 @@ jobs:
 
       - name: kur.sh ile kur (yerel imaj)
         run: |
-          sudo sh -c "IMAJ=ses-kanali:$SURUM ILK_ANAHTAR=$ILK_ANAHTAR MAX_KULLANICI=$MAX_KULLANICI sh kurulum/kur.sh" | tee kur.log
+          sudo sh -c "IMAJ=ses-kanali:$SURUM ILK_ANAHTAR=$ILK_ANAHTAR MAX_KULLANICI=$MAX_KULLANICI GIRIS_ARALIK_MS=$GIRIS_ARALIK_MS sh kurulum/kur.sh" | tee kur.log
           grep -q 'Ayar dosyası oluşturuldu' kur.log
           grep -q 'Docker konteynerinde çalışıyor' kur.log
 
@@ -99,7 +102,7 @@ jobs:
       - name: Yeniden kurulumda .env kalır
         run: |
           echo 'MAX_KISI=7' | sudo tee -a /var/lib/chat/.env
-          sudo sh -c "IMAJ=ses-kanali:$SURUM ILK_ANAHTAR=$ILK_ANAHTAR MAX_KULLANICI=$MAX_KULLANICI sh kurulum/kur.sh" | tee kur2.log
+          sudo sh -c "IMAJ=ses-kanali:$SURUM ILK_ANAHTAR=$ILK_ANAHTAR MAX_KULLANICI=$MAX_KULLANICI GIRIS_ARALIK_MS=$GIRIS_ARALIK_MS sh kurulum/kur.sh" | tee kur2.log
           if grep -q 'Ayar dosyası oluşturuldu' kur2.log; then echo ".env yeniden oluşturuldu"; exit 1; fi
           sudo grep -q '^MAX_KISI=7' /var/lib/chat/.env
           MAX_KISI=7 node test/dene.js http://127.0.0.1:8080

@@ -132,8 +132,8 @@ docker compose down
 
 Adresi iki sekmede aç. (Tarayıcılar mikrofonu yalnızca HTTPS'te ya da `localhost`/`127.0.0.1`'de verir.)
 Çalışan bir sunucuyu dışarıdan denemek için: `make test` (ya da `node test/dene.js http://adres:port`).
-27 deneme yapılır: beyaz liste (anahtarlı giriş, kapıyı çalma, kabul/red, geçersiz anahtar, kimse yokken
-giriş, atma, liste doluluğu, hatalı denemede 10 sn bekleme, kişi limitini değiştirme) + web sayfası, sağlık, `/api/ice`, STUN, TURN (doğru/yanlış şifre), giriş, yazılı sohbet
+28 deneme yapılır: beyaz liste (anahtarlı giriş, kapıyı çalma, kabul/red, geçersiz anahtar, eski biçim anahtar,
+kimse yokken giriş, atma, liste doluluğu, giriş freni, kişi limitini değiştirme) + web sayfası, sağlık, `/api/ice`, STUN, TURN (doğru/yanlış şifre), giriş, yazılı sohbet
 (gönderme, iletme, geçmiş, hız sınırı), dosya paylaşımı (yetki, yükleme, indirme), sesli kanal signaling'i,
 aynı ad reddi, kanal doluluğu, kanal ekleme/silme (yazılı + sesli, doğrulama) ve çık-gir sonrası yeniden
 bağlanma. **Not:** denemeler gerçek veritabanına birkaç `(deneme)` mesajı ve küçük
@@ -163,9 +163,13 @@ tarayıcı ──UDP 3478──> coturn (konteynerde, sunucu.js başlatır) ─�
   (uid 1000) ile çalışır. Sunucunun ağını paylaşır (`network_mode: host`): TURN çok sayıda UDP portu kullanır.
 - **Beyaz liste:** `kisi` tablosu (`ad` birincil anahtar, `anahtar` kişiye özel). Onayda **512 bit**
   (128 hex) anahtar üretilir; aynı ad yeniden onaylanırsa anahtar döner (cihaz değişti). Anahtar
-  `localStorage`'da tutulur, HTTPS üzerinden gönderilir. Hatalı anahtar denemesinden sonra o bağlantı
-  **10 saniye** yeni deneme yapamaz; 6 hatalı denemeden sonra bağlantı düşürülür (IP takibi yapılmaz).
-  Kapıyı çalma istekleri IP başına dakikada 600 ile, atma işlemleri 60 ile sınırlı. Kişi limiti
+  `localStorage`'da tutulur, HTTPS üzerinden gönderilir. **Yalnızca 512 bit anahtarlar kabul edilir**;
+  eski/kısa biçimdeki anahtar geçersiz sayılır ve kapıyı çalma akışına düşer.
+- **Giriş freni (sunucu tarafı):** TÜM giriş denemeleri sunucu genelinde **10 saniyede 1** ile sınırlıdır —
+  bağlantı, kişi, ilk deneme ayrımı yok; geçerli anahtarla yapılan deneme de freni bekler. Fren yalnızca
+  sunucuda uygulanır (istemci kodu değiştirilerek aşılamaz) ve bekleme sunucuda tutulmaz: istek anında
+  reddedilir, kaynak harcanmaz. Ayar: `GIRIS_ARALIK_MS` (varsayılan 10000; testler küçültür).
+  Ayrı olarak kapıyı çalma istekleri IP başına dakikada 600, atma işlemleri 60 ile sınırlı. Kişi limiti
   çalışırken değiştirilebilir (`ayar` tablosunda `kisi_limiti`); `.env` yalnızca varsayılanı verir.
 - **Kanallar:** Veritabanındaki `kanal` tablosunda (id, ad, tur, sıra). İlk kurulumda varsayılanlar
   yazılır; sonrasında arayüzden eklenip silinir (en fazla 40, ad 24 karakter, aynı türde aynı ad yok).
@@ -189,7 +193,7 @@ tarayıcı ──UDP 3478──> coturn (konteynerde, sunucu.js başlatır) ─�
 
 | İstemci → sunucu | Anlamı |
 |---|---|
-| `giris {ad, id, anahtar}` | anahtar geçerliyse doğrudan girer; yoksa kapıyı çalar (`bekleniyor`) |
+| `giris {ad, id, anahtar}` | anahtar geçerliyse doğrudan girer; yoksa kapıyı çalar (`bekleniyor`). Sunucu genelinde 10 saniyede 1 deneme (`giris-red`) |
 | `giris-karari {id, kabul}` | içerideki biri isteği kabul/red eder (kabulde anahtar üretilir) |
 | `giris-iptal` | kapıyı çalan isteğini geri çeker |
 | `at {ad}` | kişiyi beyaz listeden atar (anahtarı iptal edilir, bağlantısı düşer) |
@@ -232,7 +236,7 @@ Her çiftte teklifi adı alfabetik olarak büyük olan yapar (çakışma olmaz).
 | `sunucu/veritabani.js` | SQLite (mesaj + dosya kayıtları) |
 | `web/` | arayüz (`index.html`, `ana.js`, `stil.css`, simgeler) |
 | `.env.example` | ayarlar (sunucuda `/var/lib/chat/.env`) |
-| `test/dene.js` | çalışan sunucuyu uçtan uca dener (27 deneme) |
+| `test/dene.js` | çalışan sunucuyu uçtan uca dener (28 deneme; giriş frenine uyar) |
 | `test/arayuz.js` | arayüzü tarayıcısız dener (jsdom; 87 denetim) |
 | `.github/workflows/docker.yml` | push → derle, `kur.sh` ile dene, ghcr.io'ya yükle, sürüm çıkar |
 

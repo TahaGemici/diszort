@@ -92,14 +92,16 @@ const MIN_KISI_LIMITI = 2;
 const MAKS_KISI_LIMITI = 50;
 let maxKullanici = KISI_LIMITI_VARSAYILAN;
 const YONETICI_ADI = ayar('YONETICI_ADI', 'taha'); // beyaz liste boşken ilk anahtarı alacak kişi
-// Kişiye özel anahtar: 64 rastgele bayt = 512 bit (128 hex karakter).
-// (192 bit bile evrenin yaşından uzun sürede kırılır; 512 bit ek güvence değil, tercih.)
+// Kişiye özel anahtar: 64 rastgele bayt = 512 bit (128 hex karakter). Yalnızca bu biçimdeki
+// anahtarlar kabul edilir; eski/kısa anahtarlar geçersiz sayılır (kapıyı çalma akışına düşer).
 const ANAHTAR_BAYT = 64;
 const ANAHTAR_UZUNLUK = ANAHTAR_BAYT * 2;
-// Hatalı anahtar denemesinden sonra aynı bağlantı bu kadar bekler; ısrarcı otomatik
-// denemelerde bağlantı HATA_SINIRI hatadan sonra düşürülür. IP takibi yapılmaz.
-const HATA_BEKLEME_MS = 10000;
-const HATA_SINIRI = 6;
+const ANAHTAR_KALIBI = /^[0-9a-f]{128}$/;
+// Giriş freni: TÜM giriş denemeleri sunucu genelinde (tüm bağlantılar, tüm kişiler) bu aralıkla
+// sınırlıdır — 10 saniyede 1. İlk deneme, yeni bağlantı, geçerli anahtar ayrımı YOKTUR.
+// Yalnızca sunucu tarafında uygulanır; istemci kodu değiştirilerek aşılamaz.
+const GIRIS_ARALIK_MS = sayiAyar('GIRIS_ARALIK_MS', 10000, 0, 600000);
+let sonGirisDenemesi = 0; // sunucu geneli: son kabul edilen giriş denemesinin zamanı
 const ILK_ANAHTAR = ayar('ILK_ANAHTAR'); // test/kurulum için sabit ilk anahtar (üretimde boş bırak)
 const SITE_ADRESI = ayar('SITE_ADRESI', 'https://chat.tahagemici.com'); // ilk anahtar bağlantısında kullanılır
 const TURN_PORT = sayiAyar('TURN_PORT', 3478, 1, 65535);
@@ -114,8 +116,8 @@ const YUKLEME_KLASORU = path.join(VERI_KLASORU, 'yuklemeler');
 const DOSYA_SINIRI = DOSYA_MB * 1024 * 1024;
 const EN_AZ_BOS_ALAN = 300 * 1024 * 1024; // yükleme için sunucuda en az bu kadar boş yer kalsın
 
-if (ILK_ANAHTAR && ILK_ANAHTAR.length < 16) {
-	console.error('Ayar hatası: ILK_ANAHTAR en az 16 karakter olmalı (ya da boş bırak).');
+if (ILK_ANAHTAR && !ANAHTAR_KALIBI.test(ILK_ANAHTAR)) {
+	console.error(`Ayar hatası: ILK_ANAHTAR ${ANAHTAR_UZUNLUK} karakterlik hex olmalı (512 bit) ya da boş bırakılmalı.`);
 	process.exit(1);
 }
 
@@ -479,9 +481,6 @@ function oturumAc(ws, ad, kimlik, anahtar) {
 		eski.terminate();
 	}
 	if (ws.jeton) jetonlar.delete(ws.jeton);
-	// Başarılı giriş hata sayacını sıfırlar.
-	ws.hataSayisi = 0;
-	ws.beklemeBitis = 0;
 	ws.ad = ad;
 	ws.kimlik = kimlik || '';
 	ws.jeton = crypto.randomBytes(16).toString('hex');
@@ -555,16 +554,11 @@ async function kapiCal(ws, ad, anahtarGecersiz) {
 	console.log(`[kapı] ${ad} izin istiyor (${cevrimici.length} kişiye soruldu${anahtarGecersiz ? ', anahtar geçersiz' : ''})`);
 }
 
-// Hatalı anahtar: bağlantıyı HATA_BEKLEME_MS boyunca kilitler. Bekleme sunucuda tutulmaz
-// (istek hemen reddedilir, zamanlayıcı yok) — böylece deneme yağması sunucu kaynağı yemez.
-function hataBeklet(ws) {
-	ws.hataSayisi = (ws.hataSayisi || 0) + 1;
-	ws.beklemeBitis = Date.now() + HATA_BEKLEME_MS;
-	// Israrcı otomatik denemelerde bağlantıyı düşür (kapıda bekleyen istek varsa dokunma).
-	if (ws.hataSayisi >= HATA_SINIRI && !ws.knockId) {
-		gonder(ws, { type: 'giris-red', message: 'Çok fazla hatalı deneme; bağlantı kapatıldı.' });
-		setTimeout(() => ws.terminate(), 300);
-	}
+// Giriş freni: sunucu genelinde tek sayaç. Her giriş denemesi (anahtarlı/anahtarsız, ilk deneme
+// dahil) 10 saniyede 1'e tabidir. Bekleme sunucuda tutulmaz: istek hemen reddedilir, zamanlayıcı yok.
+function girisFreni(simdi) {
+	const kalan = GIRIS_ARALIK_MS - (simdi - sonGirisDenemesi);
+	return kalan > 0 ? kalan : 0;
 }
 
 async function girisYap(ws, m) {
@@ -573,15 +567,17 @@ async function girisYap(ws, m) {
 	const anahtar = String(m.anahtar ?? '').trim().slice(0, ANAHTAR_UZUNLUK);
 	ws.kimlik = kimlik;
 
-	// Hatalı denemeden sonra bekleme (IP takibi yok; sayaç bağlantıya bağlı).
+	// Önce fren: DB'ye bile gitmeden reddedilir.
 	const simdi = Date.now();
-	if (ws.beklemeBitis > simdi) {
-		const kalan = Math.ceil((ws.beklemeBitis - simdi) / 1000);
-		return gonder(ws, { type: 'giris-red', message: `Hatalı denemeden sonra ${kalan} saniye beklemelisin.` });
+	const kalan = girisFreni(simdi);
+	if (kalan > 0) {
+		return gonder(ws, { type: 'giris-red', message: `Çok sık deneme; ${Math.ceil(kalan / 1000)} saniye sonra tekrar dene.` });
 	}
+	sonGirisDenemesi = simdi;
 
 	// 1) Geçerli anahtar → doğrudan giriş (ad, anahtarın sahibinden gelir).
-	if (anahtar) {
+	// Yalnızca 512 bit (128 hex) anahtarlar sorgulanır; eski biçimdeki anahtarlar geçersizdir.
+	if (anahtar && ANAHTAR_KALIBI.test(anahtar)) {
 		let kisi = null;
 		try {
 			kisi = await db.kisiAnahtarla(anahtar);
@@ -607,10 +603,6 @@ async function girisYap(ws, m) {
 			return;
 		}
 	}
-
-	// Anahtar verildi ama eşleşmedi → bu bağlantı 10 saniye boyunca yeni deneme yapamaz.
-	// (Kapıyı çalma akışı bozulmaz: anahtarını kaybeden kişi izin isteyebilir.)
-	if (anahtar) hataBeklet(ws);
 
 	// 2) Anahtarsız / geçersiz anahtar → kapıyı çal.
 	if (!ad) {
@@ -1169,6 +1161,7 @@ const sunucu = http.createServer((req, res) => {
 			cevrimici: kimler().length,
 			kanal: kanallar.length,
 			maxKullanici: maxKullanici,
+			girisAralikMs: GIRIS_ARALIK_MS,
 			veritabani: db ? 'açık' : 'kapalı',
 		};
 		const sayilar = db ? Promise.all([db.sayilar(), db.kisiSayisi()]) : Promise.resolve([{ mesaj: 0, dosya: 0 }, 0]);

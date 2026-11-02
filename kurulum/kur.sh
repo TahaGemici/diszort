@@ -104,8 +104,12 @@ TURN_ADRESI=
 MAX_KISI=10
 
 # Beyaz liste: en fazla kaç kişi (ad) olabilir. Her kişinin kendi anahtarı vardır; yeni kişi
-# içeridekilerin onayıyla eklenir.
+# içeridekilerin onayıyla eklenir. İçeridekiler arayüzden (− / +) çalışırken değiştirebilir.
 MAX_KULLANICI=10
+
+# Giriş freni (ms): TÜM giriş denemeleri sunucu genelinde bu aralıkla sınırlıdır.
+# 10000 = 10 saniyede 1 deneme (üretimde böyle kalmalı). Yalnızca otomatik testler küçültür.
+# GIRIS_ARALIK_MS=10000
 
 # Beyaz liste boşken ilk anahtarı alacak kişinin adı (anahtar: /var/lib/chat/ilk-anahtar.txt).
 YONETICI_ADI=taha
@@ -134,7 +138,7 @@ AYARLAR
 		echo "Ayarlar korunuyor: $VERI/.env"
 	fi
 	# Test/kurulum kolaylığı: bu değişkenler verilmişse .env'e yaz (CI uçtan uca denemede kullanır).
-	for cift in "ILK_ANAHTAR=${ILK_ANAHTAR:-}" "MAX_KULLANICI=${MAX_KULLANICI:-}"; do
+	for cift in "ILK_ANAHTAR=${ILK_ANAHTAR:-}" "MAX_KULLANICI=${MAX_KULLANICI:-}" "GIRIS_ARALIK_MS=${GIRIS_ARALIK_MS:-}"; do
 		ad=${cift%%=*}
 		deger=${cift#*=}
 		[ -n "$deger" ] || continue
