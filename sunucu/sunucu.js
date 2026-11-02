@@ -69,6 +69,40 @@ function icIpBul() {
 	}
 	return '';
 }
+// Bulut meta veri sunucusundan dış IP (GCP: metadata.google.internal). Yoksa boş döner.
+function disIpBul() {
+	return new Promise((coz) => {
+		let bitti = false;
+		const bitir = (deger) => {
+			if (bitti) return;
+			bitti = true;
+			coz(deger || '');
+		};
+		try {
+			const istek = http.get(
+				{
+					host: 'metadata.google.internal',
+					path: '/computeMetadata/v1/instance/network-interfaces/0/access-configs/0/external-ip',
+					headers: { 'Metadata-Flavor': 'Google' },
+					timeout: 1500,
+				},
+				(yanit) => {
+					let veri = '';
+					yanit.on('data', (d) => (veri += d));
+					yanit.on('end', () => bitir(ipv4mu(veri.trim()) ? veri.trim() : ''));
+				},
+			);
+			istek.on('timeout', () => {
+				istek.destroy();
+				bitir('');
+			});
+			istek.on('error', () => bitir(''));
+		} catch {
+			bitir('');
+		}
+	});
+}
+
 function surumBul() {
 	// Docker imajı sürümü SURUM ortam değişkeniyle verir (Dockerfile: ARG SURUM);
 	// kendi bilgisayarında "yerel" görünür.
@@ -111,9 +145,13 @@ const TANI = ayar('TANI', '1') !== '0';
 const TURN_PORT = sayiAyar('TURN_PORT', 3478, 1, 65535);
 const RELAY_MIN_PORT = sayiAyar('RELAY_MIN_PORT', 49152, 1024, 65535);
 const RELAY_MAX_PORT = sayiAyar('RELAY_MAX_PORT', 61000, RELAY_MIN_PORT, 65535);
-const DIS_IP = ayar('DIS_IP');
+// Dış IP: .env'deki DIS_IP varsa o kullanılır; yoksa GCP meta veri sunucusundan okunur.
+// (Bulut sunucusunun geçici IP'si değişebilir; sabit yazılırsa STUN/TURN sessizce ölür →
+// tarayıcı STUN'a ulaşamaz, relay adayı hiç oluşmaz, ses bağlantısı kurulmaz.)
+const DIS_IP_ELLE = !!ayar('DIS_IP'); // .env'de sabitlenmişse meta veriye dokunulmaz
+let disIp = ayar('DIS_IP') || '';
 const IC_IP = ayar('IC_IP') || icIpBul();
-const TURN_ADRESI = ayar('TURN_ADRESI') || DIS_IP; // tarayıcıya verilen STUN/TURN adresi (boşsa sayfanın adresi)
+let turnAdresi = ayar('TURN_ADRESI') || ''; // tarayıcıya verilen STUN/TURN adresi (boşsa sayfanın adresi)
 const SURUM = surumBul();
 const VERI_KLASORU = ayar('VERI_KLASORU') || (fs.existsSync('/veri') ? '/veri' : path.join(KOK, 'veri'));
 const YUKLEME_KLASORU = path.join(VERI_KLASORU, 'yuklemeler');
@@ -125,7 +163,7 @@ if (ILK_ANAHTAR && !ANAHTAR_KALIBI.test(ILK_ANAHTAR)) {
 	process.exit(1);
 }
 
-for (const [ad, deger] of [['DIS_IP', DIS_IP], ['IC_IP', IC_IP]]) {
+for (const [ad, deger] of [['DIS_IP', disIp], ['IC_IP', IC_IP]]) {
 	if (deger && !ipv4mu(deger)) {
 		console.error(`Ayar hatası: ${ad}=${deger} bir IPv4 adresi değil (${AYAR_DOSYASI})`);
 		process.exit(1);
@@ -244,7 +282,7 @@ function turnAyarDosyasi() {
 		'listening-ip=0.0.0.0',
 		IC_IP ? `relay-ip=${IC_IP}` : null,
 		// Bulut sunucusu NAT arkasında: TURN, aktarım adresini dış IP olarak duyurur.
-		DIS_IP && IC_IP && DIS_IP !== IC_IP ? `external-ip=${DIS_IP}/${IC_IP}` : null,
+		disIp && IC_IP && disIp !== IC_IP ? `external-ip=${disIp}/${IC_IP}` : null,
 		`min-port=${RELAY_MIN_PORT}`,
 		`max-port=${RELAY_MAX_PORT}`,
 		'fingerprint',
@@ -353,7 +391,7 @@ async function turnHazirBekle() {
 
 function iceSunuculari(req) {
 	if (turnDurumu !== 'çalışıyor') return { iceServers: [] };
-	let adres = TURN_ADRESI;
+	let adres = turnAdresi;
 	if (!adres) {
 		// Dış IP ayarlanmadıysa tarayıcı sayfayı hangi adresten açtıysa onu kullanır.
 		const host = String(req.headers.host || '');
@@ -1033,6 +1071,20 @@ const nabiz = setInterval(() => {
 	}
 }, 30000);
 
+// Dış IP değişirse (bulutun geçici IP'si) STUN/TURN sessizce ölür: relay adayı hiç oluşmaz,
+// ses bağlantısı kurulmaz. Konteyneri bilerek yeniden başlatıyoruz; açılışta yeni IP okunur.
+// .env'de DIS_IP sabitlenmişse karışmayız (kullanıcı bilerek yazmıştır).
+function disIpIzle() {
+	const zamanlayici = setInterval(async () => {
+		if (DIS_IP_ELLE) return;
+		const yeni = await disIpBul();
+		if (!yeni || yeni === disIp) return;
+		console.error(`[turn] dış IP değişti: ${disIp || 'yok'} → ${yeni}; yeni IP ile yeniden başlatılıyor.`);
+		process.exit(1);
+	}, 5 * 60 * 1000);
+	zamanlayici.unref?.();
+}
+
 // ---------------------------------------------------------------- dosya paylaşımı
 
 // Yalnızca bu türler tarayıcıda doğrudan gösterilir; geri kalanı indirme olarak sunulur.
@@ -1203,6 +1255,8 @@ const sunucu = http.createServer((req, res) => {
 			kanal: kanallar.length,
 			maxKullanici: maxKullanici,
 			girisAralikMs: GIRIS_ARALIK_MS,
+			disIp: disIp || null, // STUN/TURN'ün duyurduğu dış IP (yanlışsa ses hiç kurulmaz)
+			turnAdresi: turnAdresi || null,
 			veritabani: db ? 'açık' : 'kapalı',
 		};
 		const sayilar = db ? Promise.all([db.sayilar(), db.kisiSayisi()]) : Promise.resolve([{ mesaj: 0, dosya: 0 }, 0]);
@@ -1332,6 +1386,15 @@ async function main() {
 		process.exit(1);
 	}
 
+	// Dış IP: .env'de sabitlenmiş değer yoksa bulut meta verisinden (GCP) okunur.
+	const metaIp = await disIpBul();
+	if (!disIp && metaIp) disIp = metaIp;
+	else if (disIp && metaIp && disIp !== metaIp) {
+		console.warn(`[turn] .env'deki DIS_IP=${disIp} güncel değil (gerçek dış IP ${metaIp}); .env'den DIS_IP satırını sil.`);
+	}
+	if (!turnAdresi) turnAdresi = disIp;
+	console.log(`[turn] dış IP ${disIp || 'yok'}${DIS_IP_ELLE ? ' (.env)' : ' (meta veri)'}, tarayıcıya verilen adres ${turnAdresi || 'sayfa adresi'}`);
+	disIpIzle();
 	turnBaslat();
 	sunucu.listen(PORT, HOST, async () => {
 		const turnTamam = await turnHazirBekle();
@@ -1340,7 +1403,7 @@ async function main() {
 			process.exit(1);
 		}
 		const turnBilgi = turnTamam
-			? `STUN/TURN udp/${TURN_PORT} (aktarım ${RELAY_MIN_PORT}-${RELAY_MAX_PORT}, dış IP ${DIS_IP || 'yok'}, iç IP ${IC_IP || 'yok'})`
+			? `STUN/TURN udp/${TURN_PORT} (aktarım ${RELAY_MIN_PORT}-${RELAY_MAX_PORT}, dış IP ${disIp || 'yok'}, iç IP ${IC_IP || 'yok'})`
 			: 'STUN/TURN kapalı';
 		console.log(
 			`Ses Kanalı çalışıyor: http://${HOST}:${PORT}  sürüm ${SURUM}, sesli kanal başına en fazla ${MAX_KISI} kişi, ` +

@@ -89,8 +89,8 @@ main() {
 # Yalnızca konteyner başlarken okunur; değiştirince:  sudo docker restart ses-kanali
 # Hepsi isteğe bağlı; boş bırakılan varsayılanı kullanır.
 
-# Sunucunun dış (public) IPv4 adresi. Bulut sunucularında (GCP, AWS...) sunucu NAT arkasındadır;
-# TURN'ün doğru adresi duyurması için gerekir. kur.sh ilk kurulumda bulup buraya yazar.
+# Sunucunun dış (public) IPv4 adresi. BOŞ BIRAK: bulut meta verisinden (GCP/AWS) kendiliğinden
+# okunur ve 5 dakikada bir kontrol edilir. Elle yazarsan o değer sabitlenir (IP değişirse TURN ölür).
 DIS_IP=
 
 # Sunucunun ağ kartındaki IPv4 adresi (GCP'de 10.x.x.x). Boşsa kendiliğinden bulunur.
@@ -129,8 +129,7 @@ HOST=127.0.0.1
 PORT=8080
 AYARLAR
 		if IP=$(dis_ip_bul); then
-			sed -i "s/^DIS_IP=.*/DIS_IP=$IP/" "$VERI/.env"
-			echo "Ayar dosyası oluşturuldu: $VERI/.env (dış IP: $IP)"
+			echo "Ayar dosyası oluşturuldu: $VERI/.env (dış IP: $IP — kendiliğinden bulundu)"
 		else
 			echo "Ayar dosyası oluşturuldu: $VERI/.env (dış IP bulunamadı; TURN için DIS_IP'yi elle yaz)"
 		fi
