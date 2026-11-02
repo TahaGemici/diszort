@@ -79,7 +79,10 @@ jobs:
           # /var/lib/chat 0700 + sahibi 1000 (kur.sh); runner kullanıcısı içine bakamaz → sudo şart.
           sudo test -f /var/lib/chat/sohbet.db
           sudo test -d /var/lib/chat/yuklemeler
-          sudo docker logs ses-kanali | grep -q '\[veritabanı\]'
+          # Dikkat: `docker logs | grep -q` pipefail altında 141 (SIGPIPE) verir — grep erken çıkınca
+          # docker logs boruyu kırık bulur. Önce dosyaya yaz, sonra grep'le.
+          sudo docker logs ses-kanali > kanali.log 2>&1
+          grep -q '\[veritabanı\]' kanali.log
 
       - name: Durdurunca düzgün kapanıyor mu
         run: |
