@@ -28,6 +28,7 @@ async function dene(ad, fn) {
 	try {
 		// Beyaz liste şişmesin: her testten önce önceki testlerin kişilerini at.
 		if (yonetici && onaylananlar.size >= 4) await kisileriTemizle();
+		await new Promise((r) => setTimeout(r, 120)); // önceki testin bağlantıları sunucuda kapansın
 		await fn();
 		gecen++;
 		console.log('ok   ' + ad);
@@ -99,7 +100,7 @@ async function gir(ad, id, anahtar) {
 	}
 	if (ilk.type === 'giris-red') {
 		ws.red = ilk;
-		return ws;
+		throw new Error('giriş reddedildi: ' + ilk.message);
 	}
 	// Kapıyı çaldı: yönetici onaylasın.
 	const istek = await yonetici.bekle((m) => m.type === 'giris-istegi' && m.ad === ad);
@@ -539,6 +540,12 @@ async function turnAl(port, kullanici, sifre) {
 
 	await dene('sesli kanal dolunca reddedilir', async () => {
 		const max = Number(process.env.MAX_KISI || 10);
+		// Hayalet üye kalmasın: sesli kanallar boşalana kadar bekle.
+		for (let i = 0; i < 40; i++) {
+			const s = await (await fetch(ADRES + '/saglik')).json();
+			if (!s.kisi) break;
+			await new Promise((r) => setTimeout(r, 50));
+		}
 		const acik = [];
 		for (let i = 0; i < max; i++) {
 			const w = await gir('k' + i + '-' + kimlik, 'd' + i);

@@ -134,13 +134,16 @@ AYARLAR
 		echo "Ayarlar korunuyor: $VERI/.env"
 	fi
 	# Test/kurulum kolaylığı: bu değişkenler verilmişse .env'e yaz (CI uçtan uca denemede kullanır).
-	if [ -n "${ILK_ANAHTAR:-}" ]; then
-		if grep -q '^ILK_ANAHTAR=' "$VERI/.env"; then
-			sed -i "s|^ILK_ANAHTAR=.*|ILK_ANAHTAR=$ILK_ANAHTAR|" "$VERI/.env"
+	for cift in "ILK_ANAHTAR=${ILK_ANAHTAR:-}" "MAX_KULLANICI=${MAX_KULLANICI:-}"; do
+		ad=${cift%%=*}
+		deger=${cift#*=}
+		[ -n "$deger" ] || continue
+		if grep -q "^$ad=" "$VERI/.env"; then
+			sed -i "s|^$ad=.*|$ad=$deger|" "$VERI/.env"
 		else
-			printf 'ILK_ANAHTAR=%s\n' "$ILK_ANAHTAR" >>"$VERI/.env"
+			printf '%s=%s\n' "$ad" "$deger" >>"$VERI/.env"
 		fi
-	fi
+	done
 	chmod 0700 "$VERI"
 	chmod 0600 "$VERI/.env"
 	# Konteynerdeki ayrıcalıksız kullanıcı (imaj: uid 1000) okuyabilsin

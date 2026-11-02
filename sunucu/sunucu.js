@@ -522,7 +522,8 @@ async function kapiCal(ws, ad, anahtarGecersiz) {
 			kayit.baslangic = simdi;
 			kayit.adet = 0;
 		}
-		if (++kayit.adet > 100) {
+		// Dakikada 600 deneme: insan trafiği için bol, otomatik flood için sınır.
+		if (++kayit.adet > 600) {
 			kapiDenemeleri.set(ip, kayit);
 			return gonder(ws, { type: 'giris-red', message: 'Çok fazla giriş denemesi; bir dakika bekle.' });
 		}
