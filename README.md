@@ -12,7 +12,8 @@ dosya paylaşılabilir) + **sesli kanallar** (ses tarayıcılar arasında doğru
 - **İlk anahtar:** Beyaz liste boşken sunucu ilk anahtarı üretir ve `/var/lib/chat/ilk-anahtar.txt` dosyasına
   yazar. Bağlantıyı bir kez açmak yeter: `https://…/#anahtar=<anahtar>` anahtarı tarayıcıya kaydeder.
 - **Arayüz:** Solda yazılı (`#genel`, `#muhabbet`) ve sesli (Sesli Sohbet, Müzik, Oyun) kanallar;
-  ortada sohbet; sağda çevrimiçi kişiler; sesli kanaldayken altta katılımcı kartı.
+  ortada sohbet; sağda üyeler (önce çevrimiçiler, altında beyaz listede olup **çevrimdışı** olanlar —
+  soluk satır + "çevrimdışı" etiketi); sesli kanaldayken altta katılımcı kartı.
 - **Kanal ekle / sil:** Her bölümün başındaki `＋` ile yazılı veya sesli kanal açılır; kanal adının
   yanındaki `✕` ile silinir (yazılı kanal silinince mesajları ve dosyaları da gider, sesli kanal
   silinince içindekiler çıkarılır). Tek sunucu olduğu için en solda sunucu şeridi yoktur.
@@ -140,7 +141,8 @@ bağlanma. **Not:** denemeler gerçek veritabanına birkaç `(deneme)` mesajı v
 bir dosya bırakır.
 
 Arayüzü de tarayıcı açmadan deneyebilirsin: `make arayuz` (jsdom; giriş, kanal ekleme/silme penceresi,
-kanal seçimi, mesaj çizimi, giriş istekleri, atma, kişi limiti düğmeleri, bağlantı istatistikleri, çık-gir — toplam 87 denetim).
+kanal seçimi, mesaj çizimi, giriş istekleri, atma, çevrimdışı beyaz liste üyeleri, kişi limiti düğmeleri,
+bağlantı istatistikleri, çık-gir — toplam 90 denetim).
 Bu VPS'te gerçek tarayıcı çalıştırılmaz.
 
 ## Nasıl çalışır
@@ -210,12 +212,12 @@ tarayıcı ──UDP 3478──> coturn (konteynerde, sunucu.js başlatır) ─�
 
 | Sunucu → istemci | Anlamı |
 |---|---|
-| `hazir {ad, kanallar, kimler, max, dosyaMb, jeton, anahtar?}` | giriş kabul edildi; `anahtar` yalnızca yeni verildiğinde gelir |
+| `hazir {ad, kanallar, kimler, beyazListeAdlari, max, dosyaMb, jeton, anahtar?}` | giriş kabul edildi; `anahtar` yalnızca yeni verildiğinde gelir |
 | `bekleniyor {ad, anahtarGecersiz}` | kapıyı çaldın, içeridekilerin kararı bekleniyor |
 | `giris-red {message}` | giriş reddedildi (dolu, kimse yok, istek reddedildi…) |
 | `giris-istegi {id, ad}` / `istek-kapandi {id, kabul}` | içeridekilere gelen onay isteği ve sonucu |
 | `atildi {message}` | beyaz listeden atıldın (anahtarın iptal edildi) |
-| `kanallar` / `kimler` | kanal doluluğu / çevrimiçi kişiler değişti (`kimler` ayrıca `beyazListe` ve `maxKullanici` taşır) |
+| `kanallar` / `kimler` | kanal doluluğu / çevrimiçi kişiler değişti (`kimler` ayrıca `beyazListe`, `beyazListeAdlari` ve `maxKullanici` taşır) |
 | `yazi {kanal, mesaj}` / `gecmis {kanal, mesajlar, bitti}` | yeni mesaj / geçmiş |
 | `yaziyor`, `sessiz` | göstergeler |
 | `ses-girdi {kanal, kisiler}`, `ses-kisi-girdi`, `ses-kisi-cikti` | sesli kanal üyeleri |
@@ -237,7 +239,7 @@ Her çiftte teklifi adı alfabetik olarak büyük olan yapar (çakışma olmaz).
 | `web/` | arayüz (`index.html`, `ana.js`, `stil.css`, simgeler) |
 | `.env.example` | ayarlar (sunucuda `/var/lib/chat/.env`) |
 | `test/dene.js` | çalışan sunucuyu uçtan uca dener (28 deneme; giriş frenine uyar) |
-| `test/arayuz.js` | arayüzü tarayıcısız dener (jsdom; 87 denetim) |
+| `test/arayuz.js` | arayüzü tarayıcısız dener (jsdom; 90 denetim) |
 | `.github/workflows/docker.yml` | push → derle, `kur.sh` ile dene, ghcr.io'ya yükle, sürüm çıkar |
 
 ## Sınırlar
@@ -260,6 +262,12 @@ altındaysa yeşil, %1–5 turuncu, üstü kırmızı görünür.
   toplamı bu sınıra dayanıp ses kesiliyordu.
 - **Tek `AudioContext`.** Her katılımcı için yeni ses bağlamı açmak tarayıcının bağlam sınırına takılıyor,
   çık-gir sonrası ölçüm/ses sorun çıkarıyordu.
+- **Tek yönlü ses (telefonda karşı taraf duyulmuyordu):** ses kanalı iki tarafta da **izsiz** açılıp mikrofon
+  sonradan `replaceTrack` ile bağlanıyor ve yön her zaman açıkça `sendrecv` yapılıyor; böylece yanıtlayan
+  taraf "recvonly" cevabı veremiyor. Ayrıca gelen ses `<audio>` öğesi artık `hidden`/`display:none` değil
+  (iOS Safari görünmeyen öğeyi çalmıyor): 1 px şeffaf öğe + `playsinline`; ses başlamazsa ses kartında
+  görünen **"🔈 Sesi başlat (dokun)"** düğmesi çıkıyor ve her dokunuşta yeniden deneniyor.
+- **Opus tavanı 96 kbps** (eskiden 64). Arayüzde giden ses de görünür: `↑NN` (0 ise "mikrofon gitmiyor").
 - **Ses kanalı her zaman açılır.** `addTransceiver` ile teklif/yanıt mikrofon hazır olmasa bile üretilir;
   mikrofon sonradan gelirse `replaceTrack` ile bağlanır (çık-gir sonrası "ses gelmiyor" hatasının kaynağı).
 - **Yankı/gürültü giderme açık kalır.** Ses WebAudio'dan geçirilmez; geçirilirse tarayıcının AEC/NS/AGC

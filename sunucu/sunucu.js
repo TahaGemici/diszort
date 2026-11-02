@@ -409,6 +409,20 @@ function kanalDurumu() {
 	});
 }
 let beyazListeSayisi = 0; // son bilinen beyaz liste boyutu (yanıtlarda gösterilir)
+let beyazListeAdlari = []; // beyaz listedeki adlar (çevrimdışı olanlar da arayüzde görünsün)
+
+// Beyaz listeyi diskten tazele: adlar + boyut, sonra herkese duyur.
+// Dönüşü beklemeden çağrılabilir; hata sunucuyu düşürmesin.
+function beyazListeTazele(yayinla = true) {
+	return db
+		.kisiler()
+		.then((satirlar) => {
+			beyazListeAdlari = satirlar.map((s) => s.ad);
+			beyazListeSayisi = beyazListeAdlari.length;
+			if (yayinla) durumYayinla();
+		})
+		.catch((e) => console.error('[beyaz liste] adlar okunamadı:', e.message));
+}
 
 function kimler() {
 	const liste = [];
@@ -422,7 +436,7 @@ function durumYayinla() {
 	for (const ws of wss.clients) {
 		if (!ws.ad) continue;
 		gonder(ws, { type: 'kanallar', kanallar });
-		gonder(ws, { type: 'kimler', kimler: kim, beyazListe: beyazListeSayisi, maxKullanici: maxKullanici });
+		gonder(ws, { type: 'kimler', kimler: kim, beyazListe: beyazListeSayisi, beyazListeAdlari, maxKullanici: maxKullanici });
 	}
 }
 
@@ -495,6 +509,7 @@ function oturumAc(ws, ad, kimlik, anahtar) {
 		max: MAX_KISI,
 		maxKullanici: maxKullanici,
 		beyazListe: beyazListeSayisi,
+		beyazListeAdlari,
 		dosyaMb: DOSYA_MB,
 		jeton: ws.jeton,
 		anahtar: anahtar || undefined,
@@ -650,6 +665,7 @@ async function girisKarari(ws, m) {
 		return gonder(ws, { type: 'hata', message: 'Kişi kaydedilemedi; tekrar dene.' });
 	}
 	beyazListeSayisi = mevcut ? sayi : sayi + 1;
+	await beyazListeTazele(false); // adlar listesine yeni kişiyi ekle (yayın oturumAc'ta yapılır)
 	istekKapat(id, true, kayit.ad);
 	if (kayit.ws.readyState !== WebSocket.OPEN) return;
 	oturumAc(kayit.ws, kayit.ad, kayit.kimlik, yeniAnahtar);
@@ -709,6 +725,7 @@ async function kisiAt(ws, m) {
 		return gonder(ws, { type: 'hata', message: 'Kişi silinemedi; tekrar dene.' });
 	}
 	beyazListeSayisi = Math.max(0, sayi - 1);
+	await beyazListeTazele(); // atılan kişi arayüzdeki listeden de düşsün (yayın içinde)
 	const hedef = adSahibi(ad);
 	console.log(`[beyaz liste] ${ws.ad} → ${ad} atıldı`);
 	if (hedef) {
@@ -1279,6 +1296,7 @@ async function main() {
 			await fs.promises.writeFile(dosya, metin, { mode: 0o600 });
 			console.log(`[beyaz liste] ilk anahtar oluşturuldu (${YONETICI_ADI}) → ${dosya}`);
 		}
+		await beyazListeTazele(false); // çevrimdışı beyaz liste adları arayüzde görünsün
 	} catch (e) {
 		console.error('Beyaz liste hazırlanamadı: ' + e.message);
 		process.exit(1);

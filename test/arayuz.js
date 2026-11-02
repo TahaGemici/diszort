@@ -212,7 +212,8 @@ const kanallar = [
 		],
 		max: 10,
 		maxKullanici: 10,
-		beyazListe: 2,
+		beyazListe: 3,
+		beyazListeAdlari: ['taha', 'bora', 'deniz'],
 		dosyaMb: 25,
 		jeton: 'a'.repeat(32),
 		anahtar: 'f'.repeat(128),
@@ -230,8 +231,12 @@ const kanallar = [
 	denetle('kanal ekleme düğmeleri var', !!d.getElementById('yazi-ekle') && !!d.getElementById('ses-ekle'));
 	denetle('ilk kanal #genel seçildi', d.getElementById('kanal-ad').textContent === '#genel', d.getElementById('kanal-ad').textContent);
 	denetle('çevrimiçi sayısı 2', d.getElementById('uye-sayi').textContent === '2', d.getElementById('uye-sayi').textContent);
-	denetle('beyaz liste göstergesi', /2\/10/.test(d.getElementById('beyaz-liste').textContent), d.getElementById('beyaz-liste').textContent);
-	denetle('üye listesinde atma düğmesi (kendinde yok)', d.querySelectorAll('#uye-listesi .uye-at').length === 1);
+	denetle('beyaz liste göstergesi', /3\/10/.test(d.getElementById('beyaz-liste').textContent), d.getElementById('beyaz-liste').textContent);
+	// Beyaz listede olup çevrimdışı olan kişi de üye panelinde görünür (soluk + "çevrimdışı").
+	denetle('çevrimdışı beyaz liste üyesi listelendi', d.querySelectorAll('#uye-listesi .uye').length === 3, String(d.querySelectorAll('#uye-listesi .uye').length));
+	denetle('çevrimdışı üye işaretli', d.querySelectorAll('#uye-listesi .uye.cevrimdisi').length === 1, String(d.querySelectorAll('#uye-listesi .uye.cevrimdisi').length));
+	denetle('çevrimdışı üye adı + etiketi', /deniz/.test(d.querySelector('#uye-listesi .uye.cevrimdisi')?.textContent || '') && /çevrimdışı/.test(d.querySelector('#uye-listesi .uye.cevrimdisi')?.textContent || ''), d.querySelector('#uye-listesi .uye.cevrimdisi')?.textContent);
+	denetle('üye listesinde atma düğmesi (kendinde yok)', d.querySelectorAll('#uye-listesi .uye-at').length === 2, String(d.querySelectorAll('#uye-listesi .uye-at').length));
 	denetle('geçmiş istendi', s.oc.gonderilen.some((m) => m.type === 'gecmis' && m.kanal === 'genel'));
 	denetle('mic düğmesi sesli kanal yokken kapalı', d.getElementById('ben-mikrofon').disabled === true);
 

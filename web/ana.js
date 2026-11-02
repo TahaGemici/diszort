@@ -44,6 +44,7 @@ let benimAdim = '';
 let anahtar = ''; // beyaz liste anahtarı (localStorage'da kalır)
 let bekleyenIstek = false; // kapıyı çaldık, karar bekleniyor
 let beyazListe = 0;
+let beyazListeAdlari = []; // beyaz listedeki adlar (çevrimdışı olanlar da üye panelinde görünür)
 let maxKullanici = 10;
 let jeton = '';
 let bagliyim = false;
@@ -221,6 +222,7 @@ function mesaj(m) {
 				} catch {}
 			}
 			beyazListe = m.beyazListe != null ? m.beyazListe : beyazListe;
+			beyazListeAdlari = m.beyazListeAdlari || [];
 			maxKullanici = m.maxKullanici || maxKullanici;
 			girisBekliyor(false);
 			girisDurum('');
@@ -272,6 +274,7 @@ function mesaj(m) {
 		case 'kimler':
 			kimlerListesi = m.kimler || [];
 			if (m.beyazListe != null) beyazListe = m.beyazListe;
+			if (m.beyazListeAdlari) beyazListeAdlari = m.beyazListeAdlari;
 			if (m.maxKullanici) maxKullanici = m.maxKullanici;
 			uyeleriCiz();
 			break;
@@ -456,24 +459,34 @@ function kanalListesiCiz() {
 	baslikGuncelle();
 }
 
+// Üye panelinde önce çevrimiçiler, sonra beyaz listede olup şu an bağlı olmayanlar.
+// Çevrimdışı satırlar soluk ve "çevrimdışı" etiketli; atma düğmesi onlarda da var (anahtarı iptal eder).
+function uyeSatiri(ad, k, cevrimdisi) {
+	const d = el('div', 'uye' + (cevrimdisi ? ' cevrimdisi' : ''));
+	const nokta = el('span', 'nokta' + (cevrimdisi || (k && k.sessiz) ? ' kapali' : ''));
+	d.append(nokta, el('span', 'ad', ad + (ad === benimAdim ? ' (sen)' : '')));
+	if (cevrimdisi) d.append(el('span', 'etiket', 'çevrimdışı'));
+	else if (k && k.ses) d.append(el('span', 'etiket', kanalBilgi(k.ses)?.ad || 'ses'));
+	if (ad !== benimAdim) {
+		const at = el('button', 'uye-at', '✕');
+		at.type = 'button';
+		at.title = cevrimdisi ? 'Beyaz listeden çıkar (anahtarı iptal edilir)' : 'Sunucudan at (anahtarı iptal edilir)';
+		at.setAttribute('aria-label', ad + ' kişisini sunucudan at');
+		at.onclick = () => kisiAtIste(ad);
+		d.append(at);
+	}
+	return d;
+}
+
 function uyeleriCiz() {
 	const kap = $('uye-listesi');
 	kap.replaceChildren();
-	for (const k of kimlerListesi) {
-		const d = el('div', 'uye');
-		d.append(el('span', 'nokta' + (k.sessiz ? ' kapali' : '')), el('span', 'ad', k.ad + (k.ad === benimAdim ? ' (sen)' : '')));
-		if (k.ses) d.append(el('span', 'etiket', kanalBilgi(k.ses)?.ad || 'ses'));
-		// Beyaz listedekiler birbirini atabilir (kendini atmak yok).
-		if (k.ad !== benimAdim) {
-			const at = el('button', 'uye-at', '✕');
-			at.type = 'button';
-			at.title = 'Sunucudan at (anahtarı iptal edilir)';
-			at.setAttribute('aria-label', k.ad + ' kişisini sunucudan at');
-			at.onclick = () => kisiAtIste(k.ad);
-			d.append(at);
-		}
-		kap.append(d);
-	}
+	for (const k of kimlerListesi) kap.append(uyeSatiri(k.ad, k, false));
+	const cevrimici = new Set(kimlerListesi.map((k) => k.ad));
+	const disarida = beyazListeAdlari
+		.filter((ad) => ad && !cevrimici.has(ad))
+		.sort((a, b) => a.localeCompare(b, 'tr'));
+	for (const ad of disarida) kap.append(uyeSatiri(ad, null, true));
 	$('beyaz-liste').textContent = beyazListe ? `Beyaz liste ${beyazListe}/${maxKullanici}` : '';
 	$('limit-az').disabled = !bagliyim || maxKullanici <= 2;
 	$('limit-cok').disabled = !bagliyim || maxKullanici >= 50;
@@ -1000,6 +1013,8 @@ async function sesAc(kanal) {
 		}
 	}
 	mikDugmeCiz();
+	// Mikrofon (yeniden) alındıysa var olan eşlere de bağla.
+	for (const k of kisiler.values()) mikrofonuBagla(k);
 	gonder({ type: 'ses-gir', kanal });
 }
 
@@ -1024,6 +1039,7 @@ function sesKapat(bildir = true) {
 	sesKartGuncelle();
 	$('ben-kapat').hidden = true;
 	$('ben-ses-satir').replaceChildren();
+	$('ses-ac').hidden = true;
 	if (kendiOlcer) {
 		kendiOlcer.dur();
 		kendiOlcer = null;
@@ -1118,9 +1134,13 @@ function satirOlustur(ad, k) {
 	seviye.title = 'Ses seviyesi';
 	seviye.setAttribute('aria-label', ad + ' kişisinin ses seviyesi');
 	const istatistik = el('span', 'ses-istatistik', 'bağlanıyor…');
-	const ses = el('audio');
+	const ses = el('audio', 'ses-akis');
 	ses.autoplay = true;
-	ses.hidden = true;
+	// Görünmez ama DOM'da render edilir kalır: iOS Safari display:none/hidden bir <audio>'yu
+	// çalmayı reddediyor (ses hiç gelmiyor, play() de sessizce düşüyor).
+	ses.setAttribute('playsinline', '');
+	ses.setAttribute('webkit-playsinline', '');
+	ses.controls = false;
 	sus.onclick = () => {
 		ses.muted = !ses.muted;
 		sus.classList.toggle('kapali', ses.muted);
@@ -1166,12 +1186,34 @@ function pcOlustur(ad, k) {
 			}
 		};
 	}
-	// Ses kanalını HER ZAMAN aç: mikrofon sonradan gelse bile teklif/yanıt üretilir, mikrofon
-	// gelince replaceTrack ile bağlanır. (Eskiden addTrack yalnız mikrofon varken çağrılıyordu;
-	// çık-gir sonrası teklif hiç üretilmediği için ses gelmiyordu.)
-	const parca = mikrofon && mikrofon.getAudioTracks()[0];
-	const tr = pc.addTransceiver(parca || 'audio', { direction: 'sendrecv', streams: mikrofon ? [mikrofon] : [] });
+	// Ses kanalını HER ZAMAN izsiz aç: mikrofon sonradan gelse bile teklif/yanıt üretilir,
+	// mikrofon gelince replaceTrack ile bağlanır. Teklif eden ve yanıtlayan taraf böylece
+	// AYNI yolu izler (eskiden iki tarafta farklı kurulum vardı → tek yönlü ses riski).
+	const tr = pc.addTransceiver('audio', { direction: 'sendrecv' });
 	k.transceiver = tr;
+	mikrofonuBagla(k);
+}
+
+// Mikrofonu bu eşin ses kanalına bağla. Yön her zaman açıkça sendrecv yapılır; böylece
+// yanıtlayan taraf "recvonly" cevabı verip sesin tek yönde kalmasına yol açamaz.
+function mikrofonuBagla(k) {
+	const parca = mikrofon && mikrofon.getAudioTracks()[0];
+	if (!parca || !k || !k.pc) return;
+	const tr = k.transceiver || k.pc.getTransceivers().find((t) => t.receiver.track.kind === 'audio');
+	if (!tr || !tr.sender) return;
+	try {
+		tr.direction = 'sendrecv';
+	} catch {}
+	tr.sender
+		.replaceTrack(parca)
+		.then(() => {
+			try {
+				tr.sender.setStreams?.(mikrofon);
+			} catch {}
+			// Bit hızı tavanı ancak göndericide iz varken uygulanabilir.
+			if (k.pc) bitHiziAyarla(k.pc);
+		})
+		.catch((hata) => console.warn('mikrofon bağlanamadı', k.ad, hata));
 }
 
 function sdpGeldi(ad, sdp) {
@@ -1194,16 +1236,8 @@ async function sdpIsle(ad, k, sdp) {
 	await pc.setRemoteDescription(sdp);
 	for (const aday of k.adaylar.splice(0)) await pc.addIceCandidate(aday).catch(() => {});
 	if (sdp.type === 'offer') {
-		// Mikrofonu teklifteki ses kanalına bağla (yeni bir kanal açmadan).
-		const parca = mikrofon && mikrofon.getAudioTracks()[0];
-		if (parca) {
-			const tr = pc.getTransceivers().find((t) => t.receiver.track.kind === 'audio') || pc.getTransceivers()[0];
-			if (tr && !tr.sender.track) {
-				await tr.sender.replaceTrack(parca);
-				tr.sender.setStreams?.(mikrofon);
-				tr.direction = 'sendrecv';
-			}
-		}
+		// Mikrofonu teklifteki ses kanalına bağla (yeni bir kanal açmadan) ve yönü sendrecv yap.
+		mikrofonuBagla(k);
 		await pc.setLocalDescription();
 		gonder({ type: 'sdp', to: ad, sdp: pc.localDescription });
 	}
@@ -1217,19 +1251,20 @@ function iceGeldi(ad, aday) {
 }
 
 async function bitHiziAyarla(pc) {
-	// Opus konuşma için 64 kbps fazlasıyla yeter.
+	// Opus konuşma için 96 kbps: 64k'da bazı tarayıcılar/mobiller ek kısıyordu (ses "cılız").
 	for (const s of pc.getSenders()) {
 		if (!s.track || s.track.kind !== 'audio') continue;
 		try {
 			const p = s.getParameters();
 			if (!p.encodings || !p.encodings.length) p.encodings = [{}];
-			p.encodings[0].maxBitrate = 64000;
+			p.encodings[0].maxBitrate = 96000;
 			await s.setParameters(p);
 		} catch {}
 	}
 }
 
-// Tarayıcı sesi kendiliğinden başlatmazsa (Safari, telefon) satıra bir kez basılacak "sesi aç" düğmesi ekler.
+// Tarayıcı sesi kendiliğinden başlatmazsa (Safari, telefon) satıra bir kez basılacak "sesi aç"
+// düğmesi ekler; ayrıca ses kartında görünen ortak düğme çıkar.
 function sesiBaslat(k) {
 	const basla = () =>
 		k.ses.play().then(() => {
@@ -1237,16 +1272,39 @@ function sesiBaslat(k) {
 				k.sesDugmesi.remove();
 				k.sesDugmesi = null;
 			}
+			sesAcDugmesiGuncelle();
 		});
 	basla().catch(() => {
-		if (k.sesDugmesi) return;
-		const dugme = el('button', 'ikon-dugme', '🔈');
-		dugme.type = 'button';
-		dugme.title = 'Tarayıcı sesi kendiliğinden başlatmadı; bir kez buraya bas';
-		dugme.onclick = () => basla().catch(() => {});
-		k.satir.append(dugme);
-		k.sesDugmesi = dugme;
+		if (!k.sesDugmesi) {
+			const dugme = el('button', 'ikon-dugme', '🔈');
+			dugme.type = 'button';
+			dugme.title = 'Tarayıcı sesi kendiliğinden başlatmadı; bir kez buraya bas';
+			dugme.onclick = () => {
+				sesleriAc();
+				basla().catch(() => {});
+			};
+			k.satir.append(dugme);
+			k.sesDugmesi = dugme;
+		}
+		sesAcDugmesiGuncelle();
 	});
+}
+
+// Sesi başlamamış eş varsa ses kartındaki görünür "sesi başlat" düğmesini göster.
+function sesAcDugmesiGuncelle() {
+	const dugme = $('ses-ac');
+	if (!dugme) return;
+	let bekleyen = 0;
+	for (const k of kisiler.values()) if (k.ses && k.ses.paused) bekleyen++;
+	dugme.hidden = !sesKanal || !bekleyen;
+}
+
+// Telefon tarayıcıları sesi ancak bir kullanıcı etkileşiminden SONRA başlatır; ontrack anı bir
+// etkileşim değildir, bu yüzden gelen ses sessiz kalabiliyordu. Her dokunuş/tuşta yeniden dene.
+function sesleriAc() {
+	audioBaglami();
+	for (const k of kisiler.values()) if (k.ses && k.ses.paused) k.ses.play().catch(() => {});
+	sesAcDugmesiGuncelle();
 }
 
 // Tek bir AudioContext paylaşılır: her katılımcı için yeni bağlam açmak tarayıcının bağlam
@@ -1313,9 +1371,11 @@ function istatistikBaslat() {
 			const simdi = Date.now();
 			let cift = null;
 			let gelen = null;
+			let giden = null;
 			rapor.forEach((r) => {
 				if (r.type === 'transport' && r.selectedCandidatePairId) cift = rapor.get(r.selectedCandidatePairId);
 				if (r.type === 'inbound-rtp' && (r.kind === 'audio' || r.mediaType === 'audio')) gelen = r;
+				if (r.type === 'outbound-rtp' && (r.kind === 'audio' || r.mediaType === 'audio')) giden = r;
 			});
 			if (!cift)
 				rapor.forEach((r) => {
@@ -1354,6 +1414,27 @@ function istatistikBaslat() {
 				}
 				k.olcum = { zaman: simdi, alinan, kayip, bayt };
 			}
+			// Giden ses: mikrofon gerçekten karşıya gidiyor mu? (Tek yönlü ses şüphesinde kanıt.)
+			if (giden) {
+				const onceki = k.gidenOlcum;
+				const bayt = giden.bytesSent || 0;
+				if (onceki && simdi - onceki.zaman > 400) {
+					const dt = simdi - onceki.zaman;
+					const kbps = Math.round(((bayt - onceki.bayt) * 8 * 1000) / dt / 1000);
+					parcalar.push('↑' + kbps);
+					if (kbps === 0 && pc.connectionState === 'connected') {
+						k.sifirGiden = (k.sifirGiden || 0) + 1;
+						// DTX/sessizlik tek ölçümde 0 gösterebilir; iki ardışık sıfır gerçek sorundur.
+						if (k.sifirGiden >= 2) {
+							parcalar.push('mikrofon gitmiyor');
+							sinif = 'kotu';
+						}
+					} else {
+						k.sifirGiden = 0;
+					}
+				}
+				k.gidenOlcum = { zaman: simdi, bayt };
+			}
 			if (!parcalar.length) continue;
 			k.istatistik.textContent = parcalar.join(' · ');
 			k.istatistik.className = 'ses-istatistik' + (sinif ? ' ' + sinif : '');
@@ -1375,6 +1456,11 @@ $('menu').addEventListener('click', () => ($('kanal-panosu').classList.contains(
 $('kenar-kapat').addEventListener('click', kenarKapat);
 
 // ---------------------------------------------------------------- kapanış
+
+$('ses-ac').addEventListener('click', sesleriAc);
+// Mobil tarayıcılar sesi yalnızca kullanıcı etkileşiminden sonra başlatır: her dokunuşta dene.
+document.addEventListener('pointerdown', sesleriAc, { passive: true });
+document.addEventListener('keydown', sesleriAc);
 
 window.addEventListener('pagehide', () => {
 	sesKapat(false);

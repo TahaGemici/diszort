@@ -276,6 +276,7 @@ async function turnAl(port, kullanici, sifre) {
 		assert.equal(yonetici.hazir.ad, 'taha', 'ilk anahtarın sahibi YONETICI_ADI olmalı');
 		await hepsiniAt(); // önceki çalıştırmalardan kalan kişileri temizle
 		assert.ok(yonetici.hazir.beyazListe >= 1);
+		assert.ok(Array.isArray(yonetici.hazir.beyazListeAdlari), 'hazir.beyazListeAdlari dizi olmalı');
 	});
 
 	await dene('beyaz liste: anahtarsız giriş izin ister, kabul edilince anahtar verilir', async () => {
@@ -288,6 +289,10 @@ async function turnAl(port, kullanici, sifre) {
 		const h = await ws.bekle('hazir');
 		assert.match(h.anahtar, /^[0-9a-f]{128}$/, 'kişiye özel anahtar üretilmeli (512 bit)');
 		assert.equal(h.ad, 'ayse-' + kimlik);
+		// Çevrimdışı beyaz liste üyeleri arayüzde görünsün diye adlar da gelir.
+		assert.ok(Array.isArray(h.beyazListeAdlari), 'hazir.beyazListeAdlari dizi olmalı');
+		assert.ok(h.beyazListeAdlari.includes('ayse-' + kimlik), 'yeni onaylanan kişi beyaz liste adlarında olmalı');
+		assert.ok(h.beyazListeAdlari.includes('taha'), 'yönetici beyaz liste adlarında olmalı');
 		ws.close();
 		onaylananlar.add('ayse-' + kimlik);
 

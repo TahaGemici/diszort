@@ -428,6 +428,32 @@ video.onizleme, audio.onizleme { cursor: default; }
 .ses-kisi .ad { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ses-kisi.sessiz .ad { opacity: .55; }
 
+/* Uzak ses <audio>: görünmez ama DOM'da RENDER EDİLİR kalmalı (display:none / hidden,
+   iOS Safari'de sesin hiç çalmamasına yol açıyor). */
+.ses-kisi audio.ses-akis {
+	position: absolute;
+	width: 1px;
+	height: 1px;
+	opacity: 0;
+	pointer-events: none;
+}
+
+/* Tarayıcı (özellikle telefonda) sesi kendiliğinden başlatmazsa görünen düğme. */
+#ses-ac {
+	flex: none;
+	margin: 0 0 8px;
+	align-self: flex-start;
+	padding: 8px 14px;
+	border: 1px solid #4f8a63;
+	border-radius: 8px;
+	background: #1e3a29;
+	color: #b9f0cd;
+	font: inherit;
+	font-size: 13px;
+	cursor: pointer;
+}
+#ses-ac:hover { background: #2a4d36; }
+
 #yaziyor {
 	flex: none;
 	height: 18px;
@@ -503,6 +529,10 @@ video.onizleme, audio.onizleme { cursor: default; }
 	color: var(--soluk);
 }
 .uye:hover { background: #35373c; color: var(--yazi); }
+/* Beyaz listede olup bağlı olmayanlar: soluk satır, soluk nokta. */
+.uye.cevrimdisi { opacity: .5; }
+.uye.cevrimdisi:hover { opacity: 1; }
+.uye.cevrimdisi .etiket { opacity: .9; }
 .uye .ad { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .uye .etiket { margin-left: auto; }
 
