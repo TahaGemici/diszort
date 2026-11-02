@@ -1021,6 +1021,9 @@ async function sesAc(kanal) {
 function sesKatil(kanal, kisiAdlari) {
 	sesKanal = kanal;
 	audioBaglami(); // kullanıcı tıklamasıyla oluştur/canlandır (tarayıcı otomatik oynatma kuralı)
+	sesKilidiAc(); // iOS: ses oturumunu bu tıklamayla aç
+	sesGozcuBaslat();
+	taniBaslat();
 	herkesiKapat();
 	for (const ad of kisiAdlari) kisiEkle(ad);
 	sesKartGuncelle();
@@ -1040,6 +1043,8 @@ function sesKapat(bildir = true) {
 	$('ben-kapat').hidden = true;
 	$('ben-ses-satir').replaceChildren();
 	$('ses-ac').hidden = true;
+	sesGozcuDurdur();
+	taniDurdur();
 	if (kendiOlcer) {
 		kendiOlcer.dur();
 		kendiOlcer = null;
@@ -1303,8 +1308,98 @@ function sesAcDugmesiGuncelle() {
 // etkileşim değildir, bu yüzden gelen ses sessiz kalabiliyordu. Her dokunuş/tuşta yeniden dene.
 function sesleriAc() {
 	audioBaglami();
+	sesKilidiAc();
 	for (const k of kisiler.values()) if (k.ses && k.ses.paused) k.ses.play().catch(() => {});
 	sesAcDugmesiGuncelle();
+}
+
+// iOS'ta ses oturumu ancak bir kullanıcı etkileşimiyle "açılır". Kanala girerken sessiz bir parça
+// çalıp duraklatmak, sonradan gelen uzak sesin (ontrack) çalınabilmesini sağlar.
+function sesKilidiAc() {
+	try {
+		const a = new Audio('data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEAgD4AAAB9AAACABAAZGF0YQAAAAA=');
+		a.play()
+			.then(() => a.pause())
+			.catch(() => {});
+	} catch {}
+}
+
+// Ses gözcüsü: çalmayan eş varsa her saniye yeniden dener ve görünen düğmeyi açar. Gerekli, çünkü
+// bazı mobil tarayıcılarda play() sözü hiç sonuçlanmıyor → hata yolundaki düğme hiç çıkmıyordu.
+let sesGozcu = null;
+function sesGozcuBaslat() {
+	if (sesGozcu) return;
+	sesGozcu = setInterval(() => {
+		if (!sesKanal) return;
+		let bekleyen = 0;
+		for (const k of kisiler.values()) {
+			const a = k.ses;
+			if (!a || !a.srcObject || a.muted) {
+				k.calmaDenemesi = 0;
+				continue;
+			}
+			if (a.paused) {
+				k.calmaDenemesi = (k.calmaDenemesi || 0) + 1;
+				if (k.calmaDenemesi >= 2) bekleyen++;
+				if (k.calmaDenemesi % 3 === 0) a.play().catch(() => {});
+			} else {
+				k.calmaDenemesi = 0;
+			}
+		}
+		const d = $('ses-ac');
+		if (d) d.hidden = !bekleyen;
+	}, 1000);
+}
+function sesGozcuDurdur() {
+	if (sesGozcu) clearInterval(sesGozcu);
+	sesGozcu = null;
+}
+
+// Teşhis: 10 saniyede bir kendi ses durumumuzu sunucuya bildirir (sunucu yalnızca günlüğe yazar).
+// Amacı, "seste ses yok / çalmıyor" şikayetinde cihazın ne gördüğünü uzaktan okuyabilmek.
+let taniZamanlayici = null;
+function taniBaslat() {
+	if (taniZamanlayici) return;
+	taniZamanlayici = setInterval(() => {
+		if (!sesKanal || !bagliyim) return;
+		const esler = [];
+		for (const [ad, k] of kisiler) {
+			const pc = k.pc;
+			const tr = k.transceiver || (pc && pc.getTransceivers ? pc.getTransceivers()[0] : null);
+			esler.push({
+				ad,
+				durum: pc ? pc.connectionState : null,
+				yon: tr ? tr.direction : null,
+				gonderenIz: !!(tr && tr.sender && tr.sender.track),
+				aliciIz: !!(tr && tr.receiver && tr.receiver.track && tr.receiver.track.readyState),
+				caliyor: k.ses ? !k.ses.paused : null,
+				kaynak: !!(k.ses && k.ses.srcObject),
+				sesDugmesi: !!k.sesDugmesi,
+				kbps: k.sonKbps ?? null,
+				giden: k.sonGiden ?? null,
+				kayip: k.sonKayip ?? null,
+				tip: k.sonTip || null,
+				jitter: k.jitter ?? null,
+			});
+		}
+		const iz = mikrofon && mikrofon.getAudioTracks()[0];
+		gonder({
+			type: 'tani',
+			veri: {
+				ua: navigator.userAgent.slice(0, 110),
+				kanal: sesKanal,
+				mikrofon: !!mikrofon,
+				mikAcik: iz ? iz.enabled : null,
+				mikDurum: iz ? iz.readyState : null,
+				sesBaglami: sesBaglami ? sesBaglami.state : null,
+				esler,
+			},
+		});
+	}, 10000);
+}
+function taniDurdur() {
+	if (taniZamanlayici) clearInterval(taniZamanlayici);
+	taniZamanlayici = null;
 }
 
 // Tek bir AudioContext paylaşılır: her katılımcı için yeni bağlam açmak tarayıcının bağlam
@@ -1389,6 +1484,7 @@ function istatistikBaslat() {
 				const uzak = rapor.get(cift.remoteCandidateId);
 				const aktarim = yerel?.candidateType === 'relay' || uzak?.candidateType === 'relay';
 				parcalar.push(aktarim ? 'TURN' : 'P2P');
+				k.sonTip = aktarim ? 'TURN' : 'P2P';
 				if (aktarim) sinif = 'orta';
 				// yerel aday türü: host/srflx → doğrudan; relay → TURN üzerinden
 				if (cift.currentRoundTripTime != null) parcalar.push(Math.round(cift.currentRoundTripTime * 1000) + ' ms');
@@ -1406,11 +1502,15 @@ function istatistikBaslat() {
 					if (dAlinan + dKayip > 0) {
 						const oran = Math.max(0, (dKayip / (dAlinan + dKayip)) * 100);
 						parcalar.push((oran < 0.05 ? '0' : oran.toFixed(1)) + '% kayıp');
+						k.sonKayip = Math.round(oran * 10) / 10;
 						if (oran >= 5) sinif = 'kotu';
 						else if (oran >= 1 && sinif !== 'kotu') sinif = 'orta';
 					}
 					const dBayt = bayt - onceki.bayt;
-					if (dBayt > 0) parcalar.push(Math.round((dBayt * 8 * 1000) / dt / 1000) + ' kbps');
+					if (dBayt > 0) {
+						k.sonKbps = Math.round((dBayt * 8 * 1000) / dt / 1000);
+						parcalar.push(k.sonKbps + ' kbps');
+					}
 				}
 				k.olcum = { zaman: simdi, alinan, kayip, bayt };
 			}
@@ -1421,6 +1521,7 @@ function istatistikBaslat() {
 				if (onceki && simdi - onceki.zaman > 400) {
 					const dt = simdi - onceki.zaman;
 					const kbps = Math.round(((bayt - onceki.bayt) * 8 * 1000) / dt / 1000);
+					k.sonGiden = kbps;
 					parcalar.push('↑' + kbps);
 					if (kbps === 0 && pc.connectionState === 'connected') {
 						k.sifirGiden = (k.sifirGiden || 0) + 1;
@@ -1433,12 +1534,29 @@ function istatistikBaslat() {
 						k.sifirGiden = 0;
 					}
 				}
+				// Tarayıcı giden sesi neden kısıyor? (Chrome: 'bandwidth' = ağ, 'cpu' = cihaz)
+				const sinir = giden.qualityLimitationReason;
+				if (sinir && sinir !== 'none') {
+					parcalar.push('sınır: ' + ({ bandwidth: 'bant genişliği', cpu: 'işlemci', other: 'diğer' }[sinir] || sinir));
+					if (sinir === 'bandwidth') sinif = 'kotu';
+				}
 				k.gidenOlcum = { zaman: simdi, bayt };
+			}
+			// "Ses geliyor ama çalmıyor" ile "ses hiç gelmiyor"u ayır (tek yönlü ses şüphesi).
+			if (k.ses) {
+				if (k.ses.srcObject && k.ses.paused && !k.ses.muted) {
+					parcalar.push('⚠ çalmıyor');
+					if (sinif !== 'kotu') sinif = 'orta';
+				} else if (!k.ses.srcObject && pc.connectionState === 'connected' && gelen && (gelen.bytesReceived || 0) > 0) {
+					parcalar.push('⚠ ses yok');
+					sinif = 'kotu';
+				}
 			}
 			if (!parcalar.length) continue;
 			k.istatistik.textContent = parcalar.join(' · ');
 			k.istatistik.className = 'ses-istatistik' + (sinif ? ' ' + sinif : '');
-			k.istatistik.title = 'jitter ' + (k.jitter != null ? k.jitter + ' ms' : '?');
+			k.istatistik.title =
+				'jitter ' + (k.jitter != null ? k.jitter + ' ms' : '?') + ' · tavan 96 kbps (Opus VBR: ağ izin verdiği kadarını kullanır)';
 		}
 	}, 2000);
 }

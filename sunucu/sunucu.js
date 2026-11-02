@@ -104,6 +104,10 @@ const GIRIS_ARALIK_MS = sayiAyar('GIRIS_ARALIK_MS', 10000, 0, 600000);
 let sonGirisDenemesi = 0; // sunucu geneli: son kabul edilen giriş denemesinin zamanı
 const ILK_ANAHTAR = ayar('ILK_ANAHTAR'); // test/kurulum için sabit ilk anahtar (üretimde boş bırak)
 const SITE_ADRESI = ayar('SITE_ADRESI', 'https://chat.tahagemici.com'); // ilk anahtar bağlantısında kullanılır
+// Ses teşhisi: istemciler 10 saniyede bir kendi ses durumlarını gönderir, sunucu YALNIZCA günlüğe
+// yazar (kimseye dağıtılmaz, veritabanına yazılmaz). Sorun bildirildiğinde cihazın ne gördüğünü
+// okumak için. Kapatmak: .env'de TANI=0
+const TANI = ayar('TANI', '1') !== '0';
 const TURN_PORT = sayiAyar('TURN_PORT', 3478, 1, 65535);
 const RELAY_MIN_PORT = sayiAyar('RELAY_MIN_PORT', 49152, 1024, 65535);
 const RELAY_MAX_PORT = sayiAyar('RELAY_MAX_PORT', 61000, RELAY_MIN_PORT, 65535);
@@ -672,6 +676,22 @@ async function girisKarari(ws, m) {
 	console.log(`[kapı] ${kayit.ad} kabul edildi (${ws.ad}) → anahtar verildi`);
 }
 
+// İstemcinin ses teşhisi: 10 saniyede bir, bağlantı başına en fazla 5 saniyede 1 kez günlüğe yazılır.
+// Yalnızca hata ayıklama içindir; DB'ye yazmaz, başka istemciye göndermez.
+function taniKaydet(ws, m) {
+	if (!ws.ad || !TANI) return;
+	const simdi = Date.now();
+	if (simdi - (ws.taniZaman || 0) < 5000) return;
+	ws.taniZaman = simdi;
+	let metin;
+	try {
+		metin = JSON.stringify(m.veri).slice(0, 1500);
+	} catch {
+		return;
+	}
+	console.log(`[tanı] ${ws.ad}: ${metin}`);
+}
+
 // Beyaz listedekiler kişi limitini çalışırken arttırıp azaltabilir (DB'ye yazılır, yeniden başlatmada korunur).
 async function kisiLimitiAyarla(ws, m) {
 	if (!ws.ad) return gonder(ws, { type: 'hata', message: 'Önce giriş yap.' });
@@ -931,6 +951,9 @@ wss.on('connection', (ws, req) => {
 				break;
 			case 'kisi-limiti':
 				kisiLimitiAyarla(ws, m);
+				break;
+			case 'tani':
+				taniKaydet(ws, m);
 				break;
 			case 'beyaz-liste':
 				if (!ws.ad) return;
