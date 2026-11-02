@@ -23,6 +23,14 @@ CREATE TABLE IF NOT EXISTS mesaj (
 );
 CREATE INDEX IF NOT EXISTS mesaj_kanal ON mesaj (kanal, id);
 
+CREATE TABLE IF NOT EXISTS kanal (
+	id TEXT PRIMARY KEY,
+	ad TEXT NOT NULL,
+	tur TEXT NOT NULL,
+	sira INTEGER NOT NULL DEFAULT 0,
+	olusturma INTEGER NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS dosya (
 	id TEXT PRIMARY KEY,
 	kanal TEXT NOT NULL,
@@ -118,6 +126,32 @@ function ac(klasor) {
 						[kanal, adet],
 					);
 			return satirlar.reverse().map(mesajCevir);
+		},
+
+		// --- kanallar (yazılı/sesli). Kanal listesi veritabanında tutulur; mesajlar 'kanal' id'siyle bağlanır.
+		async kanallarGetir() {
+			const satirlar = await hepsi('SELECT id, ad, tur FROM kanal ORDER BY sira, olusturma, id');
+			return satirlar.map((s) => ({ id: s.id, ad: s.ad, tur: s.tur }));
+		},
+
+		async kanalEkle({ id, ad, tur }) {
+			const son = await tek('SELECT COALESCE(MAX(sira), 0) + 1 AS sira FROM kanal');
+			await calistir('INSERT INTO kanal (id, ad, tur, sira, olusturma) VALUES (?, ?, ?, ?, ?)', [
+				id,
+				ad,
+				tur,
+				son.sira,
+				Date.now(),
+			]);
+		},
+
+		// Kanalı ve içindeki mesajları siler; silinen dosyaların id'lerini döndürür (diskten temizlemek için).
+		async kanalSil(id) {
+			const dosyalar = await hepsi('SELECT DISTINCT dosya_id FROM mesaj WHERE kanal = ? AND dosya_id IS NOT NULL', [id]);
+			await calistir('DELETE FROM mesaj WHERE kanal = ?', [id]);
+			await calistir('DELETE FROM dosya WHERE kanal = ?', [id]);
+			await calistir('DELETE FROM kanal WHERE id = ?', [id]);
+			return dosyalar.map((d) => d.dosya_id);
 		},
 
 		async dosyaEkle({ id, kanal, dosyaAd, boyut, tur }) {

@@ -105,21 +105,39 @@ for (const [ad, deger] of [['DIS_IP', DIS_IP], ['IC_IP', IC_IP]]) {
 }
 
 // ---------------------------------------------------------------- kanallar
-// Tek sunucu, sabit kanal listesi. Yeni kanal eklemek: buraya bir satır (id benzersiz olmalı).
-// Yazılı kanalların geçmişi veritabanında tutulur; sesli kanallar yalnızca o anki kişileri taşır.
+// Tek sunucu. Kanallar veritabanında tutulur (kanal tablosu); ilk açılışta aşağıdaki varsayılanlar
+// yazılır. Kullanıcı arayüzden yazılı/sesli kanal ekleyip silebilir (hesap yok, herkes yapabilir).
+// Yazılı kanalların geçmişi mesaj tablosunda kanal id'siyle saklanır.
 
-const KANALLAR = [
-	{ id: 'genel', ad: 'genel', tur: 'yazi', aciklama: 'Sunucunun genel sohbeti' },
-	{ id: 'muhabbet', ad: 'muhabbet', tur: 'yazi', aciklama: 'Günlük muhabbet, geyik' },
+const VARSAYILAN_KANALLAR = [
+	{ id: 'genel', ad: 'genel', tur: 'yazi' },
+	{ id: 'muhabbet', ad: 'muhabbet', tur: 'yazi' },
 	{ id: 'sesli-sohbet', ad: 'Sesli Sohbet', tur: 'ses' },
 	{ id: 'muzik', ad: 'Müzik', tur: 'ses' },
 	{ id: 'oyun', ad: 'Oyun', tur: 'ses' },
 ];
-const YAZI_KANALLARI = new Map(KANALLAR.filter((k) => k.tur === 'yazi').map((k) => [k.id, k]));
-const SES_KANALLARI = new Map(KANALLAR.filter((k) => k.tur === 'ses').map((k) => [k.id, k]));
-if (!YAZI_KANALLARI.size || !SES_KANALLARI.size) {
-	console.error('Kanal listesinde hem yazılı hem sesli kanal olmalı.');
-	process.exit(1);
+const EN_FAZLA_KANAL = 40;
+let kanallar = []; // [{id, ad, tur}] — veritabanından yüklenir, ekleme/silmede güncellenir
+
+const yaziKanali = (id) => kanallar.find((k) => k.id === id && k.tur === 'yazi') || null;
+const sesKanali = (id) => kanallar.find((k) => k.id === id && k.tur === 'ses') || null;
+
+// "Sesli Sohbet" → "sesli-sohbet"; Türkçe harfler sadeleşir, gerisi tireden oluşur.
+const TR_HARF = { ç: 'c', ğ: 'g', ı: 'i', ö: 'o', ş: 's', ü: 'u', â: 'a', î: 'i', û: 'u' };
+function kanalKimligi(ad) {
+	const sade = String(ad)
+		.toLocaleLowerCase('tr')
+		.replace(/[çğıöşüâîû]/g, (h) => TR_HARF[h] || h)
+		.replace(/[^a-z0-9]+/g, '-')
+		.replace(/^-+|-+$/g, '')
+		.slice(0, 32);
+	return sade || 'kanal';
+}
+function benzersizKimlik(ad) {
+	const temel = kanalKimligi(ad);
+	let aday = temel;
+	for (let i = 2; kanallar.some((k) => k.id === aday) && i < 1000; i++) aday = `${temel}-${i}`;
+	return aday;
 }
 
 // TURN şifreleri bu sırdan türetilir (coturn "use-auth-secret"). Her açılışta yenisi üretilir:
@@ -208,7 +226,9 @@ function turnAyarDosyasi() {
 		// Kötüye kullanıma karşı: kullanıcı başına ve toplam aktarım sayısı, aktarım başına bant genişliği.
 		'user-quota=24',
 		'total-quota=240',
-		'max-bps=96000',
+		// Aktarım (relay) bant genişliği sınırı: 96 kbps gelen+giden toplamı için dar ve relay'li
+		// görüşmelerde ses kesilmesine yol açıyordu; ses için bol, kötüye kullanıma karşı sınırlı.
+		'max-bps=512000',
 		'stale-nonce=600',
 		'no-cli',
 		'no-tls',
@@ -358,9 +378,8 @@ function kanalHerkes(kanal, nesne, haric) {
 }
 
 function kanalDurumu() {
-	return KANALLAR.map((k) => {
+	return kanallar.map((k) => {
 		const o = { id: k.id, ad: k.ad, tur: k.tur };
-		if (k.aciklama) o.aciklama = k.aciklama;
 		if (k.tur === 'ses') o.kisiler = [...(sesliKanallar.get(k.id) || new Map()).values()].map((ws) => ({ ad: ws.ad, sessiz: !!ws.sessiz }));
 		return o;
 	});
@@ -451,7 +470,7 @@ function girisYap(ws, m) {
 async function yaziGonder(ws, m) {
 	if (!ws.ad) return gonder(ws, { type: 'hata', message: 'Önce adını gir.' });
 	const kanal = String(m.kanal ?? '');
-	if (!YAZI_KANALLARI.has(kanal)) return gonder(ws, { type: 'hata', message: 'Bilinmeyen kanal.' });
+	if (!yaziKanali(kanal)) return gonder(ws, { type: 'hata', message: 'Bilinmeyen kanal.' });
 	let metin = String(m.metin ?? '')
 		.replace(/\r\n/g, '\n')
 		// Kontrol karakterleri (satır sonu ve sekme hariç) metne karışmasın.
@@ -476,7 +495,7 @@ async function yaziGonder(ws, m) {
 
 async function gecmisGonder(ws, m) {
 	const kanal = String(m.kanal ?? '');
-	if (!YAZI_KANALLARI.has(kanal)) return gonder(ws, { type: 'hata', message: 'Bilinmeyen kanal.' });
+	if (!yaziKanali(kanal)) return gonder(ws, { type: 'hata', message: 'Bilinmeyen kanal.' });
 	const once = Number(m.once) > 0 ? Math.floor(Number(m.once)) : 0;
 	try {
 		const mesajlar = await db.mesajlar(kanal, once, 50);
@@ -490,7 +509,7 @@ async function gecmisGonder(ws, m) {
 function sesGir(ws, m) {
 	if (!ws.ad) return gonder(ws, { type: 'hata', message: 'Önce adını gir.' });
 	const kanal = String(m.kanal ?? '');
-	if (!SES_KANALLARI.has(kanal)) return gonder(ws, { type: 'hata', message: 'Bilinmeyen sesli kanal.' });
+	if (!sesKanali(kanal)) return gonder(ws, { type: 'hata', message: 'Bilinmeyen sesli kanal.' });
 	if (ws.sesKanal === kanal) {
 		return gonder(ws, { type: 'ses-girdi', kanal, kisiler: [...sesliKanallar.get(kanal).keys()].filter((a) => a !== ws.ad) });
 	}
@@ -519,6 +538,84 @@ function sdpIlet(ws, m, tur) {
 	gonder(karsi, tur === 'sdp' ? { type: 'sdp', from: ws.ad, sdp: m.sdp } : { type: 'ice', from: ws.ad, ice: m.ice });
 }
 
+
+// --- kanal ekleme / silme (hesap yok: giriş yapan herkes yapabilir; saatte 10 işlemle sınırlı)
+
+function kanalHizi(ws) {
+	const simdi = Date.now();
+	if (simdi - (ws.kanalPencere || 0) > 60000) {
+		ws.kanalPencere = simdi;
+		ws.kanalAdet = 0;
+	}
+	if (++ws.kanalAdet > 10) {
+		gonder(ws, { type: 'hata', message: 'Çok sık kanal işlemi; biraz bekle.' });
+		return false;
+	}
+	return true;
+}
+
+async function kanalEkleHandler(ws, m) {
+	if (!ws.ad) return gonder(ws, { type: 'hata', message: 'Önce adını gir.' });
+	const tur = m.tur === 'ses' ? 'ses' : m.tur === 'yazi' ? 'yazi' : '';
+	if (!tur) return gonder(ws, { type: 'hata', message: 'Kanal türü yazılı (yazi) ya da sesli (ses) olmalı.' });
+	const ad = String(m.ad ?? '')
+		.replace(/[\u0000-\u001f\u007f]/g, '')
+		.trim()
+		.replace(/\s+/g, ' ')
+		.slice(0, 24);
+	if (!ad) return gonder(ws, { type: 'hata', message: 'Kanal adı gerekli.' });
+	if (kanallar.length >= EN_FAZLA_KANAL) return gonder(ws, { type: 'hata', message: `En fazla ${EN_FAZLA_KANAL} kanal olabilir.` });
+	if (kanallar.some((k) => k.tur === tur && k.ad.toLocaleLowerCase('tr') === ad.toLocaleLowerCase('tr'))) {
+		return gonder(ws, { type: 'hata', message: 'Bu adda bir kanal zaten var.' });
+	}
+	if (!kanalHizi(ws)) return;
+	const id = benzersizKimlik(ad);
+	try {
+		await db.kanalEkle({ id, ad, tur });
+	} catch (e) {
+		console.error('[kanal] eklenemedi:', e.message);
+		return gonder(ws, { type: 'hata', message: 'Kanal eklenemedi; tekrar dene.' });
+	}
+	kanallar.push({ id, ad, tur });
+	console.log(`[kanal] ${ws.ad} → +${tur} "${ad}" (${id}); toplam ${kanallar.length}`);
+	durumYayinla();
+}
+
+async function kanalSilHandler(ws, m) {
+	if (!ws.ad) return gonder(ws, { type: 'hata', message: 'Önce adını gir.' });
+	const id = String(m.kanal ?? '');
+	const kanal = kanallar.find((k) => k.id === id);
+	if (!kanal) return gonder(ws, { type: 'hata', message: 'Kanal bulunamadı.' });
+	const ayniTur = kanallar.filter((k) => k.tur === kanal.tur).length;
+	if (ayniTur <= 1) {
+		return gonder(ws, { type: 'hata', message: `Son ${kanal.tur === 'ses' ? 'sesli' : 'yazılı'} kanal silinemez.` });
+	}
+	if (!kanalHizi(ws)) return;
+
+	kanallar = kanallar.filter((k) => k.id !== id);
+	// Sesli kanaldaysa içindekileri çıkar.
+	const uyeler = sesliKanallar.get(id);
+	if (uyeler) {
+		for (const uye of uyeler.values()) {
+			uye.sesKanal = null;
+			gonder(uye, { type: 'ses-kapatildi', kanal: id });
+		}
+		sesliKanallar.delete(id);
+	}
+	try {
+		const dosyalar = await db.kanalSil(id);
+		for (const d of dosyalar) {
+			dosyaOnbellek.delete(d);
+			fs.promises.unlink(path.join(YUKLEME_KLASORU, d)).catch(() => {});
+		}
+	} catch (e) {
+		console.error('[kanal] silinemedi:', e.message);
+		return gonder(ws, { type: 'hata', message: 'Kanal silinemedi; tekrar dene.' });
+	}
+	console.log(`[kanal] ${ws.ad} → -${kanal.tur} "${kanal.ad}" (${id}); toplam ${kanallar.length}`);
+	durumYayinla();
+}
+
 wss.on('connection', (ws) => {
 	ws.ad = null;
 	ws.sesKanal = null;
@@ -545,12 +642,18 @@ wss.on('connection', (ws) => {
 				gecmisGonder(ws, m);
 				break;
 			case 'yaziyor':
-				if (ws.ad && YAZI_KANALLARI.has(String(m.kanal ?? ''))) {
+				if (ws.ad && yaziKanali(String(m.kanal ?? ''))) {
 					herkes({ type: 'yaziyor', kanal: String(m.kanal), ad: ws.ad }, ws);
 				}
 				break;
 			case 'ses-gir':
 				sesGir(ws, m);
+				break;
+			case 'kanal-ekle':
+				kanalEkleHandler(ws, m);
+				break;
+			case 'kanal-sil':
+				kanalSilHandler(ws, m);
 				break;
 			case 'ses-cik':
 				sesCikar(ws);
@@ -656,7 +759,7 @@ async function yukle(req, res, sorgu) {
 	const sahibi = jetonlar.get(jeton);
 	if (!sahibi || !sahibi.ad) return jsonYanit(res, 401, { hata: 'Oturum bulunamadı; sayfayı yenile.' });
 	const kanal = String(sorgu.get('kanal') || '');
-	if (!YAZI_KANALLARI.has(kanal)) return jsonYanit(res, 400, { hata: 'Bilinmeyen kanal.' });
+	if (!yaziKanali(kanal)) return jsonYanit(res, 400, { hata: 'Bilinmeyen kanal.' });
 	const bildirilen = Number(req.headers['content-length'] || 0);
 	if (bildirilen > DOSYA_SINIRI) return jsonYanit(res, 413, { hata: `Dosya çok büyük (en fazla ${DOSYA_MB} MB).` });
 	if (bosAlan() < EN_AZ_BOS_ALAN) return jsonYanit(res, 507, { hata: 'Sunucuda boş yer kalmadı; dosya yüklenemiyor.' });
@@ -754,6 +857,7 @@ const sunucu = http.createServer((req, res) => {
 			oda: sesliKanallar.size, // dolu sesli kanal sayısı
 			kisi,
 			cevrimici: kimler().length,
+			kanal: kanallar.length,
 			veritabani: db ? 'açık' : 'kapalı',
 		};
 		const sayilar = db ? db.sayilar() : Promise.resolve({ mesaj: 0, dosya: 0 });
@@ -829,6 +933,18 @@ async function main() {
 		await db.hazir;
 	} catch (e) {
 		console.error('Veritabanı açılamadı: ' + e.message);
+		process.exit(1);
+	}
+	try {
+		kanallar = await db.kanallarGetir();
+		if (!kanallar.length) {
+			for (const k of VARSAYILAN_KANALLAR) await db.kanalEkle(k);
+			kanallar = await db.kanallarGetir();
+			console.log('[kanal] varsayılan kanallar oluşturuldu');
+		}
+		console.log(`[kanal] ${kanallar.length} kanal: ${kanallar.map((k) => k.id).join(', ')}`);
+	} catch (e) {
+		console.error('Kanallar yüklenemedi: ' + e.message);
 		process.exit(1);
 	}
 	try {

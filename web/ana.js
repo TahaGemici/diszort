@@ -172,8 +172,22 @@ function mesaj(m) {
 		}
 		case 'kanallar':
 			kanallar = m.kanallar || [];
+			// Baktığım kanal silindiyse ilk yazılı kanala geç; sesli kanalım silindiyse çık.
+			if (aktifKanal && !kanalBilgi(aktifKanal)) {
+				aktifKanal = '';
+				mesajVerisi = [];
+				$('mesajlar').replaceChildren();
+				const ilk = ilkKanal();
+				if (ilk) kanalSec(ilk);
+				else $('kanal-ad').textContent = '—';
+			}
+			if (sesKanal && !kanalBilgi(sesKanal)) sesKapat(false);
 			kanalListesiCiz();
 			cevrimiciSayaci();
+			break;
+		case 'ses-kapatildi':
+			durum('Kanal silindi; sesli kanaldan çıkarıldın.', true);
+			sesKapat(false);
 			break;
 		case 'kimler':
 			kimlerListesi = m.kimler || [];
@@ -260,24 +274,37 @@ function kanalListesiCiz() {
 	y.replaceChildren();
 	s.replaceChildren();
 
-	for (const k of kanallar.filter((x) => x.tur === 'yazi')) {
-		const d = el('button', 'kanal' + (k.id === aktifKanal ? ' aktif' : ''));
+	// Her satır: kanal düğmesi + silme düğmesi (fare üzerine gelince görünür).
+	const satirYap = (kanal, icerik, tikla) => {
+		const satir = el('div', 'kanal-satir');
+		const d = el('button', 'kanal' + (icerik.aktif ? ' aktif' : ''));
 		d.type = 'button';
-		d.append(el('span', 'kanal-isaret', '#'), el('span', 'kanal-adi', k.ad));
+		d.append(...icerik.parcalar);
+		d.onclick = tikla;
+		const sil = el('button', 'kanal-sil', '✕');
+		sil.type = 'button';
+		sil.title = 'Kanalı sil';
+		sil.setAttribute('aria-label', `${kanal.ad} kanalını sil`);
+		sil.onclick = (e) => {
+			e.stopPropagation();
+			kanalSilIste(kanal);
+		};
+		satir.append(d, sil);
+		return satir;
+	};
+
+	for (const k of kanallar.filter((x) => x.tur === 'yazi')) {
+		const parcalar = [el('span', 'kanal-isaret', '#'), el('span', 'kanal-adi', k.ad)];
 		const n = okunmamis.get(k.id) || 0;
-		if (n) d.append(el('span', 'rozet', n > 99 ? '99+' : String(n)));
-		d.onclick = () => kanalSec(k.id);
-		y.append(d);
+		if (n) parcalar.push(el('span', 'rozet', n > 99 ? '99+' : String(n)));
+		y.append(satirYap(k, { parcalar, aktif: k.id === aktifKanal }, () => kanalSec(k.id)));
 	}
 
 	for (const k of kanallar.filter((x) => x.tur === 'ses')) {
-		const d = el('button', 'kanal' + (k.id === sesKanal ? ' aktif' : ''));
-		d.type = 'button';
-		d.append(el('span', 'kanal-isaret', '🔊'), el('span', 'kanal-adi', k.ad));
+		const parcalar = [el('span', 'kanal-isaret', '🔊'), el('span', 'kanal-adi', k.ad)];
 		const kisi = k.kisiler || [];
-		if (kisi.length) d.append(el('span', 'rozet-yazi', String(kisi.length)));
-		d.onclick = () => sesAc(k.id);
-		s.append(d);
+		if (kisi.length) parcalar.push(el('span', 'rozet-yazi', String(kisi.length)));
+		s.append(satirYap(k, { parcalar, aktif: k.id === sesKanal }, () => sesAc(k.id)));
 		for (const p of kisi) {
 			const satir = el('div', 'ses-uyesi');
 			satir.append(el('span', 'nokta' + (p.sessiz ? ' kapali' : '')), el('span', 'ad', p.ad + (p.ad === benimAdim ? ' (sen)' : '')));
@@ -310,6 +337,75 @@ function baslikGuncelle() {
 	document.title = (toplam ? `(${toplam}) ` : '') + 'Ses Kanalı';
 }
 
+
+// ---------------------------------------------------------------- pencere (kanal ekle / sil)
+
+let pencereOnay = null;
+
+function pencereAc({ baslik, metin, girdi, tamam, tehlike, onay }) {
+	$('pencere-baslik').textContent = baslik;
+	$('pencere-metin').textContent = metin || '';
+	$('pencere-girdi').hidden = !girdi;
+	$('pencere-girdi').value = '';
+	$('pencere-tamam').textContent = tamam || 'Tamam';
+	$('pencere-tamam').classList.toggle('tehlike', !!tehlike);
+	pencereOnay = onay;
+	$('pencere').hidden = false;
+	if (girdi) $('pencere-girdi').focus();
+	else $('pencere-tamam').focus();
+}
+
+function pencereKapat() {
+	$('pencere').hidden = true;
+	pencereOnay = null;
+}
+
+function kanalEkleIste(tur) {
+	const sesli = tur === 'ses';
+	pencereAc({
+		baslik: sesli ? 'Sesli kanal ekle' : 'Yazılı kanal ekle',
+		metin: sesli ? 'Kanala bir ad ver (örn. Oyun Odası).' : 'Kanala bir ad ver (örn. duyurular).',
+		girdi: true,
+		tamam: 'Ekle',
+		onay: (ad) => gonder({ type: 'kanal-ekle', tur, ad }),
+	});
+}
+
+function kanalSilIste(kanal) {
+	const dolu = kanal.tur === 'ses' && (kanal.kisiler || []).length;
+	pencereAc({
+		baslik: 'Kanalı sil',
+		metin:
+			`"${kanal.ad}" kanalı silinecek` +
+			(kanal.tur === 'yazi' ? ' ve içindeki mesajlar ile dosyalar da silinecek.' : dolu ? '; içindeki kişiler kanaldan çıkarılacak.' : '.'),
+		girdi: false,
+		tamam: 'Sil',
+		tehlike: true,
+		onay: () => gonder({ type: 'kanal-sil', kanal: kanal.id }),
+	});
+}
+
+$('pencere-iptal').addEventListener('click', pencereKapat);
+$('pencere').addEventListener('click', (e) => {
+	if (e.target === $('pencere')) pencereKapat();
+});
+$('pencere-form').addEventListener('submit', (e) => {
+	e.preventDefault();
+	const girdi = $('pencere-girdi').hidden ? '' : $('pencere-girdi').value.trim();
+	if (!$('pencere-girdi').hidden && !girdi) {
+		$('pencere-girdi').focus();
+		return;
+	}
+	const onay = pencereOnay;
+	pencereKapat();
+	if (onay) onay(girdi);
+});
+document.addEventListener('keydown', (e) => {
+	if (e.key === 'Escape' && !$('pencere').hidden) pencereKapat();
+});
+$('yazi-ekle').addEventListener('click', () => kanalEkleIste('yazi'));
+$('ses-ekle').addEventListener('click', () => kanalEkleIste('ses'));
+
 // ---------------------------------------------------------------- sohbet
 
 function kanalSec(id) {
@@ -319,7 +415,6 @@ function kanalSec(id) {
 	okunmamis.delete(id);
 	rozetleriGuncelle();
 	$('kanal-ad').textContent = '#' + k.ad;
-	$('kanal-aciklama').textContent = k.aciklama || '';
 	$('metin').placeholder = `#${k.ad} kanalına yaz…`;
 	$('metin').disabled = false;
 	mesajVerisi = [];
@@ -679,13 +774,15 @@ const sesKartGuncelle = () => {
 async function sesAc(kanal) {
 	if (sesKanal === kanal) return;
 	if (!bagliyim) return durum('Sunucuya bağlanmadan sesli kanala girilmez.', true);
+	// Kanal değiştirirken eski akış durdurulmuş olabilir (çık-gir): yeniden al.
+	if (mikrofon && mikrofon.getAudioTracks().every((t) => t.readyState === 'ended')) mikrofon = null;
 	if (!mikrofon) {
 		durum('Mikrofon izni bekleniyor…');
 		try {
 			// Yankı/gürültü giderme ve otomatik kazanç açık kalsın; sesi WebAudio'dan GEÇİRME
 			// (geçirirse bu özellikler kapanır, ses robotikleşir).
 			mikrofon = await navigator.mediaDevices.getUserMedia({
-				audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+				audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true, channelCount: 1 },
 			});
 		} catch (hata) {
 			const neden = hata && hata.name === 'NotFoundError' ? 'Mikrofon bulunamadı' : 'Mikrofon izni verilmedi';
@@ -699,6 +796,7 @@ async function sesAc(kanal) {
 
 function sesKatil(kanal, kisiAdlari) {
 	sesKanal = kanal;
+	audioBaglami(); // kullanıcı tıklamasıyla oluştur/canlandır (tarayıcı otomatik oynatma kuralı)
 	herkesiKapat();
 	for (const ad of kisiAdlari) kisiEkle(ad);
 	sesKartGuncelle();
@@ -717,6 +815,10 @@ function sesKapat(bildir = true) {
 	sesKartGuncelle();
 	$('ben-kapat').hidden = true;
 	$('ben-ses-satir').replaceChildren();
+	if (kendiOlcer) {
+		kendiOlcer.dur();
+		kendiOlcer = null;
+	}
 	if (mikrofon) {
 		mikrofon.getTracks().forEach((t) => t.stop());
 		mikrofon = null;
@@ -798,7 +900,6 @@ function herkesiKapat() {
 
 function satirOlustur(ad, k) {
 	const satir = el('div', 'ses-kisi');
-	const etiket = el('span', 'etiket', 'bağlanıyor…');
 	const sus = el('button', 'ikon-dugme sus', '🔊');
 	sus.type = 'button';
 	sus.title = 'Bu kişiyi sustur/aç';
@@ -807,6 +908,7 @@ function satirOlustur(ad, k) {
 	Object.assign(seviye, { type: 'range', min: 0, max: 100, value: 100 });
 	seviye.title = 'Ses seviyesi';
 	seviye.setAttribute('aria-label', ad + ' kişisinin ses seviyesi');
+	const istatistik = el('span', 'ses-istatistik', 'bağlanıyor…');
 	const ses = el('audio');
 	ses.autoplay = true;
 	ses.hidden = true;
@@ -817,9 +919,9 @@ function satirOlustur(ad, k) {
 		satir.classList.toggle('sessiz', ses.muted);
 	};
 	seviye.oninput = () => (ses.volume = seviye.value / 100);
-	satir.append(el('span', 'nokta'), el('b', 'ad', ad), etiket, sus, seviye, ses);
+	satir.append(el('span', 'nokta'), el('b', 'ad', ad), istatistik, sus, seviye, ses);
 	$('ses-kisiler').append(satir);
-	Object.assign(k, { satir, ses, etiket, seviye });
+	Object.assign(k, { satir, ses, seviye, istatistik });
 }
 
 function pcOlustur(ad, k) {
@@ -836,9 +938,13 @@ function pcOlustur(ad, k) {
 	pc.onconnectionstatechange = () => {
 		if (pc.connectionState === 'connected') bitHiziAyarla(pc);
 		if (pc.connectionState === 'failed') {
-			k.etiket.textContent = 'bağlanamadı';
-			k.etiket.className = 'etiket hata';
+			k.istatistik.textContent = 'bağlantı koptu';
+			k.istatistik.className = 'ses-istatistik kotu';
 			if (teklifEdenBenim(ad) && pc.signalingState === 'stable') pc.restartIce();
+		}
+		if (pc.connectionState === 'disconnected') {
+			k.istatistik.textContent = 'bağlantı zayıf…';
+			k.istatistik.className = 'ses-istatistik orta';
 		}
 	};
 	if (teklifEdenBenim(ad)) {
@@ -850,8 +956,13 @@ function pcOlustur(ad, k) {
 				console.warn('teklif', ad, h);
 			}
 		};
-		if (mikrofon) for (const t of mikrofon.getTracks()) pc.addTrack(t, mikrofon);
 	}
+	// Ses kanalını HER ZAMAN aç: mikrofon sonradan gelse bile teklif/yanıt üretilir, mikrofon
+	// gelince replaceTrack ile bağlanır. (Eskiden addTrack yalnız mikrofon varken çağrılıyordu;
+	// çık-gir sonrası teklif hiç üretilmediği için ses gelmiyordu.)
+	const parca = mikrofon && mikrofon.getAudioTracks()[0];
+	const tr = pc.addTransceiver(parca || 'audio', { direction: 'sendrecv', streams: mikrofon ? [mikrofon] : [] });
+	k.transceiver = tr;
 }
 
 function sdpGeldi(ad, sdp) {
@@ -875,10 +986,10 @@ async function sdpIsle(ad, k, sdp) {
 	for (const aday of k.adaylar.splice(0)) await pc.addIceCandidate(aday).catch(() => {});
 	if (sdp.type === 'offer') {
 		// Mikrofonu teklifteki ses kanalına bağla (yeni bir kanal açmadan).
-		if (mikrofon && !pc.getSenders().some((s) => s.track)) {
-			const tr = pc.getTransceivers().find((t) => t.receiver.track.kind === 'audio');
-			const parca = mikrofon.getAudioTracks()[0];
-			if (tr && parca) {
+		const parca = mikrofon && mikrofon.getAudioTracks()[0];
+		if (parca) {
+			const tr = pc.getTransceivers().find((t) => t.receiver.track.kind === 'audio') || pc.getTransceivers()[0];
+			if (tr && !tr.sender.track) {
 				await tr.sender.replaceTrack(parca);
 				tr.sender.setStreams?.(mikrofon);
 				tr.direction = 'sendrecv';
@@ -929,60 +1040,117 @@ function sesiBaslat(k) {
 	});
 }
 
+// Tek bir AudioContext paylaşılır: her katılımcı için yeni bağlam açmak tarayıcının bağlam
+// sınırına takılıyordu (çık-gir sonrası ses seviyesi/ölçüm ölüyordu).
+let sesBaglami = null;
+function audioBaglami() {
+	try {
+		if (!sesBaglami || sesBaglami.state === 'closed') sesBaglami = new AudioContext();
+		if (sesBaglami.state === 'suspended') sesBaglami.resume().catch(() => {});
+	} catch {
+		sesBaglami = null;
+	}
+	return sesBaglami;
+}
+
 // Ses seviyesi. Yalnızca ölçer; gönderilen/çalınan ses WebAudio'dan geçmez (geçseydi yankı ve
 // gürültü giderme kapanır, ses robotikleşirdi).
 function seviyeOlcer(akis, satir, yazi, acikMi) {
-	let ac = null;
+	let zaman = null;
+	let kaynak = null;
 	try {
-		ac = new AudioContext();
+		const ac = audioBaglami();
+		if (!ac) return { dur() {} };
 		const analiz = ac.createAnalyser();
 		analiz.fftSize = 256;
-		ac.createMediaStreamSource(akis).connect(analiz);
+		kaynak = ac.createMediaStreamSource(akis);
+		kaynak.connect(analiz);
 		const veri = new Uint8Array(analiz.frequencyBinCount);
-		const zaman = setInterval(() => {
+		zaman = setInterval(() => {
 			analiz.getByteFrequencyData(veri);
 			const yuzde = Math.round((Math.max(...veri) / 255) * 100);
 			if (yazi) yazi.textContent = yuzde + '%';
 			satir.classList.toggle('konusuyor', yuzde > 35 && (!acikMi || acikMi()));
 		}, 200);
-		return {
-			dur() {
-				clearInterval(zaman);
-				satir.classList.remove('konusuyor');
-				if (ac) ac.close().catch(() => {});
-			},
-		};
 	} catch {
 		return { dur() {} };
 	}
+	return {
+		dur() {
+			if (zaman) clearInterval(zaman);
+			satir.classList.remove('konusuyor');
+			try {
+				kaynak?.disconnect();
+			} catch {}
+		},
+	};
 }
 
-// Her kişi için bağlantı türü (doğrudan / TURN aktarımı) ve gecikme.
+// Her eş için: bağlantı türü (P2P / TURN), gecikme, paket kaybı ve bit hızı.
+// Kayıp/bit hızı, getStats'ın kümülatif sayaçlarının iki ölçüm arasındaki farkından hesaplanır;
+// kümülatif oran (toplam kayıp / toplam paket) eski kayıpları sonsuza dek taşıdığı için yanıltıcı.
 function istatistikBaslat() {
 	if (istatistikZamanlayici) return;
 	istatistikZamanlayici = setInterval(async () => {
 		for (const [, k] of kisiler) {
-			if (!k.pc || k.pc.connectionState === 'failed') continue;
+			const pc = k.pc;
+			if (!pc || pc.connectionState === 'failed' || pc.connectionState === 'closed') continue;
+			let rapor;
 			try {
-				const rapor = await k.pc.getStats();
-				let cift = null;
+				rapor = await pc.getStats();
+			} catch {
+				continue;
+			}
+			const simdi = Date.now();
+			let cift = null;
+			let gelen = null;
+			rapor.forEach((r) => {
+				if (r.type === 'transport' && r.selectedCandidatePairId) cift = rapor.get(r.selectedCandidatePairId);
+				if (r.type === 'inbound-rtp' && (r.kind === 'audio' || r.mediaType === 'audio')) gelen = r;
+			});
+			if (!cift)
 				rapor.forEach((r) => {
-					if (r.type === 'transport' && r.selectedCandidatePairId) cift = rapor.get(r.selectedCandidatePairId);
+					if (!cift && r.type === 'candidate-pair' && r.state === 'succeeded' && r.nominated) cift = r;
 				});
-				if (!cift)
-					rapor.forEach((r) => {
-						if (!cift && r.type === 'candidate-pair' && r.state === 'succeeded' && r.nominated) cift = r;
-					});
-				if (!cift) continue;
+
+			const parcalar = [];
+			let sinif = '';
+			if (cift) {
 				const yerel = rapor.get(cift.localCandidateId);
 				const uzak = rapor.get(cift.remoteCandidateId);
 				const aktarim = yerel?.candidateType === 'relay' || uzak?.candidateType === 'relay';
-				const rtt = cift.currentRoundTripTime != null ? ` · ${Math.round(cift.currentRoundTripTime * 1000)} ms` : '';
-				k.etiket.textContent = (aktarim ? 'TURN' : 'doğrudan') + rtt;
-				k.etiket.className = 'etiket ' + (aktarim ? 'aktarim' : 'dogrudan');
-			} catch {}
+				parcalar.push(aktarim ? 'TURN' : 'P2P');
+				if (aktarim) sinif = 'orta';
+				// yerel aday türü: host/srflx → doğrudan; relay → TURN üzerinden
+				if (cift.currentRoundTripTime != null) parcalar.push(Math.round(cift.currentRoundTripTime * 1000) + ' ms');
+			}
+			if (gelen) {
+				const onceki = k.olcum;
+				const alinan = gelen.packetsReceived || 0;
+				const kayip = gelen.packetsLost || 0;
+				const bayt = gelen.bytesReceived || 0;
+				if (gelen.jitter != null) k.jitter = Math.round(gelen.jitter * 1000);
+				if (onceki && simdi - onceki.zaman > 400) {
+					const dt = simdi - onceki.zaman;
+					const dAlinan = alinan - onceki.alinan;
+					const dKayip = kayip - onceki.kayip;
+					if (dAlinan + dKayip > 0) {
+						const oran = Math.max(0, (dKayip / (dAlinan + dKayip)) * 100);
+						parcalar.push((oran < 0.05 ? '0' : oran.toFixed(1)) + '% kayıp');
+						if (oran >= 5) sinif = 'kotu';
+						else if (oran >= 1 && sinif !== 'kotu') sinif = 'orta';
+					}
+					const dBayt = bayt - onceki.bayt;
+					if (dBayt > 0) parcalar.push(Math.round((dBayt * 8 * 1000) / dt / 1000) + ' kbps');
+				}
+				k.olcum = { zaman: simdi, alinan, kayip, bayt };
+			}
+			if (!parcalar.length) continue;
+			k.istatistik.textContent = parcalar.join(' · ');
+			k.istatistik.className = 'ses-istatistik' + (sinif ? ' ' + sinif : '');
+			k.istatistik.title = 'jitter ' + (k.jitter != null ? k.jitter + ' ms' : '?');
 		}
-	}, 3000);
+	}, 2000);
 }
 
 function sessizGoster(ad, sessiz) {

@@ -6,6 +6,9 @@ dosya paylaşılabilir) + **sesli kanallar** (ses tarayıcılar arasında doğru
 - **Giriş:** Yalnızca adını yazarsın. Hesap, şifre, davet yok. Bütün kanallar açılır.
 - **Arayüz:** Solda yazılı (`#genel`, `#muhabbet`) ve sesli (Sesli Sohbet, Müzik, Oyun) kanallar;
   ortada sohbet; sağda çevrimiçi kişiler; sesli kanaldayken altta katılımcı kartı.
+- **Kanal ekle / sil:** Her bölümün başındaki `＋` ile yazılı veya sesli kanal açılır; kanal adının
+  yanındaki `✕` ile silinir (yazılı kanal silinince mesajları ve dosyaları da gider, sesli kanal
+  silinince içindekiler çıkarılır). Tek sunucu olduğu için en solda sunucu şeridi yoktur.
 - **Yazılı kanallar sunucudan geçer ve saklanır:** mesajlar SQLite'ta (`/veri/sohbet.db`), paylaşılan
   dosyalar `/veri/yuklemeler/` altında. Geçmiş sayfa yenilenince de yerinde durur.
 - **Dosya paylaşımı:** ataç düğmesi, sürükle-bırak ya da panodan yapıştırma; en fazla `DOSYA_MB` (varsayılan 25 MB).
@@ -100,7 +103,7 @@ sudo systemctl reload caddy
 | Yol (sunucu) | İçinde |
 |---|---|
 | `/var/lib/chat/.env` | ayarlar |
-| `/var/lib/chat/sohbet.db` (+ `-wal`, `-shm`) | yazılı kanalların mesajları ve dosya kayıtları (SQLite) |
+| `/var/lib/chat/sohbet.db` (+ `-wal`, `-shm`) | kanal listesi, yazılı kanalların mesajları ve dosya kayıtları (SQLite) |
 | `/var/lib/chat/yuklemeler/` | paylaşılan dosyaların kendisi (`<id>` adıyla) |
 
 Hepsi `/var/lib/chat` altında, konteynerde `/veri`. Konteyner silinse/yeniden kurulsa da korunur;
@@ -121,13 +124,15 @@ docker compose down
 
 Adresi iki sekmede aç. (Tarayıcılar mikrofonu yalnızca HTTPS'te ya da `localhost`/`127.0.0.1`'de verir.)
 Çalışan bir sunucuyu dışarıdan denemek için: `make test` (ya da `node test/dene.js http://adres:port`).
-14 deneme yapılır: web sayfası, sağlık, `/api/ice`, STUN, TURN (doğru/yanlış şifre), giriş, yazılı sohbet
+18 deneme yapılır: web sayfası, sağlık, `/api/ice`, STUN, TURN (doğru/yanlış şifre), giriş, yazılı sohbet
 (gönderme, iletme, geçmiş, hız sınırı), dosya paylaşımı (yetki, yükleme, indirme), sesli kanal signaling'i,
-aynı ad reddi, kanal doluluğu. **Not:** denemeler gerçek veritabanına birkaç `(deneme)` mesajı ve küçük
+aynı ad reddi, kanal doluluğu, kanal ekleme/silme (yazılı + sesli, doğrulama) ve çık-gir sonrası yeniden
+bağlanma. **Not:** denemeler gerçek veritabanına birkaç `(deneme)` mesajı ve küçük
 bir dosya bırakır.
 
-Arayüzü de tarayıcı açmadan deneyebilirsin: `make arayuz` (jsdom; giriş, kanal seçimi, mesaj çizimi,
-sesli kanal satırları, mikrofon düğmesi — toplam 42 denetim). Bu VPS'te gerçek tarayıcı çalıştırılmaz.
+Arayüzü de tarayıcı açmadan deneyebilirsin: `make arayuz` (jsdom; giriş, kanal ekleme/silme penceresi,
+kanal seçimi, mesaj çizimi, sesli kanal satırları, bağlantı istatistikleri, çık-gir — toplam 72 denetim).
+Bu VPS'te gerçek tarayıcı çalıştırılmaz.
 
 ## Nasıl çalışır
 
@@ -147,8 +152,11 @@ tarayıcı ──UDP 3478──> coturn (konteynerde, sunucu.js başlatır) ─�
 - **Konteyner:** Tek süreç: `sunucu.js` web sayfasını, sohbeti, dosyaları ve signaling'i yönetir; coturn'ü
   kendisi başlatıp izler (biri düşerse konteyner iki saniyede yeniden başlar). Kök olmayan kullanıcı
   (uid 1000) ile çalışır. Sunucunun ağını paylaşır (`network_mode: host`): TURN çok sayıda UDP portu kullanır.
-- **Kanallar:** `sunucu/sunucu.js` içindeki `KANALLAR` listesinde tanımlı. Yeni kanal = bir satır
-  (`{ id, ad, tur: 'yazi' | 'ses' }`); yazılı kanalların geçmişi `kanal` alanıyla ayrılır.
+- **Kanallar:** Veritabanındaki `kanal` tablosunda (id, ad, tur, sıra). İlk kurulumda varsayılanlar
+  yazılır; sonrasında arayüzden eklenip silinir (en fazla 40, ad 24 karakter, aynı türde aynı ad yok).
+  Kanal kimliği addan üretilir ("Sesli Sohbet" → `sesli-sohbet`), çakışırsa sonuna sayı eklenir.
+  Silme: yazılı kanalın mesaj/dosya kayıtları silinir ve dosyaları diskten kaldırılır; sesli kanaldaysa
+  içindekilere `ses-kapatildi` gönderilir. Son yazılı/sesli kanal silinemez.
 - **Veritabanı:** `sunucu/veritabani.js`, `sohbet.db` (WAL). Tablolar: `mesaj` (kanal, ad, metin, dosya_id,
   zaman) ve `dosya` (id, kanal, ad, boyut, tur, zaman). Ölçek küçük: tek dosya, indeks `(kanal, id)`.
 - **Dosya güvenliği:** yükleme `Authorization: Bearer <jeton>` ister (jeton oturum açınca verilir, sayfa
@@ -170,6 +178,7 @@ tarayıcı ──UDP 3478──> coturn (konteynerde, sunucu.js başlatır) ─�
 | `gecmis {kanal, once}` | son 50 mesaj; `once` verilirse ondan daha eskiler |
 | `yaziyor {kanal}` | "yazıyor" göstergesi |
 | `ses-gir {kanal}` / `ses-cik` | sesli kanala gir / çık |
+| `kanal-ekle {tur, ad}` / `kanal-sil {kanal}` | yazılı (`yazi`) veya sesli (`ses`) kanal ekle / sil |
 | `sdp {to, sdp}` / `ice {to, ice}` | WebRTC (aynı sesli kanaldaki kişiye) |
 | `sessiz {sessiz}` | mikrofon kapalı mı (diğerlerine gösterilir) |
 | `ping` | bağlantı canlı tutma |
@@ -181,6 +190,7 @@ tarayıcı ──UDP 3478──> coturn (konteynerde, sunucu.js başlatır) ─�
 | `yazi {kanal, mesaj}` / `gecmis {kanal, mesajlar, bitti}` | yeni mesaj / geçmiş |
 | `yaziyor`, `sessiz` | göstergeler |
 | `ses-girdi {kanal, kisiler}`, `ses-kisi-girdi`, `ses-kisi-cikti` | sesli kanal üyeleri |
+| `ses-kapatildi {kanal}` | sesli kanal silindi, çıkarıldın |
 | `sdp {from, sdp}` / `ice {from, ice}` | WebRTC |
 | `hata {message}` | reddedildi / sorun |
 
@@ -197,8 +207,8 @@ Her çiftte teklifi adı alfabetik olarak büyük olan yapar (çakışma olmaz).
 | `sunucu/veritabani.js` | SQLite (mesaj + dosya kayıtları) |
 | `web/` | arayüz (`index.html`, `ana.js`, `stil.css`, simgeler) |
 | `.env.example` | ayarlar (sunucuda `/var/lib/chat/.env`) |
-| `test/dene.js` | çalışan sunucuyu uçtan uca dener (14 deneme) |
-| `test/arayuz.js` | arayüzü tarayıcısız dener (jsdom; 42 denetim) |
+| `test/dene.js` | çalışan sunucuyu uçtan uca dener (18 deneme) |
+| `test/arayuz.js` | arayüzü tarayıcısız dener (jsdom; 72 denetim) |
 | `.github/workflows/docker.yml` | push → derle, `kur.sh` ile dene, ghcr.io'ya yükle, sürüm çıkar |
 
 ## Sınırlar
@@ -209,3 +219,19 @@ Her çiftte teklifi adı alfabetik olarak büyük olan yapar (çakışma olmaz).
 - TURN'den geçen ses sunucunun bant genişliğini kullanır (kişi başı ~64 kbps).
 - Yalnızca IPv4 TURN.
 - Ses/görüntü **hiçbir yere kaydedilmez**; yalnızca yazılı mesajlar ve paylaşılan dosyalar saklanır.
+
+### Ses kalitesi
+
+Ses **hiçbir eşikten/süzgeçten geçmez** (VAD, gate, gain yok): mikrofon akışı doğrudan WebRTC'ye verilir,
+seviye ölçümü ayrı bir analiz düğümünde yapılır. Yani kesilmeler eşikten değil, ağdan gelir. Arayüzde her
+kişi için `P2P/TURN · gecikme · %kayıp · kbps` gösterilir (titreşim/jitter değeri başlıkta). Kayıp %1'in
+altındaysa yeşil, %1–5 turuncu, üstü kırmızı görünür.
+
+- **TURN aktarım sınırı 512 kbps.** Eskiden 96 kbps idi; relay üzerinden giden görüşmelerde gelen+giden
+  toplamı bu sınıra dayanıp ses kesiliyordu.
+- **Tek `AudioContext`.** Her katılımcı için yeni ses bağlamı açmak tarayıcının bağlam sınırına takılıyor,
+  çık-gir sonrası ölçüm/ses sorun çıkarıyordu.
+- **Ses kanalı her zaman açılır.** `addTransceiver` ile teklif/yanıt mikrofon hazır olmasa bile üretilir;
+  mikrofon sonradan gelirse `replaceTrack` ile bağlanır (çık-gir sonrası "ses gelmiyor" hatasının kaynağı).
+- **Yankı/gürültü giderme açık kalır.** Ses WebAudio'dan geçirilmez; geçirilirse tarayıcının AEC/NS/AGC
+  özellikleri kapanır ve ses robotikleşir.

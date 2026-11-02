@@ -394,6 +394,102 @@ async function turnAl(port, kullanici, sifre) {
 		for (const w of [...acik, fazla]) w.close();
 	});
 
+
+	// --- kanal yönetimi (ekle / sil) ve çık-gir
+
+	const kanalBekle = (ws, kosul) => ws.bekle((m) => m.type === 'kanallar' && kosul(m.kanallar));
+
+	await dene('kanal: yazılı kanal eklenir, mesaj alır, silinince mesajları da gider', async () => {
+		const a = await gir('kanalci-' + kimlik, 'k1');
+		const ad = 'deneme ' + crypto.randomBytes(3).toString('hex');
+		a.yolla({ type: 'kanal-ekle', tur: 'yazi', ad });
+		const liste = await kanalBekle(a, (ks) => ks.some((k) => k.ad === ad && k.tur === 'yazi'));
+		const kanal = liste.kanallar.find((k) => k.ad === ad);
+		assert.match(kanal.id, /^[a-z0-9-]+$/, 'kanal kimliği sadeleştirilmiş olmalı');
+
+		const metin = 'kanal denemesi ' + kimlik;
+		a.yolla({ type: 'yazi', kanal: kanal.id, metin });
+		await a.bekle((m) => m.type === 'yazi' && m.mesaj.metin === metin);
+
+		a.yolla({ type: 'gecmis', kanal: kanal.id });
+		const g = await a.bekle((m) => m.type === 'gecmis' && m.kanal === kanal.id);
+		assert.equal(g.mesajlar.length, 1, 'yeni kanalın geçmişi kendi mesajını içerir');
+
+		a.yolla({ type: 'kanal-sil', kanal: kanal.id });
+		await kanalBekle(a, (ks) => !ks.some((k) => k.id === kanal.id));
+		a.yolla({ type: 'gecmis', kanal: kanal.id });
+		assert.match((await a.bekle('hata')).message, /Bilinmeyen kanal/, 'silinen kanalın geçmişi yok');
+		a.close();
+	});
+
+	await dene('kanal: sesli kanal eklenir, silinince içindekiler çıkarılır', async () => {
+		const a = await gir('sesli-a-' + kimlik, 'v1');
+		const b = await gir('sesli-b-' + kimlik, 'v2');
+		const ad = 'deneme ses ' + crypto.randomBytes(3).toString('hex');
+		a.yolla({ type: 'kanal-ekle', tur: 'ses', ad });
+		const liste = await kanalBekle(a, (ks) => ks.some((k) => k.ad === ad && k.tur === 'ses'));
+		const kanal = liste.kanallar.find((k) => k.ad === ad);
+
+		a.yolla({ type: 'ses-gir', kanal: kanal.id });
+		assert.equal((await a.bekle((m) => m.type === 'ses-girdi' && m.kanal === kanal.id)).kanal, kanal.id);
+		b.yolla({ type: 'ses-gir', kanal: kanal.id });
+		await b.bekle((m) => m.type === 'ses-girdi' && m.kanal === kanal.id);
+
+		a.yolla({ type: 'kanal-sil', kanal: kanal.id });
+		assert.equal((await a.bekle('ses-kapatildi')).kanal, kanal.id, 'silinen kanaldaki kişi çıkarılır');
+		assert.equal((await b.bekle('ses-kapatildi')).kanal, kanal.id);
+		await kanalBekle(a, (ks) => !ks.some((k) => k.id === kanal.id));
+		a.close();
+		b.close();
+	});
+
+	await dene('kanal: aynı ad, geçersiz tür ve olmayan kanal reddedilir', async () => {
+		const a = await gir('kural-' + kimlik, 'r1');
+		const ad = 'kural ' + crypto.randomBytes(3).toString('hex');
+		a.yolla({ type: 'kanal-ekle', tur: 'yazi', ad });
+		const liste = await kanalBekle(a, (ks) => ks.some((k) => k.ad === ad));
+		const kanal = liste.kanallar.find((k) => k.ad === ad);
+
+		a.yolla({ type: 'kanal-ekle', tur: 'yazi', ad });
+		assert.match((await a.bekle('hata')).message, /zaten var/);
+		a.yolla({ type: 'kanal-ekle', tur: 'video', ad: 'x' });
+		assert.match((await a.bekle('hata')).message, /türü/);
+		a.yolla({ type: 'kanal-ekle', tur: 'yazi', ad: '   ' });
+		assert.match((await a.bekle('hata')).message, /adı gerekli/);
+		a.yolla({ type: 'kanal-sil', kanal: 'boyle-bir-kanal-yok' });
+		assert.match((await a.bekle('hata')).message, /bulunamadı/);
+
+		a.yolla({ type: 'kanal-sil', kanal: kanal.id });
+		await kanalBekle(a, (ks) => !ks.some((k) => k.id === kanal.id));
+		a.close();
+	});
+
+	await dene('sesli kanal: çık-gir sonrası yeniden bağlanır', async () => {
+		const a = await gir('donen-a-' + kimlik, 'x1');
+		const b = await gir('donen-b-' + kimlik, 'x2');
+		a.yolla({ type: 'ses-gir', kanal: SES_KANAL });
+		await a.bekle('ses-girdi');
+		b.yolla({ type: 'ses-gir', kanal: SES_KANAL });
+		await b.bekle('ses-girdi');
+		await a.bekle((m) => m.type === 'ses-kisi-girdi' && m.ad === 'donen-b-' + kimlik);
+
+		a.yolla({ type: 'ses-cik' });
+		assert.equal((await b.bekle((m) => m.type === 'ses-kisi-cikti' && m.ad === 'donen-a-' + kimlik)).kanal, SES_KANAL);
+
+		a.yolla({ type: 'ses-gir', kanal: SES_KANAL });
+		const yeniden = await a.bekle((m) => m.type === 'ses-girdi' && m.kanal === SES_KANAL);
+		assert.deepEqual(yeniden.kisiler, ['donen-b-' + kimlik], 'yeniden girişte kanaldaki kişiler bildirilir');
+		await b.bekle((m) => m.type === 'ses-kisi-girdi' && m.ad === 'donen-a-' + kimlik);
+
+		// Yeniden girişten sonra da teklif/ICE aynı kanal içinde iletilir.
+		b.yolla({ type: 'sdp', to: 'donen-a-' + kimlik, sdp: { type: 'offer', sdp: 'v=0' } });
+		assert.equal((await a.bekle((m) => m.type === 'sdp' && m.from === 'donen-b-' + kimlik)).sdp.type, 'offer');
+		a.yolla({ type: 'ice', to: 'donen-b-' + kimlik, ice: { candidate: 'y' } });
+		assert.equal((await b.bekle((m) => m.type === 'ice' && m.from === 'donen-a-' + kimlik)).ice.candidate, 'y');
+		a.close();
+		b.close();
+	});
+
 	console.log(process.exitCode ? 'BAŞARISIZ' : `Hepsi geçti (${gecen}).`);
 	setTimeout(() => process.exit(), 200);
 })();

@@ -1,6 +1,7 @@
 // Tarayıcısız arayüz denemesi: gerçek index.html + ana.js, jsdom içinde.
-// WebSocket/fetch/getUserMedia/RTCPeerConnection taklit edilir; DOM'un doğru kurulduğu,
-// mesajların çizildiği, kanal seçiminin ve sesli kanal satırlarının çalıştığı doğrulanır.
+// WebSocket/fetch/getUserMedia/RTCPeerConnection taklit edilir; DOM'un doğru kurulduğu, giriş,
+// kanal seçimi, mesaj çizimi, kanal ekleme/silme penceresi, sesli kanal satırları, bağlantı
+// istatistikleri ve çık-gir akışı doğrulanır.
 // Sunucuda gerçek tarayıcı çalıştırılmaz (VPS'i kastırıyor); jsdom hafif ve ayrı bir Node süreci.
 //
 //   npm install --no-save jsdom && node test/arayuz.js      (jsdom yoksa deneme atlanır)
@@ -32,8 +33,8 @@ const denetle = (ad, kosul, ek = '') => {
 };
 
 const kanallar = [
-	{ id: 'genel', ad: 'genel', tur: 'yazi', aciklama: 'Genel sohbet' },
-	{ id: 'muhabbet', ad: 'muhabbet', tur: 'yazi', aciklama: 'Geyik' },
+	{ id: 'genel', ad: 'genel', tur: 'yazi' },
+	{ id: 'muhabbet', ad: 'muhabbet', tur: 'yazi' },
 	{ id: 'sesli-sohbet', ad: 'Sesli Sohbet', tur: 'ses', kisiler: [] },
 	{ id: 'muzik', ad: 'Müzik', tur: 'ses', kisiler: [] },
 ];
@@ -70,7 +71,7 @@ const kanallar = [
 		value: {
 			getUserMedia: async () => {
 				mikrofonIstenen++;
-				const parca = { enabled: true, kind: 'audio', stop() {} };
+				const parca = { enabled: true, kind: 'audio', readyState: 'live', stop() { this.readyState = 'ended'; } };
 				return { getTracks: () => [parca], getAudioTracks: () => [parca] };
 			},
 		},
@@ -82,6 +83,13 @@ const kanallar = [
 			this.connectionState = 'new';
 			this.remoteDescription = null;
 			this._senders = [];
+			this._transceivers = [];
+		}
+		addTransceiver(track, ayar) {
+			const parca = typeof track === 'string' ? null : track;
+			const tr = { sender: { track: parca, replaceTrack: async () => {}, setStreams() {} }, receiver: { track: { kind: 'audio' } }, direction: (ayar && ayar.direction) || 'sendrecv' };
+			this._transceivers.push(tr);
+			return tr;
 		}
 		addTrack(t, akis) {
 			this._senders.push({ track: t, getParameters: () => ({ encodings: [{}] }), setParameters: async () => {} });
@@ -90,7 +98,7 @@ const kanallar = [
 			return this._senders;
 		}
 		getTransceivers() {
-			return [];
+			return this._transceivers;
 		}
 		async setLocalDescription() {
 			this.localDescription = { type: 'offer', sdp: 'v=0' };
@@ -99,7 +107,29 @@ const kanallar = [
 		async setRemoteDescription() {}
 		async addIceCandidate() {}
 		async getStats() {
-			return new Map();
+			// Artan sayaçlar: kayıp/bit hızı iki ölçüm arasındaki farktan hesaplanır.
+			const t = Date.now() / 1000;
+			const m = new Map();
+			m.set('tr', { type: 'transport', selectedCandidatePairId: 'pair' });
+			m.set('pair', {
+				type: 'candidate-pair',
+				state: 'succeeded',
+				nominated: true,
+				localCandidateId: 'yerel',
+				remoteCandidateId: 'uzak',
+				currentRoundTripTime: 0.031,
+			});
+			m.set('yerel', { id: 'yerel', type: 'local-candidate', candidateType: 'srflx' });
+			m.set('uzak', { id: 'uzak', type: 'remote-candidate', candidateType: 'srflx' });
+			m.set('gelen', {
+				type: 'inbound-rtp',
+				kind: 'audio',
+				packetsReceived: Math.round(t * 50),
+				packetsLost: 3,
+				bytesReceived: Math.round(t * 8000),
+				jitter: 0.011,
+			});
+			return m;
 		}
 		restartIce() {}
 		close() {
@@ -108,11 +138,17 @@ const kanallar = [
 	}
 	window.RTCPeerConnection = FakePC;
 	window.AudioContext = class {
+		constructor() {
+			this.state = 'running';
+		}
 		createAnalyser() {
 			return { fftSize: 256, frequencyBinCount: 128, getByteFrequencyData() {} };
 		}
 		createMediaStreamSource() {
-			return { connect() {} };
+			return { connect() {}, disconnect() {} };
+		}
+		resume() {
+			return Promise.resolve();
 		}
 		close() {
 			return Promise.resolve();
@@ -122,9 +158,12 @@ const kanallar = [
 	// --- betiği sayfaya yükle
 	window.eval(fs.readFileSync(path.join(KOK, 'web/ana.js'), 'utf8'));
 
-	// --- 1) giriş ekranı
+	// --- 1) giriş ekranı: sadece ad
 	denetle('giriş ekranı görünür', !d.getElementById('giris-ekrani').hidden);
 	denetle('uygulama gizli', d.getElementById('uygulama').hidden);
+	denetle('giriş alanında örnek yazı yok', d.getElementById('ad').getAttribute('placeholder') === null, String(d.getElementById('ad').getAttribute('placeholder')));
+	denetle('giriş açıklaması yok', !d.querySelector('#giris .alt') && !/Hesap yok/i.test(d.getElementById('giris').textContent));
+	denetle('sunucu şeridi (en sol bar) yok', d.getElementById('kenar') === null);
 
 	// --- 2) ad gir → WebSocket + giris
 	d.getElementById('ad').value = 'taha';
@@ -154,15 +193,17 @@ const kanallar = [
 	denetle('giriş ekranı kapandı', d.getElementById('giris-ekrani').hidden);
 	denetle('uygulama açıldı', !d.getElementById('uygulama').hidden);
 	denetle('kendi adı yazıldı', d.getElementById('ben-ad').textContent === 'taha', d.getElementById('ben-ad').textContent);
-	denetle('yazılı kanallar çizildi', d.querySelectorAll('#yazi-kanallari .kanal').length === 2, String(d.querySelectorAll('#yazi-kanallari .kanal').length));
-	denetle('sesli kanallar çizildi', d.querySelectorAll('#ses-kanallari .kanal').length === 2, String(d.querySelectorAll('#ses-kanallari .kanal').length));
+	denetle('yazılı kanallar çizildi', d.querySelectorAll('#yazi-kanallari .kanal-satir').length === 2, String(d.querySelectorAll('#yazi-kanallari .kanal-satir').length));
+	denetle('sesli kanallar çizildi', d.querySelectorAll('#ses-kanallari .kanal-satir').length === 2, String(d.querySelectorAll('#ses-kanallari .kanal-satir').length));
+	denetle('kanal silme düğmesi var', d.querySelectorAll('#yazi-kanallari .kanal-sil').length === 2);
+	denetle('kanal ekleme düğmeleri var', !!d.getElementById('yazi-ekle') && !!d.getElementById('ses-ekle'));
 	denetle('ilk kanal #genel seçildi', d.getElementById('kanal-ad').textContent === '#genel', d.getElementById('kanal-ad').textContent);
 	denetle('çevrimiçi sayısı 2', d.getElementById('uye-sayi').textContent === '2', d.getElementById('uye-sayi').textContent);
 	denetle('üye listesi 2 kişi', d.querySelectorAll('#uye-listesi .uye').length === 2);
-	denetle('geçmiş istendi', gonderilen.some((m) => m.type === 'gecmis' && m.kanal === 'genel'), JSON.stringify(gonderilen.at(-1)));
+	denetle('geçmiş istendi', gonderilen.some((m) => m.type === 'gecmis' && m.kanal === 'genel'));
 	denetle('mic düğmesi sesli kanal yokken kapalı', d.getElementById('ben-mikrofon').disabled === true);
 
-	// --- 4) geçmiş çizilir (gruplama + gün ayırıcı)
+	// --- 4) geçmiş çizilir (gruplama + gün ayırıcı + bahsetme + resim)
 	const simdi = Date.now();
 	ornekWs.onmessage({
 		data: JSON.stringify({
@@ -211,34 +252,93 @@ const kanallar = [
 	denetle('yeni kanal için geçmiş istendi', gonderilen.filter((m) => m.type === 'gecmis').at(-1).kanal === 'muhabbet');
 	denetle('rozet temizlendi', !d.title.startsWith('('), d.title);
 
-	// --- 8) sesli kanala gir
+	// --- 8) kanal ekleme penceresi
+	d.getElementById('yazi-ekle').dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
+	await bekle(20);
+	denetle('ekleme penceresi açıldı', d.getElementById('pencere').hidden === false);
+	denetle('pencere başlığı yazılı kanal', /Yazılı kanal ekle/.test(d.getElementById('pencere-baslik').textContent), d.getElementById('pencere-baslik').textContent);
+	denetle('girdi alanı görünür', d.getElementById('pencere-girdi').hidden === false);
+	denetle('girdi odaklandı', d.activeElement === d.getElementById('pencere-girdi'));
+	d.getElementById('pencere-girdi').value = 'duyurular';
+	d.getElementById('pencere-form').dispatchEvent(new window.Event('submit', { cancelable: true, bubbles: true }));
+	await bekle(30);
+	const ekleMesaji = gonderilen.filter((m) => m.type === 'kanal-ekle').at(-1);
+	denetle('kanal-ekle gönderildi', ekleMesaji && ekleMesaji.tur === 'yazi' && ekleMesaji.ad === 'duyurular', JSON.stringify(ekleMesaji));
+	denetle('pencere kapandı', d.getElementById('pencere').hidden === true);
+
+	// Escape ile kapanma
+	d.getElementById('ses-ekle').dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
+	await bekle(20);
+	denetle('sesli kanal penceresi açıldı', /Sesli kanal ekle/.test(d.getElementById('pencere-baslik').textContent));
+	d.dispatchEvent(new window.KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+	await bekle(20);
+	denetle('Escape pencereyi kapattı', d.getElementById('pencere').hidden === true);
+
+	// --- 9) kanal silme onayı
+	d.querySelector('#yazi-kanallari .kanal-sil').dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
+	await bekle(20);
+	denetle('silme penceresi açıldı', d.getElementById('pencere').hidden === false);
+	denetle('silme penceresinde girdi yok', d.getElementById('pencere-girdi').hidden === true);
+	denetle('onay düğmesi "Sil"', d.getElementById('pencere-tamam').textContent === 'Sil', d.getElementById('pencere-tamam').textContent);
+	denetle('tehlike rengi', d.getElementById('pencere-tamam').classList.contains('tehlike'));
+	d.getElementById('pencere-form').dispatchEvent(new window.Event('submit', { cancelable: true, bubbles: true }));
+	await bekle(30);
+	const silMesaji = gonderilen.filter((m) => m.type === 'kanal-sil').at(-1);
+	denetle('kanal-sil gönderildi', silMesaji && silMesaji.kanal === 'genel', JSON.stringify(silMesaji));
+
+	// --- 10) sesli kanala gir
 	const sesDugme = [...d.querySelectorAll('#ses-kanallari .kanal')].find((b) => b.textContent.includes('Sesli Sohbet'));
 	sesDugme.dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
 	await bekle(60);
 	denetle('mikrofon istendi', mikrofonIstenen === 1, String(mikrofonIstenen));
-	denetle('ses-gir gönderildi', gonderilen.some((m) => m.type === 'ses-gir' && m.kanal === 'sesli-sohbet'), JSON.stringify(gonderilen.at(-1)));
+	denetle('ses-gir gönderildi', gonderilen.some((m) => m.type === 'ses-gir' && m.kanal === 'sesli-sohbet'));
 
 	ornekWs.onmessage({ data: JSON.stringify({ type: 'ses-girdi', kanal: 'sesli-sohbet', kisiler: ['bora'] }) });
 	await bekle(60);
 	denetle('ses kartı göründü', d.getElementById('ses-karti').hidden === false);
 	denetle('ses kartı kanal adı', d.getElementById('ses-kart-kanal').textContent === 'Sesli Sohbet', d.getElementById('ses-kart-kanal').textContent);
-	denetle('kendi satırı var', d.querySelectorAll('#ses-kisiler .ses-kisi').length === 2, String(d.querySelectorAll('#ses-kisiler .ses-kisi').length));
+	denetle('kendi satırı + eş satırı', d.querySelectorAll('#ses-kisiler .ses-kisi').length === 2, String(d.querySelectorAll('#ses-kisiler .ses-kisi').length));
 	denetle('eş satırında ses seviyesi kaydırıcısı', !!d.querySelector('#ses-kisiler input.ses-seviye'));
 	denetle('ayrılma düğmesi göründü', d.getElementById('ben-kapat').hidden === false);
 	denetle('mikrofon düğmesi açıldı', d.getElementById('ben-mikrofon').disabled === false);
 	denetle('sessiz durumu bildirildi', gonderilen.some((m) => m.type === 'sessiz'));
 
-	// mikrofonu kapat → sunucuya bildir
+	// istatistikler: iki ölçüm arası fark gerekir (2 sn aralık) → ~4,5 sn bekle
+	await bekle(4600);
+	const istatistik = d.querySelector('#ses-kisiler .ses-istatistik');
+	denetle('istatistik alanı dolu', istatistik && /P2P/.test(istatistik.textContent), istatistik && istatistik.textContent);
+	denetle('gecikme gösteriliyor', /ms/.test(istatistik.textContent), istatistik && istatistik.textContent);
+	denetle('paket kaybı gösteriliyor', /kayıp/.test(istatistik.textContent), istatistik && istatistik.textContent);
+	denetle('bit hızı gösteriliyor', /kbps/.test(istatistik.textContent), istatistik && istatistik.textContent);
+
+	// --- 11) mikrofonu kapat
 	d.getElementById('ben-mikrofon').dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
 	await bekle(30);
-	denetle('mikrofon kapatma bildirildi', gonderilen.filter((m) => m.type === 'sessiz').at(-1).sessiz === true, JSON.stringify(gonderilen.filter((m) => m.type === 'sessiz').at(-1)));
+	denetle('mikrofon kapatma bildirildi', gonderilen.filter((m) => m.type === 'sessiz').at(-1).sessiz === true);
 
-	// eş ayrıldı
-	ornekWs.onmessage({ data: JSON.stringify({ type: 'ses-kisi-cikti', kanal: 'sesli-sohbet', ad: 'bora' }) });
-	await bekle(30);
-	denetle('eş satırı silindi', d.querySelectorAll('#ses-kisiler .ses-kisi').length === 1, String(d.querySelectorAll('#ses-kisiler .ses-kisi').length));
+	// --- 12) çık-gir: sesli kanaldan ayrıl, yeniden gir
+	d.getElementById('ben-kapat').dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
+	await bekle(40);
+	denetle('ses-cik gönderildi', gonderilen.some((m) => m.type === 'ses-cik'));
+	denetle('ses kartı kapandı', d.getElementById('ses-karti').hidden === true);
+	denetle('eş satırları temizlendi', d.querySelectorAll('#ses-kisiler .ses-kisi').length === 1, String(d.querySelectorAll('#ses-kisiler .ses-kisi').length));
 
-	// --- 9) hata gösterimi
+	sesDugme.dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
+	await bekle(80);
+	denetle('yeniden girişte mikrofon tekrar istendi', mikrofonIstenen === 2, String(mikrofonIstenen));
+	denetle('yeniden ses-gir gönderildi', gonderilen.filter((m) => m.type === 'ses-gir').length === 2);
+	ornekWs.onmessage({ data: JSON.stringify({ type: 'ses-girdi', kanal: 'sesli-sohbet', kisiler: ['bora'] }) });
+	await bekle(60);
+	denetle('ses kartı yeniden açıldı', d.getElementById('ses-karti').hidden === false);
+	denetle('yeni eş bağlantısı kuruldu (transceiver)', d.querySelectorAll('#ses-kisiler .ses-kisi').length === 2);
+
+	// --- 13) kanal silinirse: aktif kanal ilk yazılı kanala döner, sesli kanaldan çıkılır
+	ornekWs.onmessage({ data: JSON.stringify({ type: 'kanallar', kanallar: [{ id: 'muhabbet', ad: 'muhabbet', tur: 'yazi' }] }) });
+	await bekle(60);
+	denetle('silinen sesli kanaldan çıkıldı', d.getElementById('ses-karti').hidden === true);
+	denetle('aktif kanal hâlâ muhabbet', d.getElementById('kanal-ad').textContent === '#muhabbet');
+
+	// --- 14) hata gösterimi
 	ornekWs.onmessage({ data: JSON.stringify({ type: 'hata', message: 'Çok hızlı yazıyorsun; birkaç saniye bekle.' }) });
 	await bekle(20);
 	denetle('hata bildirimi göründü', d.getElementById('durum').textContent.includes('hızlı'), d.getElementById('durum').textContent);

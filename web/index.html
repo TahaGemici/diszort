@@ -16,19 +16,16 @@
 <div id="giris-ekrani" class="perde">
 	<form id="giris" class="giris-kart">
 		<h1>🔊 Ses Kanalı</h1>
-		<p class="alt">Hesap yok: adını yaz, bütün yazılı ve sesli kanallar açılsın. Yazılı kanallar sunucuda saklanır, sesin doğrudan (P2P) akar.</p>
 		<label for="ad">Adın</label>
-		<input id="ad" placeholder="örn. taha" maxlength="32" autocomplete="nickname" required>
+		<input id="ad" maxlength="32" autocomplete="nickname" required>
 		<button id="gir" type="submit">Sunucuya gir</button>
 		<p id="giris-durum" class="durum" role="status" aria-live="polite"></p>
-		<noscript><p class="alt">Bu sayfa JavaScript ister.</p></noscript>
+		<noscript><p>Bu sayfa JavaScript ister.</p></noscript>
 	</form>
 </div>
 
 <!-- Sunucu: kanal listesi + sohbet + üyeler -->
 <div id="uygulama" hidden>
-	<aside id="kenar" aria-hidden="true"><div class="sunucu-ikon" title="Ses Kanalı">🔊</div></aside>
-
 	<aside id="kanal-panosu">
 		<header class="sunucu-baslik">
 			<b>Ses Kanalı</b>
@@ -36,9 +33,15 @@
 			<button id="kenar-kapat" class="ikon-dugme mobil" type="button" aria-label="Kanalları kapat">✕</button>
 		</header>
 		<div class="kanal-kaydir">
-			<div class="bolum-baslik">Yazılı Kanallar</div>
+			<div class="bolum-baslik">
+				<span>Yazılı Kanallar</span>
+				<button id="yazi-ekle" class="bolum-ekle" type="button" title="Yazılı kanal ekle" aria-label="Yazılı kanal ekle">＋</button>
+			</div>
 			<div id="yazi-kanallari" class="kanal-listesi"></div>
-			<div class="bolum-baslik">Sesli Kanallar</div>
+			<div class="bolum-baslik">
+				<span>Sesli Kanallar</span>
+				<button id="ses-ekle" class="bolum-ekle" type="button" title="Sesli kanal ekle" aria-label="Sesli kanal ekle">＋</button>
+			</div>
 			<div id="ses-kanallari" class="kanal-listesi"></div>
 		</div>
 		<div class="ben-kart">
@@ -56,7 +59,6 @@
 		<header id="kanal-ust">
 			<button id="menu" class="ikon-dugme mobil" type="button" aria-label="Kanalları göster">☰</button>
 			<b id="kanal-ad">#genel</b>
-			<span id="kanal-aciklama"></span>
 			<span id="baglanti-durumu" class="etiket" hidden></span>
 		</header>
 
@@ -88,6 +90,19 @@
 		<div class="bolum-baslik">Çevrimiçi — <span id="uye-sayi">0</span></div>
 		<div id="uye-listesi"></div>
 	</aside>
+</div>
+
+<!-- Kanal ekleme / silme onayı için küçük pencere -->
+<div id="pencere" class="pencere" hidden>
+	<form id="pencere-form" class="pencere-kart" role="dialog" aria-modal="true" aria-labelledby="pencere-baslik">
+		<h2 id="pencere-baslik">Kanal ekle</h2>
+		<p id="pencere-metin" class="pencere-metin"></p>
+		<input id="pencere-girdi" maxlength="24" autocomplete="off" aria-label="Kanal adı">
+		<div class="pencere-dugmeler">
+			<button id="pencere-iptal" class="ikincil" type="button">İptal</button>
+			<button id="pencere-tamam" type="submit">Ekle</button>
+		</div>
+	</form>
 </div>
 
 <p id="durum" class="durum tost" role="status" aria-live="polite"></p>
