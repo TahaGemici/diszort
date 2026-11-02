@@ -1098,7 +1098,7 @@ function benSesSatirCiz() {
 
 function kisiEkle(ad) {
 	if (!ad || ad === benimAdim || kisiler.has(ad)) return;
-	const k = { pc: null, satir: null, ses: null, etiket: null, adaylar: [], kuyruk: Promise.resolve(), olcer: null, sesDugmesi: null, seviye: null };
+	const k = { ad, pc: null, satir: null, ses: null, etiket: null, adaylar: [], kuyruk: Promise.resolve(), olcer: null, sesDugmesi: null, seviye: null };
 	kisiler.set(ad, k);
 	satirOlustur(ad, k);
 	pcOlustur(ad, k);
@@ -1169,12 +1169,16 @@ function pcOlustur(ad, k) {
 		if (k.olcer) k.olcer.dur();
 		k.olcer = seviyeOlcer(akis, k.satir, null, () => !k.ses.muted);
 	};
+	// ICE toplama hataları (STUN/TURN'e ulaşılamıyor, 701 vb.) teşhise yazılır.
+	pc.onicecandidateerror = (e) => {
+		taniGonder({ olay: 'ice-hata', es: ad, kod: e.errorCode, metin: e.errorText, url: e.url, adres: e.address });
+	};
 	pc.onconnectionstatechange = () => {
 		if (pc.connectionState === 'connected') bitHiziAyarla(pc);
+		taniGonder({ olay: 'durum', es: ad, durum: pc.connectionState, ice: pc.iceConnectionState });
 		if (pc.connectionState === 'failed') {
 			k.istatistik.textContent = 'bağlantı koptu';
 			k.istatistik.className = 'ses-istatistik kotu';
-			if (teklifEdenBenim(ad) && pc.signalingState === 'stable') pc.restartIce();
 		}
 		if (pc.connectionState === 'disconnected') {
 			k.istatistik.textContent = 'bağlantı zayıf…';
@@ -1230,7 +1234,12 @@ function sdpGeldi(ad, sdp) {
 	if (!k) return Promise.resolve();
 	// Aynı kişiden art arda gelen teklifler sırayla işlensin; ICE yenilemesi araya girerse
 	// setRemoteDescription "yanlış durumda" hatası verirdi.
-	k.kuyruk = k.kuyruk.then(() => sdpIsle(ad, k, sdp)).catch((hata) => console.warn('sdp', ad, hata));
+	k.kuyruk = k.kuyruk
+		.then(() => sdpIsle(ad, k, sdp))
+		.catch((hata) => {
+			console.warn('sdp', ad, hata);
+			taniGonder({ olay: 'sdp-hata', es: ad, metin: String((hata && hata.message) || hata).slice(0, 200) });
+		});
 	return k.kuyruk;
 }
 
@@ -1245,6 +1254,23 @@ async function sdpIsle(ad, k, sdp) {
 		mikrofonuBagla(k);
 		await pc.setLocalDescription();
 		gonder({ type: 'sdp', to: ad, sdp: pc.localDescription });
+	}
+}
+
+// ICE çubuğu takıldığında yeni bir teklif (iceRestart) üretir. Firefox'ta restartIce()
+// negotiationneeded tetiklemediği için teklifi kendimiz oluşturuyoruz.
+async function iceYenile(k) {
+	const pc = k.pc;
+	if (!pc || pc.signalingState !== 'stable') return;
+	try {
+		const teklif = await pc.createOffer({ iceRestart: true });
+		await pc.setLocalDescription(teklif);
+		gonder({ type: 'sdp', to: k.ad, sdp: pc.localDescription });
+		if (k.istatistik) k.istatistik.textContent = 'bağlantı yenileniyor…';
+		taniGonder({ olay: 'ice-yenile', es: k.ad, deneme: k.iceDeneme });
+	} catch (hata) {
+		console.warn('ice yenile', hata);
+		taniGonder({ olay: 'ice-yenile-hata', es: k.ad, metin: String((hata && hata.message) || hata).slice(0, 160) });
 	}
 }
 
@@ -1358,43 +1384,89 @@ function sesGozcuDurdur() {
 // Teşhis: 10 saniyede bir kendi ses durumumuzu sunucuya bildirir (sunucu yalnızca günlüğe yazar).
 // Amacı, "seste ses yok / çalmıyor" şikayetinde cihazın ne gördüğünü uzaktan okuyabilmek.
 let taniZamanlayici = null;
+
+// Tek yerden gönderim: sunucu yalnızca günlüğe yazıyor.
+function taniGonder(veri) {
+	if (!bagliyim) return;
+	try {
+		gonder({ type: 'tani', veri });
+	} catch {}
+}
+
+// Bir eşin ICE adayları: hangi türden (host/srflx/relay), hangi adreste, mDNS mi?
+// "Bağlantı hiç kurulmuyor" sorununun nedenini buradan okuyoruz.
+function adaylar(pc) {
+	const yerel = {};
+	const uzak = {};
+	const ornek = [];
+	return pc
+		.getStats()
+		.then((rapor) => {
+			rapor.forEach((r) => {
+				if (r.type === 'local-candidate') {
+					const anahtar = (r.candidateType || '?') + (r.protocol ? '/' + r.protocol : '');
+					yerel[anahtar] = (yerel[anahtar] || 0) + 1;
+					// Adres(port) örneği: mDNS (.local) mi, gerçek iç/dış IP mi? Teşhis için şart.
+					if (ornek.length < 6) {
+						const a = String(r.address || '');
+						ornek.push(anahtar + '=' + (/[.]local$/i.test(a) ? 'mdns' : a.replace(/:\d+$/, '')));
+					}
+				}
+				if (r.type === 'remote-candidate') {
+					const anahtar = (r.candidateType || '?') + (r.protocol ? '/' + r.protocol : '');
+					uzak[anahtar] = (uzak[anahtar] || 0) + 1;
+				}
+			});
+			return { yerel, uzak, ornek };
+		})
+		.catch(() => null);
+}
+
+async function taniVeri() {
+	const esler = [];
+	for (const [ad, k] of kisiler) {
+		const pc = k.pc;
+		const tr = k.transceiver || (pc && pc.getTransceivers ? pc.getTransceivers()[0] : null);
+		const a = pc ? await adaylar(pc) : null;
+		esler.push({
+			ad,
+			durum: pc ? pc.connectionState : null,
+			ice: pc ? pc.iceConnectionState : null,
+			toplama: pc ? pc.iceGatheringState : null,
+			sinyal: pc ? pc.signalingState : null,
+			teklifEden: teklifEdenBenim(ad),
+			yon: tr ? tr.direction : null,
+			gonderenIz: !!(tr && tr.sender && tr.sender.track),
+			aliciIz: !!(tr && tr.receiver && tr.receiver.track && tr.receiver.track.readyState),
+			caliyor: k.ses ? !k.ses.paused : null,
+			kaynak: !!(k.ses && k.ses.srcObject),
+			sesDugmesi: !!k.sesDugmesi,
+			kbps: k.sonKbps ?? null,
+			giden: k.sonGiden ?? null,
+			kayip: k.sonKayip ?? null,
+			tip: k.sonTip || null,
+			jitter: k.jitter ?? null,
+			adaylar: a,
+		});
+	}
+	const iz = mikrofon && mikrofon.getAudioTracks()[0];
+	return {
+		ua: navigator.userAgent.slice(0, 110),
+		kanal: sesKanal,
+		mikrofon: !!mikrofon,
+		mikAcik: iz ? iz.enabled : null,
+		mikDurum: iz ? iz.readyState : null,
+		sesBaglami: sesBaglami ? sesBaglami.state : null,
+		iceSunucu: (ice.iceServers || []).map((s) => (s.urls || []).join('+')).join(',').slice(0, 160),
+		esler,
+	};
+}
+
 function taniBaslat() {
 	if (taniZamanlayici) return;
 	taniZamanlayici = setInterval(() => {
 		if (!sesKanal || !bagliyim) return;
-		const esler = [];
-		for (const [ad, k] of kisiler) {
-			const pc = k.pc;
-			const tr = k.transceiver || (pc && pc.getTransceivers ? pc.getTransceivers()[0] : null);
-			esler.push({
-				ad,
-				durum: pc ? pc.connectionState : null,
-				yon: tr ? tr.direction : null,
-				gonderenIz: !!(tr && tr.sender && tr.sender.track),
-				aliciIz: !!(tr && tr.receiver && tr.receiver.track && tr.receiver.track.readyState),
-				caliyor: k.ses ? !k.ses.paused : null,
-				kaynak: !!(k.ses && k.ses.srcObject),
-				sesDugmesi: !!k.sesDugmesi,
-				kbps: k.sonKbps ?? null,
-				giden: k.sonGiden ?? null,
-				kayip: k.sonKayip ?? null,
-				tip: k.sonTip || null,
-				jitter: k.jitter ?? null,
-			});
-		}
-		const iz = mikrofon && mikrofon.getAudioTracks()[0];
-		gonder({
-			type: 'tani',
-			veri: {
-				ua: navigator.userAgent.slice(0, 110),
-				kanal: sesKanal,
-				mikrofon: !!mikrofon,
-				mikAcik: iz ? iz.enabled : null,
-				mikDurum: iz ? iz.readyState : null,
-				sesBaglami: sesBaglami ? sesBaglami.state : null,
-				esler,
-			},
-		});
+		taniVeri().then(taniGonder).catch(() => {});
 	}, 10000);
 }
 function taniDurdur() {
@@ -1454,9 +1526,16 @@ function seviyeOlcer(akis, satir, yazi, acikMi) {
 function istatistikBaslat() {
 	if (istatistikZamanlayici) return;
 	istatistikZamanlayici = setInterval(async () => {
-		for (const [, k] of kisiler) {
+		for (const [ad, k] of kisiler) {
 			const pc = k.pc;
-			if (!pc || pc.connectionState === 'failed' || pc.connectionState === 'closed') continue;
+			if (!pc || pc.connectionState === 'closed') continue;
+			// ICE takıldıysa (16 sn connecting/disconnected/failed) teklif eden taraf yeniden teklif verir.
+			if (pc.connectionState === 'connected') {
+				k.takilma = 0;
+			} else if (++k.takilma >= 8) {
+				k.takilma = 0;
+				if (teklifEdenBenim(ad) && (k.iceDeneme = (k.iceDeneme || 0) + 1) <= 4) iceYenile(k);
+			}
 			let rapor;
 			try {
 				rapor = await pc.getStats();

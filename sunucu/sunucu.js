@@ -681,7 +681,7 @@ async function girisKarari(ws, m) {
 function taniKaydet(ws, m) {
 	if (!ws.ad || !TANI) return;
 	const simdi = Date.now();
-	if (simdi - (ws.taniZaman || 0) < 5000) return;
+	if (simdi - (ws.taniZaman || 0) < 1500) return;
 	ws.taniZaman = simdi;
 	let metin;
 	try {

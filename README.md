@@ -208,6 +208,7 @@ tarayıcı ──UDP 3478──> coturn (konteynerde, sunucu.js başlatır) ─�
 | `kanal-ekle {tur, ad}` / `kanal-sil {kanal}` | yazılı (`yazi`) veya sesli (`ses`) kanal ekle / sil |
 | `sdp {to, sdp}` / `ice {to, ice}` | WebRTC (aynı sesli kanaldaki kişiye) |
 | `sessiz {sessiz}` | mikrofon kapalı mı (diğerlerine gösterilir) |
+| `tani {veri}` | hata ayıklama: ses durumu (sunucu yalnızca günlüğe yazar, `TANI=0` ile kapalı) |
 | `ping` | bağlantı canlı tutma |
 
 | Sunucu → istemci | Anlamı |
@@ -268,6 +269,15 @@ altındaysa yeşil, %1–5 turuncu, üstü kırmızı görünür.
   (iOS Safari görünmeyen öğeyi çalmıyor): 1 px şeffaf öğe + `playsinline`; ses başlamazsa ses kartında
   görünen **"🔈 Sesi başlat (dokun)"** düğmesi çıkıyor ve her dokunuşta yeniden deneniyor.
 - **Opus tavanı 96 kbps** (eskiden 64). Arayüzde giden ses de görünür: `↑NN` (0 ise "mikrofon gitmiyor").
+  **Not:** `maxBitrate` bir *tavan*dır; Opus **VBR**'dir ve tarayıcı bant genişliğine göre 6–96 kbps arasında
+  kendisi seçer. Sabit bit hızı (`cbr=1`) SDP değiştirmeyi gerektirir ve kayıp varken daha kötü sonuç verir.
+  Rozette `sınır: bant genişliği` yazıyorsa düşük bit hızının nedeni ağdır (`qualityLimitationReason`).
+- **Ses çalma gözcüsü:** sesli kanaldayken 1 saniyede bir çalmayan eş kontrol edilir; yeniden `play()`
+  denenir, başaramazsa **görünen** "🔈 Sesi başlat" düğmesi açılır (bazı mobil tarayıcılarda `play()`
+  sözü hiç sonuçlanmıyordu). Kanala girerken sessiz bir parça çalınır → iOS ses oturumu açılır.
+- **Uzaktan teşhis:** istemci 10 saniyede bir kendi ses durumunu (`yön`, `in/out kbps`, `kayıp`, `çalıyor`,
+  mikrofon, tarayıcı) `tani` mesajıyla gönderir; sunucu **yalnızca günlüğe** yazar (`sudo docker logs ses-kanali
+  | grep tanı`). Veritabanına yazılmaz, kimseye dağıtılmaz; `.env`'de `TANI=0` ile kapatılır.
 - **Ses kanalı her zaman açılır.** `addTransceiver` ile teklif/yanıt mikrofon hazır olmasa bile üretilir;
   mikrofon sonradan gelirse `replaceTrack` ile bağlanır (çık-gir sonrası "ses gelmiyor" hatasının kaynağı).
 - **Yankı/gürültü giderme açık kalır.** Ses WebAudio'dan geçirilmez; geçirilirse tarayıcının AEC/NS/AGC
