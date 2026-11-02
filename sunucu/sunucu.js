@@ -264,15 +264,16 @@ function turnAyarDosyasi() {
 		'no-tcp-relay',
 		'no-multicast-peers',
 		'no-software-attribute',
-		// Sunucunun iç ağına ve kendisine aktarım yapılmasın.
+		// Sunucunun iç ağına ve kendisine aktarım yapılmasın. ANCAK 192.168/16 (ev ağı) ve
+		// 100.64/10 (CGNAT) BİLEREK AÇIK: aynı ev ağındaki iki kişi ya da operatörü CGNAT kullanan
+		// telefon, aksi halde TURN üzerinden ses alamıyor ("peer IP denied" → tek yönlü ses ya da
+		// bağlantı hiç kurulmuyor). GCP'nin iç ağı 10.x olduğu için 10/8 kapalı kalıyor.
 		'denied-peer-ip=0.0.0.0-0.255.255.255',
 		'denied-peer-ip=10.0.0.0-10.255.255.255',
-		'denied-peer-ip=100.64.0.0-100.127.255.255',
 		'denied-peer-ip=127.0.0.0-127.255.255.255',
 		'denied-peer-ip=169.254.0.0-169.254.255.255',
 		'denied-peer-ip=172.16.0.0-172.31.255.255',
 		'denied-peer-ip=192.0.0.0-192.0.0.255',
-		'denied-peer-ip=192.168.0.0-192.168.255.255',
 		'denied-peer-ip=198.18.0.0-198.19.255.255',
 		'denied-peer-ip=::1',
 		'denied-peer-ip=fc00::-fdff:ffff:ffff:ffff:ffff:ffff:ffff:ffff',
