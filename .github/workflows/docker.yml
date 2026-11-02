@@ -76,8 +76,9 @@ jobs:
           done
           echo "yeniden başlatmadan sonra mesaj: ${YENI:-yok}"
           test "${YENI:-0}" -ge "$ONCE"
-          test -f /var/lib/chat/sohbet.db
-          test -d /var/lib/chat/yuklemeler
+          # /var/lib/chat 0700 + sahibi 1000 (kur.sh); runner kullanıcısı içine bakamaz → sudo şart.
+          sudo test -f /var/lib/chat/sohbet.db
+          sudo test -d /var/lib/chat/yuklemeler
           sudo docker logs ses-kanali | grep -q '\[veritabanı\]'
 
       - name: Durdurunca düzgün kapanıyor mu
