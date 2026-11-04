@@ -263,7 +263,11 @@ const ICE = { iceServers: [{ urls: ['stun:1.2.3.4:3478'] }, { urls: ['turn:1.2.3
 		await bekle(80);
 		denetle('frende giriş ekranında geri sayım', /yeniden denenecek/.test(s.d.getElementById('giris-durum').textContent), s.d.getElementById('giris-durum').textContent);
 		const once = s.oc.wsler.length;
-		await bekle(1700);
+		// Sayfa öne gelse (ya da ağ değişse) de frenin söylediği bekleme kısaltılmaz.
+		s.d.dispatchEvent(new s.window.Event('visibilitychange'));
+		await bekle(200);
+		denetle('frende öne gelmek beklemeyi kısaltmaz', s.oc.wsler.length === once, `${once} → ${s.oc.wsler.length}`);
+		await bekle(1500);
 		denetle('frenden sonra kendiliğinden yeniden denendi', s.oc.wsler.length > once, `${once} → ${s.oc.wsler.length}`);
 	}
 

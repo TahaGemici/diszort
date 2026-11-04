@@ -287,6 +287,7 @@ function baglantiKoptu() {
 	girisDurum('Sunucuya bağlanılamadı; tekrar dene.', true);
 }
 
+let frenBekleniyor = false; // bekleyen deneme giriş freninin söylediği süreyi bekliyor
 function yenidenBaglanmayiPlanla(ms) {
 	clearTimeout(yenidenZamanlayici);
 	// Sunucu güncellemesi birkaç saniye sürer: ilk denemeler sık, sonra seyrekleşir (en fazla 15 sn).
@@ -295,12 +296,14 @@ function yenidenBaglanmayiPlanla(ms) {
 	const sn = Math.max(1, Math.round(bekle / 1000));
 	if (oturumVardi) baglantiRozeti(`bağlantı koptu · ${sn} sn sonra yeniden`);
 	else girisDurum(ms ? `Sunucu yoğun; ${sn} sn sonra yeniden denenecek…` : `Sunucuya ulaşılamadı; ${sn} sn sonra yeniden denenecek…`, false, true);
+	frenBekleniyor = ms != null;
 	yenidenZamanlayici = setTimeout(baglan, bekle);
 }
 
-// Ağ geri geldiğinde ya da sekme öne alındığında beklemeden dene.
+// Ağ geri geldiğinde ya da sekme öne alındığında beklemeden dene. Giriş freninin söylediği bekleme
+// kısaltılmaz (sunucu yine reddederdi; ağ değişimi gibi sık olaylar deneme hakkını tüketirdi).
 function hemenDene() {
-	if (yenidenZamanlayici && !durduruldu) {
+	if (yenidenZamanlayici && !durduruldu && !frenBekleniyor) {
 		yenidenDene = Math.max(0, yenidenDene - 1);
 		baglan();
 	}

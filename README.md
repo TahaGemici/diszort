@@ -172,7 +172,7 @@ Adresi iki sekmede aç. (Tarayıcılar mikrofonu yalnızca HTTPS'te ya da `local
   süresi dolunca çıkarılması, doluluk — dolu kanala geçemeyen eski kanalında kalır), kanal ekleme/silme,
   nabız (yoklamalara ~30 sn yanıt vermeyen istemcinin düşürülmemesi).
   **Not:** denemeler gerçek veritabanına birkaç `(deneme)` mesajı ve küçük bir dosya bırakır.
-- **Arayüz (tarayıcısız)** — `make arayuz` (jsdom), 177 denetim: giriş akışları, mesaj çizimi (gruplama,
+- **Arayüz (tarayıcısız)** — `make arayuz` (jsdom), 178 denetim: giriş akışları, mesaj çizimi (gruplama,
   bahsetme, tıklanabilir bağlantılar, HTML'in çalışmaması), dipte kalma (alan küçülünce de; yukarı bakan
   bölünmez), resim büyüteci (uzun resim, sığdır/tam, Esc, geri tuşu), kanal/üye/istek arayüzü, sesli kanal
   (mikrofon kısıtları, teklif/yanıt + oturum kimliği, Opus ayarları, yinelenen teklif), susturma/sağırlaştırma,
@@ -315,7 +315,7 @@ Her çiftte teklifi adı alfabetik olarak büyük olan yapar (çakışma olmaz).
 | `web/` | arayüz (`index.html`, `ana.js`, `stil.css`, simgeler) |
 | `.env.example` | ayarlar (sunucuda `/var/lib/chat/.env`) |
 | `test/dene.js` | çalışan sunucuyu uçtan uca dener (33 deneme; giriş frenine uyar) |
-| `test/arayuz.js` | arayüzü tarayıcısız dener (jsdom; 177 denetim) |
+| `test/arayuz.js` | arayüzü tarayıcısız dener (jsdom; 178 denetim) |
 | `test/tarayici.js` | gerçek Chromium'la sesli kanalı dener (Playwright; 15 deneme, sesin enerjisi ölçülür) |
 | `.github/workflows/docker.yml` | push → derle, `kur.sh` ile kur, üç deneme takımını çalıştır, ghcr.io'ya yükle, sürüm çıkar |
 | `.github/workflows/eski-surumleri-sil.yml` | elle: eski GitHub sürümlerini ve etiketlerini siler (en yeni N kalır) |
