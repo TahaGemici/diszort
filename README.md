@@ -14,8 +14,12 @@ Logo: üstü kırmızı çarpıyla çizilmiş Discord yüzü.
 - **İlk anahtar:** Beyaz liste boşken sunucu ilk anahtarı üretir ve `/var/lib/chat/ilk-anahtar.txt` dosyasına
   yazar. Bağlantıyı bir kez açmak yeter: `https://…/#anahtar=<anahtar>` anahtarı tarayıcıya kaydeder.
 - **Arayüz:** Solda yazılı (`#genel`, `#muhabbet`) ve sesli (Sesli Sohbet, Müzik, Oyun) kanallar;
-  ortada sohbet (aynı kişinin ardışık mesajları gruplanır, bağlantılar tıklanabilir, resimler büyütülür,
-  yukarı kaydırınca eski mesajlar yüklenir, aşağıda değilken gelen mesaj için "Yeni mesaj" düğmesi);
+  ortada sohbet (aynı kişinin ardışık mesajları gruplanır, bağlantılar tıklanabilir, yukarı kaydırınca eski
+  mesajlar yüklenir; dipteyken yeni mesajda dipte kalırsın — ses kartı açılsa, telefonda klavye açılsa da —,
+  yukarıda okurken gelen mesaj için "Yeni mesaj" düğmesi çıkar); resme tıklayınca büyüteç açılır: ekrana
+  sığdırılır, resme dokununca tam genişliğe geçer ve uzun (dikey) resim aşağı kaydırılarak gezilir (sığınca
+  şerit gibi kalacak uzun ekran görüntüleri doğrudan tam genişlikte açılır; ✕, Esc, boşluk ya da telefonun
+  geri tuşu kapatır);
   sağda üyeler (önce çevrimiçiler, altında beyaz listede olup **çevrimdışı** olanlar); sesli kanaldayken
   sohbetin altında katılımcı kartı (konuşma halkası, kişi başı ses seviyesi, mikrofon/sağırlaştır/ayrıl,
   küçültülebilir). Telefonda kanallar ☰ ile, üyeler sağ üstteki düğmeyle yandan açılır; masaüstünde aynı
@@ -43,6 +47,12 @@ Logo: üstü kırmızı çarpıyla çizilmiş Discord yüzü.
   kapanmaz — P2P konuşma sürer; arayüz kendiliğinden yeniden bağlanır ve sesli kanala "devam" eder.
   Bozulan eş bağlantıları kendiliğinden onarılır (önce ICE yenileme, olmazsa baştan kurma). Sunucu yeni
   sürüme geçince açık sekmeler kendini yeniler, sesli kanala ve yazılmakta olan mesaja geri döner.
+- **Telefon siteyi arka plana alınca:** bazı telefonlar (pil tasarrufu) tarayıcının ağını bir süre bekletir.
+  Sunucu artık ilk kaçırılan yoklamada değil, ~45 sn yanıt gelmeyince düşürür; sesli kanaldaki yer 60 sn
+  askıda kalır. Sayfa öne gelince (ya da ağ değişince) bağlantı hemen yoklanır: "açık görünen ama ölü"
+  bağlantı birkaç saniyede fark edilip yeniden kurulur, ses bağlamı / durmuş gelen sesler / arka planda
+  biten mikrofon uyandırılır. Tarayıcı sayfayı arka planda kapattıysa (bellek), geri dönünce sesli kanala
+  kendiliğinden girilir (10 dakikaya kadar).
 - **Sınır:** Bir sesli kanalda en fazla 10 kişi (`.env`'de `MAX_KISI`). Herkes herkese bağlandığı için
   daha fazlası tarayıcıları zorlar. Yazılı kanal sayısında sınır yok.
 - Sunucu Node ile (bağımlılıklar Debian paketi: `node-ws`, `node-sqlite3`), arayüz düz HTML/CSS/JS.
@@ -90,7 +100,7 @@ sudo docker restart diszort
 ```
 
 **Güvenlik duvarı:** STUN/TURN için UDP `3478`, TCP `3478` (UDP'yi engelleyen okul/iş/otel ağları için
-yedek) ve UDP `49152-61000` dışarıya açık olmalı. GCP'de:
+yedek; kapalıysa o ağlardakiler TURN'e de ulaşamaz) ve UDP `49152-61000` dışarıya açık olmalı. GCP'de:
 
 ```sh
 gcloud compute firewall-rules create allow-turn --allow=udp:3478,tcp:3478,udp:49152-61000
@@ -153,27 +163,33 @@ Adresi iki sekmede aç. (Tarayıcılar mikrofonu yalnızca HTTPS'te ya da `local
 
 Üç deneme takımı var; GitHub Actions her push'ta üçünü de Docker imajına karşı çalıştırır:
 
-- **Sunucu** — `make test` (ya da `node test/dene.js http://adres:port`), 31 deneme: beyaz liste (anahtarlı
+- **Sunucu** — `make test` (ya da `node test/dene.js http://adres:port`), 33 deneme: beyaz liste (anahtarlı
   giriş, kapıyı çalma, kabul/red, geçersiz/eski biçim anahtar, kimse yokken giriş, atma, liste doluluğu,
   giriş freni kovası, kişi limiti, aynı isteği iki kişinin kabul etmesi, sonradan gelene bekleyen istekler,
   kayıtlı ad uyarısı, aynı anahtarla ikinci sekmenin oturumu devralması) + web sayfası, sağlık, `/api/ice`
   (yalnızca oturumla), STUN, TURN (doğru/yanlış şifre), yazılı sohbet (gönderme, iletme, geçmiş, hız sınırı),
   dosya paylaşımı, sesli kanal signaling'i (oturum/yenile iletimi, kopanın askıda kalıp geri dönmesi ve
-  süresi dolunca çıkarılması, doluluk — dolu kanala geçemeyen eski kanalında kalır), kanal ekleme/silme.
+  süresi dolunca çıkarılması, doluluk — dolu kanala geçemeyen eski kanalında kalır), kanal ekleme/silme,
+  nabız (yoklamalara ~30 sn yanıt vermeyen istemcinin düşürülmemesi).
   **Not:** denemeler gerçek veritabanına birkaç `(deneme)` mesajı ve küçük bir dosya bırakır.
-- **Arayüz (tarayıcısız)** — `make arayuz` (jsdom), 155 denetim: giriş akışları, mesaj çizimi (gruplama,
-  bahsetme, tıklanabilir bağlantılar, HTML'in çalışmaması), kanal/üye/istek arayüzü, sesli kanal (mikrofon
-  kısıtları, teklif/yanıt + oturum kimliği, Opus ayarları, yinelenen teklif), susturma/sağırlaştırma,
-  istatistikler, sunucu koparken ses bağlantılarının korunması, giriş freninde uygulamada kalma, oturum
-  devri, atılma, ses ayarları, marka (Diszort), relay bağlantının turuncu görünmesi.
+- **Arayüz (tarayıcısız)** — `make arayuz` (jsdom), 177 denetim: giriş akışları, mesaj çizimi (gruplama,
+  bahsetme, tıklanabilir bağlantılar, HTML'in çalışmaması), dipte kalma (alan küçülünce de; yukarı bakan
+  bölünmez), resim büyüteci (uzun resim, sığdır/tam, Esc, geri tuşu), kanal/üye/istek arayüzü, sesli kanal
+  (mikrofon kısıtları, teklif/yanıt + oturum kimliği, Opus ayarları, yinelenen teklif), susturma/sağırlaştırma,
+  istatistikler, sunucu koparken ses bağlantılarının korunması, **ölü bağlantının** (yanıtsız yoklama) fark
+  edilip sesli kanala devam edilmesi, arka planda kapatılan sayfanın sese dönmesi, giriş freninde uygulamada
+  kalma, oturum devri, atılma, ses ayarları, marka (Diszort), relay bağlantının turuncu görünmesi.
 - **Gerçek tarayıcı** — `make tarayici` (Playwright + Chromium, sahte mikrofona konuşmaya benzeyen ses
-  verilir; kendi sunucusunu açar), 12 deneme: arayüzden giriş, üç kişilik mesh'te herkesin herkesi
-  duyması (gelen sesin **enerjisi** ölçülür, yalnızca bayt değil), ~96 kbps Opus, susturma/sağırlaştırmanın
+  verilir; kendi sunucusunu açar), 15 deneme: arayüzden giriş, üç kişilik mesh'te herkesin herkesi
+  duyması (gelen sesin **enerjisi** ölçülür, yalnızca bayt değil), ses kartı açıkken ve ekran küçülünce
+  sohbette dipte kalma, uzun resmin büyüteçte kaydırılabilmesi, ~96 kbps Opus, susturma/sağırlaştırmanın
   sesi gerçekten kesmesi, kişi başı ses seviyesi, çık-gir, mikrofon aygıtı çıkarılınca kendiliğinden yeniden
-  alma, sayfa yenileme, **sunucu yeniden başlarken P2P sesin kesilmemesi** ve herkesin üretimdeki frenle
-  (10 sn'de 1, kova 1) sırayla kendiliğinden dönmesi, yalnızca TURN (relay) ile bağlantı (turuncu görünür)
-  ve coturn yeniden başlayınca taze şifreyle ICE yenilemesi, ikinci sekmenin oturumu devralması. Çalışan sunucuya karşı:
-  `ILK_ANAHTAR=… YENIDEN_BASLAT='komut' node test/tarayici.js http://adres:port`.
+  alma, sayfa yenileme, **yanıt vermeyen (dondurulmuş) sunucuda** ölü bağlantının sayfa öne gelince fark
+  edilmesi ve P2P sesin sürmesi, **sunucu yeniden başlarken P2P sesin kesilmemesi** ve herkesin üretimdeki
+  frenle (10 sn'de 1, kova 1) sırayla kendiliğinden dönmesi, yalnızca TURN (relay) ile bağlantı (turuncu
+  görünür) ve coturn yeniden başlayınca taze şifreyle ICE yenilemesi, ikinci sekmenin oturumu devralması.
+  Çalışan sunucuya karşı: `ILK_ANAHTAR=… YENIDEN_BASLAT='komut' DONDUR='komut' COZ='komut' node
+  test/tarayici.js http://adres:port` (ör. `DONDUR='docker pause diszort'`, `COZ='docker unpause diszort'`).
   Gerçek tarayıcıyı VPS'te çalıştırmak gerekmez; CI'da çalışır.
 
 ## Nasıl çalışır
@@ -236,8 +252,15 @@ tarayıcı ──UDP/TCP 3478──> coturn (konteynerde, sunucu.js başlatır) 
   liste alıyordu). İç ağa aktarım yasaktır (`TURN_IZINLI_IP` ile tek tek açılabilir, yalnızca özel
   kurulum/test); kullanıcı ve toplam aktarım sayısı ile bant genişliği (aktarım başına 512000 B/s) sınırlıdır.
 - **Kopan bağlantı askıda:** sesli kanaldayken bağlantısı beklenmedik şekilde kopanın yeri `SES_ASKI_MS`
-  (varsayılan 20 sn) askıda tutulur; bu sürede geri gelip `ses-gir {devam:true}` derse diğerlerine çıktı/girdi
-  denmez ve P2P konuşma kesilmeden sürer. Sekmeyi kapatan açıkça `ses-cik` gönderir (hemen çıkar).
+  (varsayılan 60 sn; eskiden 20) askıda tutulur; bu sürede geri gelip `ses-gir {devam:true}` derse
+  diğerlerine çıktı/girdi denmez ve P2P konuşma kesilmeden sürer. Sekmeyi kapatan açıkça `ses-cik` gönderir
+  (hemen çıkar).
+- **Nabız:** sunucu 15 saniyede bir yoklar (WebSocket ping); istemciden gelen her mesaj da yanıt sayılır.
+  Art arda 3 yoklamaya (~45 sn) yanıt vermeyen düşürülür — eskiden ilk kaçırılanda (15–30 sn) düşüyordu ve
+  arka planda ağı bekletilen telefonlar sesli kanaldan atılıyordu. İstemci de sunucuyu yoklar (`ping` →
+  `pong`): sayfa öne gelince, ağ değişince/gelince, dondurulmuş sayfa uyanınca ve 25 sn sunucudan bir şey
+  gelmeyince. 6–10 sn'de yanıt gelmezse bağlantıyı ölü sayıp hemen yeniden bağlanır (geç çalışan
+  zamanlayıcı — arka planda kısılmış sayfa — karar vermez, yeniden ölçer).
 
 ### WebSocket protokolü (`/rtc`, JSON)
 
@@ -259,7 +282,7 @@ tarayıcı ──UDP/TCP 3478──> coturn (konteynerde, sunucu.js başlatır) 
 | `sessiz {sessiz, sagir}` | mikrofon kapalı / sağırlaştırılmış mı (diğerlerine gösterilir) |
 | `ice-iste` | taze STUN/TURN şifresi (`ice-sunuculari {ice}` döner) |
 | `tani {veri}` | hata ayıklama: ses durumu (sunucu yalnızca günlüğe yazar, `TANI=0` ile kapalı) |
-| `ping` | bağlantı canlı tutma |
+| `ping` | canlılık yoklaması (sunucu hemen `pong` der); yanıt gelmezse istemci yeniden bağlanır |
 
 | Sunucu → istemci | Anlamı |
 |---|---|
@@ -276,6 +299,7 @@ tarayıcı ──UDP/TCP 3478──> coturn (konteynerde, sunucu.js başlatır) 
 | `ses-kapatildi {kanal}` | sesli kanal silindi, çıkarıldın |
 | `sdp {from, sdp, oturum}` / `ice {from, ice, oturum}` / `yenile {from, oturum}` | WebRTC |
 | `hata {message, kod?}` | reddedildi / sorun (`ses-dolu`, `ses-kanal-yok`) |
+| `pong` | `ping`'e yanıt |
 
 Her çiftte teklifi adı alfabetik olarak büyük olan yapar (çakışma olmaz). Adlar sunucu genelinde benzersizdir.
 
@@ -290,9 +314,9 @@ Her çiftte teklifi adı alfabetik olarak büyük olan yapar (çakışma olmaz).
 | `sunucu/veritabani.js` | SQLite (mesaj + dosya kayıtları) |
 | `web/` | arayüz (`index.html`, `ana.js`, `stil.css`, simgeler) |
 | `.env.example` | ayarlar (sunucuda `/var/lib/chat/.env`) |
-| `test/dene.js` | çalışan sunucuyu uçtan uca dener (31 deneme; giriş frenine uyar) |
-| `test/arayuz.js` | arayüzü tarayıcısız dener (jsdom; 155 denetim) |
-| `test/tarayici.js` | gerçek Chromium'la sesli kanalı dener (Playwright; 12 deneme, sesin enerjisi ölçülür) |
+| `test/dene.js` | çalışan sunucuyu uçtan uca dener (33 deneme; giriş frenine uyar) |
+| `test/arayuz.js` | arayüzü tarayıcısız dener (jsdom; 177 denetim) |
+| `test/tarayici.js` | gerçek Chromium'la sesli kanalı dener (Playwright; 15 deneme, sesin enerjisi ölçülür) |
 | `.github/workflows/docker.yml` | push → derle, `kur.sh` ile kur, üç deneme takımını çalıştır, ghcr.io'ya yükle, sürüm çıkar |
 | `.github/workflows/eski-surumleri-sil.yml` | elle: eski GitHub sürümlerini ve etiketlerini siler (en yeni N kalır) |
 
@@ -346,6 +370,8 @@ sunucuda durur:
   için kapanmaz); %100'de mikrofon izi doğrudan gönderilir. Ses bağlamı askıya alınırsa (iOS arka plan)
   kazanç zinciri sessizlik üretmesin diye ham ize geri dönülür.
 - **Konuşma göstergesi** RMS ile ölçülür (-48 dBFS eşik, 350 ms bekleme): kelime arasında yanıp sönmez.
+  Halka avatarın etrafına ayrı bir katman olarak tam piksel uzaklıkta çizilir (2 px boşluk + 2 px halka);
+  eskiden kesirli (3,5 px) bir gölgeydi ve sol panelde bazı ekranlarda bir yana kayık görünüyordu.
 - **Kopmalara dayanıklılık:** sunucu bağlantısı koparken ses bağlantıları korunur (P2P konuşma sürer);
   bozulan bağlantıyı teklif eden önce **ICE yenilemesiyle** (DTLS korunur) onarır, iki denemede olmazsa
   baştan kurar; yanıtlayan `yenile` ister. coturn yeniden başlarsa (`turnNesli` değişir) TURN'den geçen

@@ -15,6 +15,12 @@ const assert = require('node:assert/strict');
 const crypto = require('node:crypto');
 const dgram = require('node:dgram');
 const WebSocket = globalThis.WebSocket || require('ws');
+// Yoklamalara (ping) yanıt vermeyen istemci için ws paketi gerekir (yerleşik WebSocket kendiliğinden
+// yanıt verir). Yoksa o deneme atlanır.
+let WsPaketi = null;
+try {
+	WsPaketi = require('ws');
+} catch {}
 
 const ADRES = (process.argv[2] || process.env.ADRES || 'http://127.0.0.1:8080').replace(/\/$/, '');
 const WS_ADRES = ADRES.replace(/^http/, 'ws') + '/rtc';
@@ -41,9 +47,10 @@ async function dene(ad, fn) {
 
 // ---------------------------------------------------------------- WebSocket yardımcıları
 
-function istemci() {
+// secenek verilirse ws paketiyle açılır (ör. { autoPong: false }: yoklamalara yanıt vermeyen istemci).
+function istemci(secenek) {
 	return new Promise((coz, red) => {
-		const ws = new WebSocket(WS_ADRES);
+		const ws = secenek ? new WsPaketi(WS_ADRES, secenek) : new WebSocket(WS_ADRES);
 		const gelen = [];
 		const bekleyen = [];
 		ws.onmessage = (e) => {
@@ -123,8 +130,8 @@ async function yoneticiGir() {
 }
 
 // Kapıyı çal → yönetici onaylasın → 'hazir' gelsin. anahtar verilirse doğrudan giriş denenir.
-async function gir(ad, id, anahtar) {
-	const ws = await istemci();
+async function gir(ad, id, anahtar, secenek) {
+	const ws = await istemci(secenek);
 	ws.anahtar = anahtar || '';
 	await girisGonder(ws, { type: 'giris', ad, id, anahtar: ws.anahtar });
 	const ilk = await ws.bekle((m) => m.type === 'hazir' || m.type === 'giris-red' || m.type === 'bekleniyor');
@@ -459,6 +466,17 @@ async function turnAl(port, kullanici, sifre) {
 		console.log('     sürüm', s.surum, '· mesaj', s.mesaj, '· dosya', s.dosya);
 	});
 
+	// Telefon arka planda ağı bir süre bekletince (yoklamalara yanıt yok) sunucu hemen düşürmemeli.
+	// Bu istemci yoklamalara yanıt vermez ve hiçbir şey göndermez; aradaki denemeler sürerken bekler,
+	// "sesli kanal dolunca" denemesinden önce denetlenir (süre eklemesin diye).
+	let uykucu = null;
+	await dene('nabız: yoklamalara yanıt vermeyen istemci girer (denetimi aşağıda)', async () => {
+		if (!WsPaketi) return console.log('     (ws paketi yok; nabız denemesi atlanacak)');
+		uykucu = await gir('uykucu-' + kimlik, 'u1', '', { autoPong: false });
+		uykucu.basla = Date.now();
+		onaylananlar.delete('uykucu-' + kimlik); // aradaki temizliklerde atılmasın
+	});
+
 	await dene('/api/ice: TURN şifresi yalnızca oturumu olana verilir', async () => {
 		// Oturumsuz: 401 (TURN sunucusu dışarıdan gelenlere ücretsiz aktarıcı olmasın).
 		const anonim = await fetch(ADRES + '/api/ice');
@@ -768,6 +786,19 @@ async function turnAl(port, kullanici, sifre) {
 		assert.equal(kayitliIstek.kayitli, true, 'beyaz listedeki ad için kayitli:true');
 		yonetici.yolla({ type: 'giris-karari', id: kayitliIstek.id, kabul: false });
 		taklit2.close();
+	});
+
+	await dene('nabız: ~30 sn yoklamalara yanıt vermeyen (arka plandaki telefon) düşürülmez', async () => {
+		if (!uykucu) return console.log('     (atlandı)');
+		// Eski sunucu ilk kaçırılan yoklamada (15-30 sn) düşürüyordu; şimdi art arda 3 yoklama (~45 sn).
+		const kalan = uykucu.basla + 32000 - Date.now();
+		if (kalan > 0) await new Promise((r) => setTimeout(r, kalan));
+		assert.equal(uykucu.readyState, 1, 'yanıtsız kalan bağlantı 32 sn içinde kapatılmamalı');
+		uykucu.yolla({ type: 'ping' });
+		await uykucu.bekle('pong');
+		uykucu.close();
+		yonetici.yolla({ type: 'at', ad: 'uykucu-' + kimlik });
+		await new Promise((r) => setTimeout(r, 100));
 	});
 
 	await dene('sesli kanal dolunca reddedilir', async () => {

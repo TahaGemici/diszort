@@ -118,7 +118,7 @@ MAX_KULLANICI=10
 # GIRIS_KOVA=1
 
 # Sesli kanaldayken bağlantısı kopanın yeri bu kadar ms askıda kalır (geri gelirse ses kesilmez).
-# SES_ASKI_MS=20000
+# SES_ASKI_MS=60000
 
 # Beyaz liste boşken ilk anahtarı alacak kişinin adı (anahtar: /var/lib/chat/ilk-anahtar.txt).
 YONETICI_ADI=taha

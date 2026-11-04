@@ -2,7 +2,7 @@
 <html lang="tr">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content">
 <meta name="color-scheme" content="dark">
 <meta name="theme-color" content="#1e1f22">
 <title>Diszort</title>
@@ -196,9 +196,16 @@
 	</div>
 </div>
 
-<!-- Resim büyüteci -->
-<div id="buyutec" class="buyutec" hidden>
-	<img id="buyutec-resim" alt="">
+<!-- Resim büyüteci: sığdırılmış açılır; resme dokununca tam genişlik (uzun resimler kaydırılarak gezilir) -->
+<div id="buyutec" class="buyutec" role="dialog" aria-modal="true" aria-label="Resim" hidden>
+	<div id="buyutec-kaydir" class="buyutec-kaydir">
+		<img id="buyutec-resim" alt="">
+	</div>
+	<div class="buyutec-dugmeler">
+		<button id="buyutec-boy" class="buyutec-dugme" type="button" title="Büyüt / sığdır" aria-label="Tam boy göster" data-ikon="buyut"></button>
+		<a id="buyutec-ac" class="buyutec-dugme" target="_blank" rel="noopener" title="Orijinalini yeni sekmede aç" aria-label="Orijinalini yeni sekmede aç" data-ikon="disari"></a>
+		<button id="buyutec-kapat" class="buyutec-dugme" type="button" title="Kapat (Esc)" aria-label="Kapat" data-ikon="x"></button>
+	</div>
 </div>
 
 <!-- Gelen sesler. Görünmez ama ekranda çizilir: iOS Safari display:none bir <audio>'yu çalmıyor. -->

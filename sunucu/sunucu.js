@@ -145,8 +145,9 @@ let girisJetonu = GIRIS_KOVA; // açılışta kova dolu
 let girisDolumZamani = Date.now();
 // Sesli kanaldayken bağlantısı beklenmedik şekilde kopan kişinin yeri bu süre kadar "askıda" tutulur.
 // Aynı kişi bu sürede geri bağlanıp kanala devam ederse diğerlerine çıktı/girdi denmez: P2P ses
-// sunucudan geçmediği için konuşma hiç kesilmeden sürer (ağ değişimi, sunucu güncellemesi).
-const SES_ASKI_MS = sayiAyar('SES_ASKI_MS', 20000, 0, 300000);
+// sunucudan geçmediği için konuşma hiç kesilmeden sürer (ağ değişimi, sunucu güncellemesi, telefonun
+// siteyi arka planda bir süre uyutması).
+const SES_ASKI_MS = sayiAyar('SES_ASKI_MS', 60000, 0, 300000);
 const ILK_ANAHTAR = ayar('ILK_ANAHTAR'); // test/kurulum için sabit ilk anahtar (üretimde boş bırak)
 const SITE_ADRESI = ayar('SITE_ADRESI', 'https://chat.tahagemici.com'); // ilk anahtar bağlantısında kullanılır
 // Ses teşhisi: istemciler 10 saniyede bir kendi ses durumlarını gönderir, sunucu YALNIZCA günlüğe
@@ -1190,8 +1191,10 @@ wss.on('connection', (ws, req) => {
 	ws.sessiz = false;
 	ws.sagir = false;
 	ws.canli = true;
+	ws.kacirilan = 0;
 	ws.on('pong', () => (ws.canli = true));
 	ws.on('message', (veri, ikili) => {
+		ws.canli = true; // istemciden gelen her mesaj da yaşadığını gösterir
 		if (ikili) return;
 		let m;
 		try {
@@ -1222,18 +1225,25 @@ const kapiZamanlayici = setInterval(() => {
 	}
 }, 15000);
 
-// Kopan bağlantıları (telefon uykuya geçti, ağ değişti...) 15 saniyede bir yokla; iki yoklamaya
-// yanıt vermeyen düşürülür (sesli kanaldaysa yeri askıya alınır).
+// Kopan bağlantıları (telefon uykuya geçti, ağ değişti...) 15 saniyede bir yokla. Telefonlar arka
+// planda ağı bir süre bekletebiliyor (pil tasarrufu): tek kaçırılan yoklamada düşürmek sesli
+// kanaldakini gereksiz yere koparıyordu. Art arda NABIZ_TOLERANSI yoklamaya (~45 sn) hiç yanıt
+// vermeyen düşürülür (sesli kanaldaysa yeri SES_ASKI_MS boyunca askıda kalır).
+const NABIZ_MS = 15000;
+const NABIZ_TOLERANSI = 3;
 const nabiz = setInterval(() => {
 	for (const ws of wss.clients) {
-		if (!ws.canli) {
+		if (ws.canli) ws.kacirilan = 0;
+		else if (++ws.kacirilan >= NABIZ_TOLERANSI) {
 			ws.terminate();
 			continue;
 		}
 		ws.canli = false;
-		ws.ping();
+		try {
+			ws.ping();
+		} catch {}
 	}
-}, 15000);
+}, NABIZ_MS);
 
 // Dış IP değişirse (bulutun geçici IP'si) STUN/TURN sessizce ölür: relay adayı hiç oluşmaz,
 // ses bağlantısı kurulmaz. Konteyneri bilerek yeniden başlatıyoruz; açılışta yeni IP okunur.

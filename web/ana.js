@@ -91,6 +91,9 @@ const SIMGELER = {
 	uyari: '<path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/><path d="M12 9v4M12 17h.01"/>',
 	dosya: '<path d="M14 3H6.5A1.5 1.5 0 0 0 5 4.5v15A1.5 1.5 0 0 0 6.5 21h11a1.5 1.5 0 0 0 1.5-1.5V8z"/><path d="M14 3v5h5"/>',
 	indir: '<path d="M12 4v11M7 10.5l5 5 5-5M5 20h14"/>',
+	buyut: '<circle cx="10.5" cy="10.5" r="6.5"/><path d="m15.5 15.5 5 5M10.5 7.5v6M7.5 10.5h6"/>',
+	kucult: '<circle cx="10.5" cy="10.5" r="6.5"/><path d="m15.5 15.5 5 5M7.5 10.5h6"/>',
+	disari: '<path d="M14 4h6v6M20 4l-8.5 8.5"/><path d="M18 13.5v5a1.5 1.5 0 0 1-1.5 1.5h-11A1.5 1.5 0 0 1 4 18.5v-11A1.5 1.5 0 0 1 5.5 6h5"/>',
 };
 const SVG_NS = 'http://www.w3.org/2000/svg';
 function ikon(ad, sinif) {
@@ -242,6 +245,7 @@ function baglan() {
 	};
 	sok.onmessage = (olay) => {
 		if (ws !== sok) return;
+		sonSunucuMesaji = Date.now();
 		let m;
 		try {
 			m = JSON.parse(olay.data);
@@ -301,10 +305,69 @@ function hemenDene() {
 		baglan();
 	}
 }
-window.addEventListener('online', hemenDene);
+
+// Canlılık: telefon arka plandan/uykudan dönünce ya da ağ değişince (Wi-Fi → mobil) WebSocket "açık"
+// görünüp ölü kalabilir; tarayıcı bunu dakikalarca fark etmez, mesajlar gitmez, ses kurtarılamaz.
+// Sunucu 'ping'e hemen 'pong' der: yanıt gelmezse bağlantı ölü sayılır ve hemen yeniden bağlanılır
+// (sesli kanaldaysan P2P ses sürer, sunucu yerini askıda tutar). Arka planda zamanlayıcılar geç
+// çalışabilir (sayfa kısıldı/donduruldu): geç çalışan denetim karar vermez, yeniden ölçer.
+let sonSunucuMesaji = 0;
+let canlilikZamanlayici = null;
+function canlilikDenetle(sureMs) {
+	if (durduruldu) return;
+	if (!ws || ws.readyState !== WebSocket.OPEN) return hemenDene();
+	if (!bagliyim || canlilikZamanlayici) return;
+	const sok = ws;
+	const baslangic = Date.now();
+	gonder({ type: 'ping' });
+	canlilikZamanlayici = setTimeout(() => {
+		canlilikZamanlayici = null;
+		if (ws !== sok || sonSunucuMesaji >= baslangic) return;
+		if (Date.now() - baslangic > sureMs + 3000) return canlilikDenetle(sureMs);
+		soketBirak(sok);
+		baglantiKoptu();
+	}, sureMs);
+}
+// Sunucudan uzun süre bir şey gelmezse yokla.
+setInterval(() => {
+	if (bagliyim && Date.now() - sonSunucuMesaji > 25000) canlilikDenetle(10000);
+}, 15000);
+// Öne alınınca, ağ gelince/değişince, dondurulmuş sayfa uyanınca: hemen yokla, sesi uyandır.
+function uyandi() {
+	if (document.visibilityState === 'hidden') return canlilikDenetle(10000);
+	canlilikDenetle(6000);
+	sesUyandir();
+}
+window.addEventListener('online', uyandi);
+document.addEventListener('resume', uyandi);
 document.addEventListener('visibilitychange', () => {
-	if (document.visibilityState === 'visible') hemenDene();
+	sesDevamKaydet();
+	if (document.visibilityState === 'visible') uyandi();
 });
+try {
+	if (navigator.connection && navigator.connection.addEventListener) navigator.connection.addEventListener('change', uyandi);
+} catch {}
+
+// Sesli kanaldayken sayfa arka planda tarayıcı tarafından kapatılırsa (bellek için; bazı telefonlarda
+// sık olur) geri dönülünce sesli kanala kendiliğinden girilir. Sayfa arka plana geçerken kanal not
+// edilir; öne gelince, kanaldan çıkınca ya da sayfa normal kapanınca not silinir.
+function sesDevamKaydet() {
+	try {
+		if (document.visibilityState === 'hidden' && sesKanal) sessionStorage.setItem('ses-devam', JSON.stringify({ kanal: sesKanal, zaman: Date.now() }));
+		else sessionStorage.removeItem('ses-devam');
+	} catch {}
+}
+function kapatildiysaSeseDon() {
+	let kayit = null;
+	try {
+		kayit = JSON.parse(sessionStorage.getItem('ses-devam') || 'null');
+		sessionStorage.removeItem('ses-devam');
+	} catch {}
+	if (!kayit || !kayit.kanal || !(Date.now() - kayit.zaman < 10 * 60000) || sesKanal || sesGiriliyor) return;
+	if (!kanalBilgi(kayit.kanal)) return;
+	durum('Sesli kanala geri dönülüyor…');
+	setTimeout(() => sesAc(kayit.kanal), 300);
+}
 
 function baglantiRozeti(metin) {
 	const e = $('baglanti-durumu');
@@ -499,6 +562,7 @@ function oturumHazir(m) {
 	if (ilk) {
 		kanalSec(ilkKanal(), false);
 		surumYenilemesindenDon();
+		kapatildiysaSeseDon();
 	} else {
 		durum('Yeniden bağlandın.');
 		gecmisTazele();
@@ -984,7 +1048,7 @@ function gecmisGeldi(m) {
 		mesajlariCiz(true);
 	} else {
 		// Kopukken gelenler: sona ekle.
-		const yakin = dibeYakin();
+		const yakin = dibeYapisik || dibeYakin();
 		mesajVerisi = mesajVerisi.concat(yeniler.filter((x) => x.id > enYeni)).sort((a, b) => a.id - b.id);
 		mesajlariCiz(false);
 		if (yakin) dibeKaydir();
@@ -1172,15 +1236,20 @@ function mesajlariCiz(dibe) {
 	else alan.scrollTop = oncekiKaydirma + (alan.scrollHeight - oncekiYukseklik);
 }
 
-// Dipte miyiz? Yeni mesaj/resim gelince yalnızca dipteysek aşağı kayılır; yukarı bakan bölünmez.
+// Dipte kalma: dipteyken (dibeYapisik) yeni mesaj, yüklenen resim ya da mesaj alanının küçülmesi
+// (ses kartı açıldı, telefonda klavye açıldı, yazı kutusu büyüdü) seni dipte tutar. Dipten yalnızca
+// kullanıcı yukarı kaydırınca ayrılınır; yukarıda okuyan kişi bölünmez ("Yeni mesaj ↓" çıkar).
+// Eskiden yalnızca "dibe 120 px'ten yakın mıyım" bakılıyordu: alan küçülünce bu bozuluyordu.
 let dibeYapisik = true;
+let sonKaydirma = 0;
 function dibeYakin() {
 	const alan = $('mesaj-alani');
-	return alan.scrollHeight - alan.scrollTop - alan.clientHeight < 120;
+	return alan.scrollHeight - alan.scrollTop - alan.clientHeight < 80;
 }
 function dibeKaydir() {
 	const alan = $('mesaj-alani');
 	alan.scrollTop = alan.scrollHeight;
+	sonKaydirma = alan.scrollTop;
 	dibeYapisik = true;
 	$('yeni-mesaj').hidden = true;
 }
@@ -1188,20 +1257,34 @@ let yeniMesajSayisi = 0;
 $('mesaj-alani').addEventListener(
 	'scroll',
 	() => {
-		dibeYapisik = dibeYakin();
+		const alan = $('mesaj-alani');
+		const yer = alan.scrollTop;
+		if (dibeYakin()) dibeYapisik = true;
+		// Yukarı kaydırıldı: dipten ayrıl. Alan küçülünce ya da içerik büyüyünce scrollTop azalmaz,
+		// bu yüzden yapışıklık yalnızca kullanıcının kaydırmasıyla bozulur.
+		else if (yer < sonKaydirma - 2) dibeYapisik = false;
+		sonKaydirma = yer;
 		if (dibeYapisik && !$('yeni-mesaj').hidden) $('yeni-mesaj').hidden = true;
 		// En üste gelince eski mesajları kendiliğinden yükle.
-		if ($('mesaj-alani').scrollTop < 40 && !gecmisBitti && mesajVerisi.length) gecmisYukle();
+		if (yer < 40 && !gecmisBitti && mesajVerisi.length) gecmisYukle();
 	},
 	{ passive: true },
 );
 $('yeni-mesaj').addEventListener('click', dibeKaydir);
+// Mesaj alanının ya da içeriğinin boyu değişince (ses kartı, klavye, resim, yükleme çubuğu) dipte kal.
+if (typeof ResizeObserver === 'function') {
+	const dipGozcusu = new ResizeObserver(() => {
+		if (dibeYapisik) dibeKaydir();
+	});
+	dipGozcusu.observe($('mesaj-alani'));
+	dipGozcusu.observe($('mesajlar'));
+}
 
 function mesajGeldi(kanal, m) {
 	if (!m) return;
 	if (kanal === aktifKanal) {
 		if (mesajVerisi.some((x) => x.id === m.id)) return;
-		const yakin = dibeYakin();
+		const yakin = dibeYapisik || dibeYakin();
 		const onceki = mesajVerisi.length ? mesajVerisi[mesajVerisi.length - 1] : null;
 		mesajVerisi.push(m);
 		$('mesajlar').querySelectorAll('.bos-kanal').forEach((x) => x.remove());
@@ -1382,15 +1465,112 @@ function dosyaYukle(dosya) {
 }
 
 // --- resim büyüteci
+// Resim ekrana sığdırılarak açılır. Ekrandan büyükse resme dokunmak/tıklamak (ya da büyüteç
+// düğmesi) tam genişliğe geçirir; uzun resim aşağı kaydırılarak gezilir. Sığdırılınca incecik bir
+// şerit kalacak uzun resimler (uzun ekran görüntüsü, dikey panorama) doğrudan tam genişlikte
+// açılır. Boşluğa dokunmak, ✕, Esc ya da telefonda geri tuşu kapatır.
+let buyutecTam = null; // null: karar resim yüklenince verilir
+// Geçmişe bu sayfada eklenen büyüteç girdisi (yalnızca kendi eklediğimiz geri alınır: büyüteç açıkken
+// sayfa yenilenmişse eski girdiye "geri" gitmek sayfayı baştan yüklerdi).
+let buyutecGecmisi = false;
+try {
+	if (history.state && history.state.buyutec) history.replaceState(null, '');
+} catch {}
+
+function buyutecDuzenle(ilk) {
+	const r = $('buyutec-resim');
+	const kap = $('buyutec-kaydir');
+	if (!r.naturalWidth || !r.naturalHeight) return;
+	const stil = getComputedStyle(kap);
+	const dolgu = (a, b) => (parseFloat(stil[a]) || 0) + (parseFloat(stil[b]) || 0);
+	const genis = Math.max(1, kap.clientWidth - dolgu('paddingLeft', 'paddingRight'));
+	const yuksek = Math.max(1, kap.clientHeight - dolgu('paddingTop', 'paddingBottom'));
+	const sigdir = Math.min(1, genis / r.naturalWidth, yuksek / r.naturalHeight);
+	const tam = Math.min(1, genis / r.naturalWidth);
+	const buyuyebilir = tam > sigdir * 1.15;
+	// Sığdırınca 280 px'ten ve tam genişliğin yarısından dar kalan uzun resim: tam genişlikte aç.
+	if (ilk) buyutecTam = buyuyebilir && r.naturalWidth * sigdir < Math.min(280, r.naturalWidth * tam * 0.5);
+	if (!buyuyebilir) buyutecTam = false;
+	$('buyutec').classList.toggle('buyuyebilir', buyuyebilir);
+	$('buyutec').classList.toggle('tam', !!buyutecTam);
+	$('buyutec-boy').hidden = !buyuyebilir;
+	ikonKoy($('buyutec-boy'), buyutecTam ? 'kucult' : 'buyut');
+	$('buyutec-boy').setAttribute('aria-label', buyutecTam ? 'Ekrana sığdır' : 'Tam boy göster');
+}
 
 function buyutecAc(url, ad) {
-	$('buyutec-resim').src = url;
-	$('buyutec-resim').alt = ad || '';
+	const r = $('buyutec-resim');
+	buyutecTam = null;
+	$('buyutec').classList.remove('tam', 'buyuyebilir');
+	$('buyutec-boy').hidden = true;
+	r.alt = ad || '';
+	r.src = url;
+	$('buyutec-ac').href = url;
 	$('buyutec').hidden = false;
+	$('buyutec-kaydir').scrollTop = 0;
+	if (r.complete && r.naturalWidth) buyutecDuzenle(true);
+	try {
+		$('buyutec-kapat').focus({ preventScroll: true });
+	} catch {}
+	// Telefonda geri tuşu siteden çıkmasın, büyüteci kapatsın.
+	try {
+		if (!buyutecGecmisi) {
+			history.pushState({ buyutec: true }, '');
+			buyutecGecmisi = true;
+		}
+	} catch {}
 }
-$('buyutec').addEventListener('click', () => {
+$('buyutec-resim').addEventListener('load', () => {
+	if (!$('buyutec').hidden && buyutecTam === null) buyutecDuzenle(true);
+});
+
+function buyutecKapat(gecmistenGeldi = false) {
+	if ($('buyutec').hidden) return;
 	$('buyutec').hidden = true;
 	$('buyutec-resim').removeAttribute('src');
+	$('buyutec-ac').removeAttribute('href');
+	buyutecTam = null;
+	if ($('buyutec').contains(document.activeElement)) document.activeElement.blur();
+	if (gecmistenGeldi || !buyutecGecmisi) return;
+	buyutecGecmisi = false;
+	try {
+		history.back();
+	} catch {}
+}
+window.addEventListener('popstate', () => {
+	buyutecGecmisi = false;
+	buyutecKapat(true);
+});
+
+// Sığdır ↔ tam genişlik. Tıklanan nokta tam genişlikte de parmağın/imlecin altında kalır.
+function buyutecBoyDegistir(olay) {
+	if (!$('buyutec').classList.contains('buyuyebilir')) return false;
+	const r = $('buyutec-resim');
+	const kap = $('buyutec-kaydir');
+	const once = r.getBoundingClientRect();
+	const oran = olay && once.height ? Math.min(1, Math.max(0, (olay.clientY - once.top) / once.height)) : 0;
+	buyutecTam = !buyutecTam;
+	buyutecDuzenle(false);
+	if (!buyutecTam || !olay) {
+		kap.scrollTop = 0;
+		return true;
+	}
+	const sonra = r.getBoundingClientRect();
+	const kapUst = kap.getBoundingClientRect().top;
+	kap.scrollTop = Math.max(0, kap.scrollTop + sonra.top - kapUst + oran * sonra.height - (olay.clientY - kapUst));
+	return true;
+}
+$('buyutec-kaydir').addEventListener('click', (e) => {
+	const kap = $('buyutec-kaydir');
+	// Kaydırma çubuğuna tıklamak kapatmasın.
+	if (e.target === kap && (e.offsetX >= kap.clientWidth || e.offsetY >= kap.clientHeight)) return;
+	if (e.target === $('buyutec-resim') && buyutecBoyDegistir(e)) return;
+	buyutecKapat();
+});
+$('buyutec-boy').addEventListener('click', () => buyutecBoyDegistir(null));
+$('buyutec-kapat').addEventListener('click', () => buyutecKapat());
+window.addEventListener('resize', () => {
+	if (!$('buyutec').hidden) buyutecDuzenle(false);
 });
 
 // ---------------------------------------------------------------- sesli kanal: mikrofon
@@ -1658,6 +1838,7 @@ function sesKapat(bildir = true) {
 	taniDurdur();
 	istatistikDurdur();
 	kurtarmaDurdur();
+	sesDevamKaydet();
 	if (vardi && bildir) durum('Sesli kanaldan ayrıldın.');
 }
 
@@ -2288,6 +2469,20 @@ function sesleriAc() {
 }
 $('ses-ac').addEventListener('click', sesleriAc);
 document.addEventListener('pointerdown', () => sesKanal && sesleriAc(), { passive: true });
+
+// Telefon arka plandan dönünce: ses bağlamını uyandır (iOS 'interrupted' yapar), durmuş gelen
+// sesleri yeniden çal, arka planda biten (ya da başka uygulama/telefon araması yüzünden
+// açılamayan) mikrofonu yeniden al, bozulan bağlantıları beklemeden onar.
+function sesUyandir() {
+	if (!sesKanal) return;
+	sesBaglami();
+	const iz = mikrofon && mikrofon.getAudioTracks()[0];
+	const mikMesgul = !mikrofon && (mikHatasi === 'Mikrofon başka bir uygulamada kullanılıyor' || mikHatasi === 'Mikrofon açılamadı');
+	if ((iz && iz.readyState === 'ended') || mikMesgul) mikrofonBitti();
+	for (const es of esler.values()) if (es.ses && es.ses.srcObject && es.ses.paused && !es.ses.muted) oynat(es.ses).catch(() => {});
+	setTimeout(sesAcDugmesiGuncelle, 300);
+	kurtarmaTuru();
+}
 
 // Ses bağlamı: seviye ölçümü, mikrofon kazancı ve bildirim sesleri için tek bir AudioContext
 // (her katılımcıya ayrı bağlam açmak tarayıcının bağlam sınırına takılıyordu).
@@ -3000,7 +3195,7 @@ $('uye-ac').addEventListener('click', () => {
 
 document.addEventListener('keydown', (e) => {
 	if (e.key === 'Escape') {
-		if (!$('buyutec').hidden) $('buyutec').click();
+		if (!$('buyutec').hidden) buyutecKapat();
 		else if (!$('pencere').hidden) pencereKapat();
 		else if (!$('ayarlar').hidden) ayarlarKapat();
 		else cekmeceleriKapat();
@@ -3025,7 +3220,7 @@ document.addEventListener('keydown', (e) => {
 window.addEventListener('pagehide', () => {
 	if (sesKanal && bagliyim) gonder({ type: 'ses-cik' });
 	durduruldu = true;
-	sesKapat(false);
+	sesKapat(false); // arka planda kapatılma notunu da siler: normal kapanışta sese geri dönülmez
 	if (ws) soketBirak(ws);
 });
 window.addEventListener('pageshow', (e) => {

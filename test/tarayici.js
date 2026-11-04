@@ -4,6 +4,9 @@
 //   - üç kişilik mesh: herkes herkesi duyuyor mu (gelen sesin ENERJİSİ artıyor mu, yalnızca bayt değil)
 //   - gönderilen bit hızı (Opus tavanı), susturma / sağırlaştırma, çık-gir, sayfa yenileme
 //   - mikrofon izi biterse (aygıt çıkarıldı) kendiliğinden yeniden bağlanma
+//   - sohbette dipte kalma (ses kartı açıkken, ekran/klavye küçülünce) ve uzun resim büyüteci
+//   - ölü bağlantı: sunucu yanıt vermezken (dondurulmuş) sayfa öne gelince fark edilmesi, P2P sesin
+//     sürmesi, sunucu dönünce kendiliğinden bağlanma (DONDUR/COZ ile dış sunucuda da)
 //   - sunucu yeniden başlarken P2P sesin KESİLMEMESİ ve herkesin kendiliğinden geri dönmesi
 //   - yalnızca TURN (relay) ile bağlantı; sunucu (ve coturn) yeniden başlayınca taze şifreyle kurtarma
 //   - aynı anahtarla ikinci sekme: oturum devri
@@ -122,6 +125,19 @@ async function sunucuyuYenidenBaslat(ek = {}) {
 	await sunucuBaslat();
 }
 const yenidenBaslatilabilir = () => !DIS_ADRES || !!process.env.YENIDEN_BASLAT;
+
+// Sunucuyu dondur / çöz: süreç durur ama bağlantılar açık kalır (yanıt vermeyen sunucu). Telefonun
+// uykudan uyanınca bulduğu "açık görünen ama ölü" bağlantının benzeri. Dış sunucuda DONDUR/COZ
+// komutları (ör. sudo docker pause diszort / sudo docker unpause diszort) gerekir.
+const dondurulabilir = () => !DIS_ADRES || (!!process.env.DONDUR && !!process.env.COZ);
+function sunucuyuDondur() {
+	if (DIS_ADRES) execSync(process.env.DONDUR, { stdio: 'inherit' });
+	else process.kill(sunucuSureci.pid, 'SIGSTOP');
+}
+function sunucuyuCoz() {
+	if (DIS_ADRES) execSync(process.env.COZ, { stdio: 'inherit' });
+	else process.kill(sunucuSureci.pid, 'SIGCONT');
+}
 
 // ---------------------------------------------------------------- deneme düzeni
 
@@ -315,6 +331,20 @@ async function duyuyor(k, ad, aciklama) {
 	return o;
 }
 
+// Mesaj alanının dibine uzaklık (px) ve "Yeni mesaj ↓" düğmesi görünüyor mu.
+function dipDurumu(k) {
+	return k.sayfa.evaluate(() => {
+		const a = document.getElementById('mesaj-alani');
+		return { fark: Math.round(a.scrollHeight - a.scrollTop - a.clientHeight), dugme: !document.getElementById('yeni-mesaj').hidden, adet: mesajVerisi.length };
+	});
+}
+const mesajYaz = (k, metin) => k.sayfa.evaluate((metin) => gonder({ type: 'yazi', kanal: aktifKanal, metin }), metin);
+async function mesajGelene(k, adet) {
+	await bekleKosul(`${k.ad} ${adet} mesaj gördü`, async () => (await dipDurumu(k)).adet >= adet, 10000, 100);
+	await bekle(300); // kaydırma/yerleşim otursun
+	return dipDurumu(k);
+}
+
 async function sidebarKisileri(k, kanal = 'Sesli Sohbet') {
 	return k.sayfa.evaluate((kanal) => {
 		const k = kanallar.find((x) => x.ad === kanal);
@@ -368,6 +398,68 @@ async function sidebarKisileri(k, kanal = 'Sesli Sohbet') {
 		// Bağlantı türü ortadaki kartta: doğrudan (P2P) yeşil, turuncu değil.
 		await bekleKosul('P2P bilgisi göründü', () => taha.sayfa.evaluate(() => /P2P/.test(document.querySelector('#ses-kisiler .ses-kisi[data-ad="zeynep"] .ses-istatistik').textContent)));
 		assert.equal(await taha.sayfa.evaluate(() => document.querySelectorAll('#ses-kisiler .ses-istatistik.turn').length), 0, 'P2P bağlantı turuncu görünmemeli');
+	});
+
+	await dene('sohbet: ses kartı açıkken ve ekran küçülünce (telefon klavyesi) yeni mesajda dipte kalınır; yukarı bakan bölünmez', async () => {
+		// Kaydırılacak kadar mesaj (kişi başı 10 sn'de 12 mesaj sınırı: iki kişiden).
+		const a0 = (await dipDurumu(taha)).adet;
+		for (let i = 0; i < 10; i++) await mesajYaz(zeynep, `doldurma ${i}\nikinci satır\nüçüncü satır`);
+		for (let i = 10; i < 20; i++) await mesajYaz(mert, `doldurma ${i}\nikinci satır\nüçüncü satır`);
+		let d = await mesajGelene(taha, a0 + 20);
+		assert.ok(d.fark <= 2 && !d.dugme, 'ses kartı açıkken gelen mesajlarda dipte kalınmalı: ' + JSON.stringify(d));
+		// Klavye açıldı gibi: görünen alan küçülür (kaydırma olayı olmadan dip aşağıda kalırdı).
+		await taha.sayfa.setViewportSize({ width: 1280, height: 420 });
+		await bekle(400);
+		assert.ok((await dipDurumu(taha)).fark <= 2, 'alan küçülünce dipte kalınmalı');
+		await mesajYaz(zeynep, 'klavye açıkken gelen');
+		d = await mesajGelene(taha, a0 + 21);
+		assert.ok(d.fark <= 2 && !d.dugme, 'alan küçükken gelen mesajda dibe inilmeli: ' + JSON.stringify(d));
+		await taha.sayfa.setViewportSize({ width: 1280, height: 720 });
+		await bekle(400);
+		// Yukarı kaydıran okurken bölünmez: düğme çıkar, düğmeyle dibe iner.
+		await taha.sayfa.mouse.move(640, 300);
+		await taha.sayfa.mouse.wheel(0, -600);
+		await bekle(600);
+		await mesajYaz(mert, 'yukarıdayken gelen');
+		d = await mesajGelene(taha, a0 + 22);
+		assert.ok(d.fark > 300 && d.dugme, 'yukarı bakan aşağı çekilmemeli, "yeni mesaj" düğmesi çıkmalı: ' + JSON.stringify(d));
+		await taha.sayfa.click('#yeni-mesaj');
+		await bekle(300);
+		assert.ok((await dipDurumu(taha)).fark <= 2, 'düğme dibe indirmeli');
+	});
+
+	await dene('resim büyüteci: uzun dikey resim tam genişlikte açılır, aşağı kaydırılabilir (eskiden altı kesiliyordu)', async () => {
+		const a0 = (await dipDurumu(taha)).adet;
+		await zeynep.sayfa.evaluate(async () => {
+			const c = document.createElement('canvas');
+			c.width = 500;
+			c.height = 3600;
+			const x = c.getContext('2d');
+			const g = x.createLinearGradient(0, 0, 0, c.height);
+			g.addColorStop(0, '#e44');
+			g.addColorStop(1, '#44e');
+			x.fillStyle = g;
+			x.fillRect(0, 0, c.width, c.height);
+			const blob = await new Promise((r) => c.toBlob(r, 'image/png'));
+			dosyaYukle(new File([blob], 'uzun.png', { type: 'image/png' }));
+		});
+		await mesajGelene(taha, a0 + 1);
+		const resim = taha.sayfa.locator('#mesajlar img.onizleme').last();
+		await bekleKosul('önizleme yüklendi', () => resim.evaluate((r) => r.complete && r.naturalWidth > 0));
+		await bekle(400);
+		assert.ok((await dipDurumu(taha)).fark <= 2, 'resim yüklenince dipte kalınmalı');
+		await resim.click();
+		await bekleKosul('büyüteç tam genişlikte açıldı', () => taha.sayfa.evaluate(() => !document.getElementById('buyutec').hidden && document.getElementById('buyutec').classList.contains('tam')));
+		const k = await taha.sayfa.evaluate(() => {
+			const k = document.getElementById('buyutec-kaydir');
+			return { sh: k.scrollHeight, ch: k.clientHeight };
+		});
+		assert.ok(k.sh > k.ch * 2, 'uzun resim kaydırılabilir olmalı: ' + JSON.stringify(k));
+		await taha.sayfa.mouse.move(640, 360);
+		await taha.sayfa.mouse.wheel(0, 4000);
+		await bekleKosul('büyüteçte aşağı kaydı', () => taha.sayfa.evaluate(() => document.getElementById('buyutec-kaydir').scrollTop > 1500), 5000);
+		await taha.sayfa.keyboard.press('Escape');
+		await bekleKosul('büyüteç kapandı', () => taha.sayfa.evaluate(() => document.getElementById('buyutec').hidden), 5000);
 	});
 
 	await dene('ses kalitesi: Opus ~96 kbps gönderiliyor (varsayılan tarayıcıda ~30 kbps kalıyordu)', async () => {
@@ -443,6 +535,30 @@ async function sidebarKisileri(k, kanal = 'Sesli Sohbet') {
 		await duyuyor(taha, 'mert');
 		await duyuyor(mert, 'zeynep');
 	});
+
+	if (dondurulabilir()) {
+		await dene('ölü bağlantı: sunucu yanıt vermezken sayfa öne gelince fark edilir, P2P ses sürer, sunucu dönünce kendiliğinden bağlanılır', async () => {
+			const once = await durumu(taha);
+			sunucuyuDondur();
+			try {
+				// Telefon uyandı: sayfa öne geldi. Bağlantı açık görünür ama sunucu yanıt vermez.
+				await taha.sayfa.evaluate(() => document.dispatchEvent(new Event('visibilitychange')));
+				await bekleKosul('taha ölü bağlantıyı fark etti', async () => !(await durumu(taha)).bagliyim, 12000);
+				await duyuyor(taha, 'zeynep', 'sunucu yanıt vermezken P2P ses');
+			} finally {
+				sunucuyuCoz();
+			}
+			await bekleKosul('taha kendiliğinden geri bağlandı', async () => (await durumu(taha)).bagliyim, 30000);
+			await bekleKosul('kanalda yine 3 kişi', async () => (await sidebarKisileri(zeynep)).length === 3, 20000);
+			await baglantilarHazir(taha, ['zeynep', 'mert']);
+			const sonra = await durumu(taha);
+			for (const ad of ['zeynep', 'mert']) {
+				if (once.esler[ad].tip === 'P2P') assert.equal(sonra.esler[ad].oturum, once.esler[ad].oturum, `taha↔${ad} bağlantısı baştan kurulmamalı`);
+			}
+			await duyuyor(taha, 'mert');
+			await duyuyor(zeynep, 'taha');
+		});
+	} else atla('ölü bağlantı', 'DONDUR/COZ verilmedi');
 
 	if (yenidenBaslatilabilir()) {
 		await dene('sunucu yeniden başlarken P2P ses kesilmez, herkes kendiliğinden geri döner (üretim freni: 10 sn\'de 1)', async () => {

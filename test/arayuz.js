@@ -39,10 +39,11 @@ const denetle = (ad, kosul, ek = '') => {
 const OPUS_TEKLIF = 'v=0\r\nm=audio 9 UDP/TLS/RTP/SAVPF 111\r\na=rtpmap:111 opus/48000/2\r\na=fmtp:111 minptime=10;useinbandfec=1\r\n';
 
 // Sayfayı kur: DOM + taklitler + ana.js. Birden çok kez çağrılabilir (hash/depo senaryoları).
-function kur({ url = 'https://chat.deneme/', depo = {} } = {}) {
+function kur({ url = 'https://chat.deneme/', depo = {}, oturumDepo = {} } = {}) {
 	const dom = new JSDOM(HTML, { url, pretendToBeVisual: true, runScripts: 'dangerously' });
 	const { window } = dom;
 	for (const [k, v] of Object.entries(depo)) window.localStorage.setItem(k, v);
+	for (const [k, v] of Object.entries(oturumDepo)) window.sessionStorage.setItem(k, v);
 	const durum = { gonderilen: [], ws: null, wsler: [], mikrofon: 0, micKisit: null };
 
 	class FakeWS {
@@ -396,6 +397,77 @@ const ICE = { iceServers: [{ urls: ['stun:1.2.3.4:3478'] }, { urls: ['turn:1.2.3
 	await bekle(20);
 	denetle('normal Enter gönderir', son('yazi').metin === 'kanji');
 
+	// --- 6b) dipte kalma: mesaj alanı küçülünce (ses kartı açıldı, telefonda klavye açıldı) yeni
+	// mesajda yine dibe inilir; yukarı kaydıran bölünmez. jsdom'da yerleşim yok: ölçüler taklit edilir.
+	{
+		const alan = d.getElementById('mesaj-alani');
+		const olcu = { yukseklik: 2000, gorunen: 500, yer: 1500 };
+		Object.defineProperty(alan, 'scrollHeight', { get: () => olcu.yukseklik, configurable: true });
+		Object.defineProperty(alan, 'clientHeight', { get: () => olcu.gorunen, configurable: true });
+		Object.defineProperty(alan, 'scrollTop', {
+			get: () => olcu.yer,
+			set: (v) => (olcu.yer = Math.max(0, Math.min(v, olcu.yukseklik - olcu.gorunen))),
+			configurable: true,
+		});
+		const kaydir = (yer) => {
+			olcu.yer = yer;
+			alan.dispatchEvent(new w.Event('scroll'));
+		};
+		w.eval('dibeKaydir()');
+		kaydir(1500);
+		olcu.gorunen = 300; // alan küçüldü: dip 200 px aşağıda kaldı (kaydırma olayı gelmez)
+		olcu.yukseklik += 40;
+		gelsin({ type: 'yazi', kanal: 'genel', mesaj: { id: 20, ad: 'bora', metin: 'alan küçüldükten sonra', zaman: Date.now() } });
+		await bekle(20);
+		denetle('alan küçülünce de yeni mesajda dibe inilir', olcu.yer === olcu.yukseklik - olcu.gorunen && d.getElementById('yeni-mesaj').hidden, JSON.stringify(olcu));
+		kaydir(900); // kullanıcı yukarı kaydırdı
+		olcu.yukseklik += 40;
+		gelsin({ type: 'yazi', kanal: 'genel', mesaj: { id: 21, ad: 'bora', metin: 'yukarıdayken', zaman: Date.now() } });
+		await bekle(20);
+		denetle('yukarı kaydıran bölünmez, "yeni mesaj" düğmesi çıkar', olcu.yer === 900 && !d.getElementById('yeni-mesaj').hidden, JSON.stringify(olcu));
+		kaydir(olcu.yukseklik - olcu.gorunen - 30); // dibe döndü: yeniden yapışır
+		denetle('dibe dönünce düğme kaybolur', d.getElementById('yeni-mesaj').hidden);
+		delete alan.scrollHeight;
+		delete alan.clientHeight;
+		delete alan.scrollTop;
+	}
+
+	// --- 6c) resim büyüteci: uzun dikey resim tam genişlikte (kaydırılabilir) açılır, resme dokununca
+	// sığdırılır; Esc ve telefonun geri tuşu kapatır (geri tuşu siteden çıkmaz).
+	{
+		const bag = d.querySelector('#mesajlar img.onizleme').parentElement;
+		const b = d.getElementById('buyutec');
+		const r = d.getElementById('buyutec-resim');
+		const kap = d.getElementById('buyutec-kaydir');
+		const boyut = (en, boy) => {
+			Object.defineProperty(r, 'naturalWidth', { value: en, configurable: true });
+			Object.defineProperty(r, 'naturalHeight', { value: boy, configurable: true });
+		};
+		Object.defineProperty(kap, 'clientWidth', { value: 1334, configurable: true });
+		Object.defineProperty(kap, 'clientHeight', { value: 788, configurable: true });
+		bag.dispatchEvent(new w.MouseEvent('click', { bubbles: true, cancelable: true }));
+		await bekle(10);
+		denetle('önizlemeye tıklayınca büyüteç açılır', !b.hidden && /\/dosya\/b{18}$/.test(r.src), r.src);
+		denetle('büyüteç geçmişe girdi ekler (geri tuşu kapatsın)', !!(w.history.state && w.history.state.buyutec));
+		boyut(600, 4200);
+		r.dispatchEvent(new w.Event('load'));
+		denetle('uzun dikey resim tam genişlikte (kaydırılabilir) açılır', b.classList.contains('tam') && b.classList.contains('buyuyebilir') && !d.getElementById('buyutec-boy').hidden, b.className);
+		r.dispatchEvent(new w.MouseEvent('click', { bubbles: true, clientY: 100 }));
+		denetle('resme dokununca ekrana sığdırılır (büyüteç açık kalır)', !b.hidden && !b.classList.contains('tam'), b.className);
+		d.dispatchEvent(new w.KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+		await bekle(50);
+		denetle('Esc kapatır, geçmiş girdisi geri alınır', b.hidden && !(w.history.state && w.history.state.buyutec));
+		boyut(1600, 900);
+		bag.dispatchEvent(new w.MouseEvent('click', { bubbles: true, cancelable: true }));
+		r.dispatchEvent(new w.Event('load'));
+		denetle('yatay resim sığdırılmış açılır, büyütme düğmesi yok', !b.hidden && !b.classList.contains('tam') && d.getElementById('buyutec-boy').hidden, b.className);
+		w.history.back();
+		await bekle(50);
+		denetle('geri tuşu büyüteci kapatır', b.hidden);
+		delete r.naturalWidth;
+		delete r.naturalHeight;
+	}
+
 	// --- 7) kanal değiştirme
 	muhabbetDugme().dispatchEvent(new w.MouseEvent('click', { bubbles: true }));
 	await bekle(30);
@@ -611,6 +683,43 @@ const ICE = { iceServers: [{ urls: ['stun:1.2.3.4:3478'] }, { urls: ['turn:1.2.3
 	await bekle(40);
 	denetle('devamda bağlantılar yeniden kurulmadı', s.FakePC.hepsi.filter((p) => !p.kapandi).length === pcSayisi);
 
+	// --- 13b) ölü bağlantı: telefon uyanınca (sayfa öne gelince) sunucu yoklanır. Yanıt gelirse
+	// bağlantı korunur; gelmezse (TCP sessizce kopmuş, tarayıcı fark etmemiş) hemen yeniden bağlanılır
+	// ve sesli kanala devam edilir; P2P ses bağlantıları kapanmaz.
+	{
+		const once = s.oc.wsler.length;
+		const pingler = () => s.oc.gonderilen.filter((m) => m.type === 'ping').length;
+		const p0 = pingler();
+		d.dispatchEvent(new w.Event('visibilitychange'));
+		await bekle(20);
+		denetle('öne gelince sunucu yoklanır (ping)', pingler() === p0 + 1, `${p0} → ${pingler()}`);
+		gelsin({ type: 'pong' });
+		await bekle(6300);
+		denetle('yanıt veren bağlantı korunur', s.oc.wsler.length === once, `${once} → ${s.oc.wsler.length}`);
+		d.dispatchEvent(new w.Event('visibilitychange'));
+		await bekle(7200);
+		denetle('yanıtsız bağlantı ölü sayılır, hemen yeniden bağlanılır', s.oc.wsler.length === once + 1, `${once} → ${s.oc.wsler.length}`);
+		denetle('ölü bağlantıda ses bağlantıları kapanmadı', s.FakePC.hepsi.filter((p) => !p.kapandi).length === pcSayisi && w.eval('esler.size') === 2);
+		denetle('yeniden girişte sesli kanal sürdürülür', son('giris') && son('giris').ses === 'sesli-sohbet', JSON.stringify(son('giris')));
+		gelsin({ type: 'hazir', ad: 'taha', kanallar, kimler: [{ ad: 'taha' }], max: 10, maxKullanici: 10, beyazListe: 2, beyazListeAdlari: ['taha', 'bora'], dosyaMb: 25, jeton: 'e'.repeat(32), ice: ICE, surum: 'v1', turnNesli: 'n1' });
+		await bekle(40);
+		denetle('ölü bağlantıdan sonra kanala devam edildi (devam:true)', son('ses-gir') && son('ses-gir').devam === true);
+		gelsin({ type: 'ses-girdi', kanal: 'sesli-sohbet', kisiler: ['bora', 'zeynep'], ice: ICE, devam: true });
+		await bekle(40);
+		denetle('ölü bağlantıdan sonra ses bağlantıları yeniden kurulmadı', s.FakePC.hepsi.filter((p) => !p.kapandi).length === pcSayisi);
+
+		// Arka plana geçerken sesli kanal not edilir (tarayıcı sayfayı kapatırsa geri dönülsün); öne
+		// gelince silinir.
+		Object.defineProperty(d, 'visibilityState', { value: 'hidden', configurable: true });
+		d.dispatchEvent(new w.Event('visibilitychange'));
+		const not = JSON.parse(w.sessionStorage.getItem('ses-devam') || 'null');
+		denetle('arka plana geçerken sesli kanal not edilir', not && not.kanal === 'sesli-sohbet', JSON.stringify(not));
+		delete d.visibilityState;
+		d.dispatchEvent(new w.Event('visibilitychange'));
+		gelsin({ type: 'pong' });
+		denetle('öne gelince not silinir', !w.sessionStorage.getItem('ses-devam'));
+	}
+
 	// --- 14) çık-gir
 	d.getElementById('ben-kapat').click();
 	await bekle(30);
@@ -674,6 +783,25 @@ const ICE = { iceServers: [{ urls: ['stun:1.2.3.4:3478'] }, { urls: ['turn:1.2.3
 	d.dispatchEvent(new w.KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
 	await bekle(20);
 	denetle('Escape ayarları kapattı', d.getElementById('ayarlar').hidden === true);
+
+	// --- 20) sesli kanaldayken sayfa arka planda tarayıcı tarafından kapatıldıysa (bellek), geri
+	// dönülünce sesli kanala kendiliğinden girilir; eski (10 dakikadan eski) not yok sayılır.
+	{
+		const yeniHazir = { type: 'hazir', ad: 'taha', kanallar, kimler: [{ ad: 'taha' }], max: 10, maxKullanici: 10, beyazListe: 1, beyazListeAdlari: ['taha'], dosyaMb: 25, jeton: 'd'.repeat(32), ice: ICE, surum: 'v1' };
+		const notla = (dk) => ({ 'ses-devam': JSON.stringify({ kanal: 'sesli-sohbet', zaman: Date.now() - dk * 60000 }) });
+		const t = kur({ depo: { anahtar: 'f'.repeat(128), ad: 'taha' }, oturumDepo: notla(1) });
+		await bekle(40);
+		t.oc.ws.onmessage({ data: JSON.stringify(yeniHazir) });
+		await bekle(600);
+		const sg = t.oc.gonderilen.filter((m) => m.type === 'ses-gir').at(-1);
+		denetle('arka planda kapatılan sayfa açılınca sesli kanala geri girer', sg && sg.kanal === 'sesli-sohbet', JSON.stringify(sg));
+		denetle('not kullanılınca silinir', !t.window.sessionStorage.getItem('ses-devam'));
+		const u = kur({ depo: { anahtar: 'f'.repeat(128), ad: 'taha' }, oturumDepo: notla(20) });
+		await bekle(40);
+		u.oc.ws.onmessage({ data: JSON.stringify(yeniHazir) });
+		await bekle(600);
+		denetle('10 dakikadan eski not yok sayılır', !u.oc.gonderilen.some((m) => m.type === 'ses-gir'));
+	}
 
 	console.log(process.exitCode ? 'BAŞARISIZ' : `Arayüz denemeleri geçti (${gecen}).`);
 	process.exit(process.exitCode || 0);

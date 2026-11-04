@@ -220,6 +220,7 @@ button:disabled { cursor: not-allowed; }
 	text-transform: uppercase;
 	color: var(--soluk);
 	padding: 14px 6px 4px 8px;
+	line-height: 16px;
 }
 .bolum-baslik > span { flex: 1; min-width: 0; }
 .bolum-ekle {
@@ -250,6 +251,7 @@ button:disabled { cursor: not-allowed; }
 	background: none;
 	color: var(--soluk);
 	font-size: 15px;
+	line-height: 20px;
 	text-align: left;
 	transition: background var(--gecis), color var(--gecis);
 }
@@ -280,7 +282,7 @@ button:disabled { cursor: not-allowed; }
 	line-height: 18px;
 	text-align: center;
 }
-.rozet-yazi { margin-left: auto; font-size: 11px; color: var(--soluk); background: var(--zemin); border-radius: 8px; padding: 0 6px; }
+.rozet-yazi { margin-left: auto; font-size: 11px; line-height: 16px; color: var(--soluk); background: var(--zemin); border-radius: 8px; padding: 0 6px; }
 /* Silme düğmesi fareyle üzerine gelince (dokunmatikte her zaman) görünür. */
 .kanal-sil {
 	position: absolute;
@@ -304,13 +306,16 @@ button:disabled { cursor: not-allowed; }
 
 /* Sesli kanalların altındaki kişiler. */
 .ses-uyeleri { display: flex; flex-direction: column; gap: 1px; margin: 0 0 4px 28px; }
+/* Satır yükseklikleri tam piksel (20 px satır + 2×4 px dolgu = 30 px): avatarlar kesirli konuma
+   düşmez, konuşma halkaları (30 px çap) alt alta birbirine değmez. */
 .ses-uyesi {
 	display: flex;
 	align-items: center;
 	gap: 8px;
-	padding: 3px 6px;
+	padding: 4px 6px;
 	border-radius: 6px;
 	font-size: 14px;
+	line-height: 20px;
 	color: var(--soluk);
 }
 .ses-uyesi:hover { background: var(--uzerinde); color: var(--yazi); }
@@ -335,14 +340,25 @@ button:disabled { cursor: not-allowed; }
 	font-size: 16px;
 	flex: none;
 	user-select: none;
-	transition: box-shadow 0.12s ease-out;
 }
 .kucuk-avatar { width: 32px; height: 32px; font-size: 13px; }
 .mini-avatar { width: 22px; height: 22px; font-size: 10px; }
 .orta-avatar { width: 44px; height: 44px; font-size: 17px; }
-/* Konuşan kişinin avatarı yeşil halkayla yanar. */
-.konusuyor > .avatar, .avatar.konusuyor { box-shadow: 0 0 0 2px var(--zemin), 0 0 0 4px var(--yesil-acik); }
-.ses-uyesi.konusuyor .mini-avatar { box-shadow: 0 0 0 2px var(--yan), 0 0 0 3.5px var(--yesil-acik); }
+/* Konuşan kişinin avatarı yeşil halkayla yanar. Halka ayrı bir katman: avatarın kutusundan tam
+   piksel uzakta (2 px boşluk + 2 px halka) çizilir, her ekranda ve tarayıcıda tam ortalı kalır;
+   aradaki boşluk şeffaftır. Eskiden kesirli (3,5 px) gölgeydi ve kesirli konumlarda bazı ekranlarda
+   bir yana kayık görünüyordu. */
+.ses-uyesi .avatar::after, .ses-kisi .avatar::after, .ben-kart .avatar::after {
+	content: "";
+	position: absolute;
+	inset: -4px;
+	border: 2px solid var(--yesil-acik);
+	border-radius: 50%;
+	opacity: 0;
+	transition: opacity 0.12s ease-out;
+	pointer-events: none;
+}
+.konusuyor > .avatar::after, .avatar.konusuyor::after { opacity: 1; }
 /* Durum noktası (çevrimiçi / çevrimdışı) avatarın sağ altında. */
 .avatar .durum-nokta {
 	position: absolute;
@@ -987,9 +1003,55 @@ audio.onizleme { width: min(400px, 100%); }
 .anahtar input:checked::after { transform: translateX(16px); }
 .ayar-not { margin: 0; padding: 12px 20px 18px; font-size: 12px; color: var(--soluk); border-top: 1px solid var(--cizgi); }
 
-/* Resim büyüteci. */
-.buyutec { position: fixed; inset: 0; z-index: 55; display: grid; place-items: center; padding: 24px; background: rgba(0, 0, 0, 0.85); cursor: zoom-out; animation: belir 0.15s ease-out; }
-.buyutec img { max-width: 100%; max-height: 100%; border-radius: 6px; box-shadow: var(--golge); }
+/* Resim büyüteci: resim kaydırılabilir bir kabın içinde. Sığdırılmış açılır; tam genişlikte
+   (.tam) ekrandan uzun resim aşağı kaydırılarak gezilir. */
+.buyutec { position: fixed; inset: 0; z-index: 55; background: rgba(0, 0, 0, 0.88); animation: aydinlan 0.15s ease-out; }
+.buyutec-kaydir {
+	position: absolute;
+	inset: 0;
+	display: flex;
+	overflow: auto;
+	overscroll-behavior: contain;
+	padding: 16px;
+	cursor: zoom-out;
+}
+/* margin:auto küçük resmi ortalar ama büyüğü kesmez (eskiden place-items:center taşan resmin
+   altını görünmez ve kaydırılamaz yapıyordu). */
+.buyutec img {
+	display: block;
+	flex: none;
+	margin: auto;
+	max-width: 100%;
+	max-height: 100%;
+	border-radius: 6px;
+	box-shadow: var(--golge);
+	background: var(--zemin);
+	cursor: default;
+}
+.buyutec.buyuyebilir img { cursor: zoom-in; }
+.buyutec.tam img { max-height: none; cursor: zoom-out; }
+.buyutec-dugmeler {
+	position: absolute;
+	top: calc(10px + env(safe-area-inset-top));
+	right: calc(10px + env(safe-area-inset-right));
+	display: flex;
+	gap: 8px;
+}
+.buyutec-dugme {
+	width: 40px;
+	height: 40px;
+	display: grid;
+	place-items: center;
+	border: 0;
+	border-radius: 50%;
+	background: rgba(30, 31, 34, 0.78);
+	color: #fff;
+	padding: 0;
+	box-shadow: 0 2px 8px rgba(0, 0, 0, 0.45);
+	transition: background var(--gecis);
+}
+.buyutec-dugme:hover { background: rgba(78, 80, 88, 0.92); }
+.buyutec-dugme .ikon { width: 22px; height: 22px; }
 
 /* ---------------------------------------------------------------- kaydırma çubukları */
 
@@ -1001,6 +1063,7 @@ audio.onizleme { width: min(400px, 100%); }
 /* ---------------------------------------------------------------- hareketler */
 
 @keyframes belir { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
+@keyframes aydinlan { from { opacity: 0; } }
 @keyframes kay { from { opacity: 0; transform: translateX(16px); } to { opacity: 1; transform: none; } }
 @keyframes nabiz { 0%, 100% { opacity: 1; } 50% { opacity: 0.45; } }
 @keyframes zipla { 0%, 60%, 100% { transform: none; opacity: 0.5; } 30% { transform: translateY(-3px); opacity: 1; } }

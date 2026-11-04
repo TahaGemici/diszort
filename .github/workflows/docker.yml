@@ -91,6 +91,9 @@ jobs:
         env:
           # Sunucu yeniden başlarken herkesin kendiliğinden geri dönmesi de denenir.
           YENIDEN_BASLAT: sudo docker restart diszort
+          # Yanıt vermeyen sunucu (telefonun uyanınca bulduğu ölü bağlantı): konteyner dondurulur.
+          DONDUR: sudo docker pause diszort
+          COZ: sudo docker unpause diszort
           TARAYICI_ZORUNLU: '1'
         run: node test/tarayici.js http://127.0.0.1:8080
 
