@@ -448,28 +448,56 @@ function iceSunuculari(host) {
 
 // ---------------------------------------------------------------- signaling + sohbet (/rtc)
 //
-// Tam liste README'de ("WebSocket protokolü"). Özetle:
-// İstemci -> sunucu:
-//   {type:'giris', ad, id, anahtar, ses}       giriş; ses: devam edilecek sesli kanal (yeniden bağlanırken)
-//   {type:'yazi', kanal, metin}                yazılı kanala mesaj gönder
-//   {type:'gecmis', kanal, once}               eski mesajları iste (once: en eski bilinen id)
+// WebSocket protokolü (JSON). İstemci -> sunucu:
+//   {type:'giris', ad, id, anahtar, ses}       anahtar geçerliyse doğrudan girer, yoksa kapıyı çalar
+//                                              (bekleniyor). Sunucu geneli giriş freni: giris-red
+//                                              {kod:'fren', bekle}. ses: yeniden bağlanırken sürdürülecek
+//                                              sesli kanal (askıdaki yer korunur)
+//   {type:'giris-karari', id, kabul}           içerideki biri isteği kabul/red eder (kabulde anahtar üretilir)
+//   {type:'giris-iptal'}                       kapıyı çalan isteğini geri çeker
+//   {type:'at', ad}                            kişiyi beyaz listeden atar (anahtarı iptal, bağlantısı düşer)
+//   {type:'beyaz-liste'}                       beyaz listeyi ister
+//   {type:'kisi-limiti', deger}                beyaz liste sınırı (2–50; veritabanına yazılır)
+//   {type:'yazi', kanal, metin}                yazılı kanala mesaj (kişi başı 10 sn'de 12)
+//   {type:'gecmis', kanal, once}               son 50 mesaj; once verilirse ondan eskiler
 //   {type:'yaziyor', kanal}                    "yazıyor" göstergesi
-//   {type:'ses-gir', kanal, devam} / {type:'ses-cik'}   sesli kanala gir/çık (devam: bağlantılar ayakta)
-//   {type:'sdp', to, sdp, oturum} / {type:'ice', to, ice, oturum} / {type:'yenile', to, oturum}
-//                                              WebRTC (aynı sesli kanaldaki kişiye)
+//   {type:'ses-gir', kanal, devam, sessiz, sagir} / {type:'ses-cik'}
+//                                              sesli kanala gir/çık (devam: eş bağlantıları ayakta)
+//   {type:'kanal-ekle', tur, ad} / {type:'kanal-sil', kanal}   tur: 'yazi' | 'ses'
+//   {type:'sdp', to, sdp, oturum} / {type:'ice', to, ice, oturum}
+//                                              WebRTC (aynı sesli kanaldaki kişiye). oturum: eş
+//                                              bağlantısının kimliği (eskisine ait yanıt/aday ayıklanır)
+//   {type:'yenile', to, oturum}                yanıtlayan: "bağlantımız bozuk" → teklif eden ICE'yi
+//                                              yeniler ya da baştan kurar
 //   {type:'sessiz', sessiz, sagir}             mikrofon kapalı / sağırlaştırılmış mı
-//   {type:'ice-iste'}                          taze STUN/TURN şifresi
-//   {type:'ping'}
+//   {type:'ice-iste'}                          taze STUN/TURN şifresi (ice-sunuculari döner)
+//   {type:'tani', veri}                        ses teşhisi (yalnızca günlüğe yazılır; TANI=0 kapatır)
+//   {type:'ping'}                              canlılık yoklaması (pong döner)
 // Sunucu -> istemci:
-//   {type:'hazir', ad, kanallar, kimler, max, dosyaMb, jeton, ice}
-//   {type:'kanallar', kanallar} / {type:'kimler', kimler}
-//   {type:'yazi', kanal, mesaj} / {type:'gecmis', kanal, mesajlar, bitti}
-//   {type:'yaziyor', kanal, ad}
-//   {type:'ses-girdi', kanal, kisiler, ice, devam} / {type:'ses-kisi-girdi', kanal, ad, devam} / {type:'ses-kisi-cikti', kanal, ad}
-//   {type:'sessiz', ad, sessiz, sagir}
-//   {type:'sdp', from, sdp, oturum} / {type:'ice', from, ice, oturum} / {type:'yenile', from, oturum}
+//   {type:'hazir', ad, kanallar, kimler, beyazListeAdlari, max, dosyaMb, jeton, ice, surum, turnNesli,
+//    girisAralikMs, girisKova, anahtar?}       giriş kabul edildi (anahtar yalnızca yeni verilince). surum
+//                                              değişirse sekme kendini yeniler; turnNesli değişirse
+//                                              coturn yeniden başlamıştır (TURN bağlantıları yenilenir)
+//   {type:'bekleniyor', ad, anahtarGecersiz}   kapıyı çaldın, karar bekleniyor
+//   {type:'giris-red', message, kod, bekle?}   kod: fren, anahtar, ad, ad-kullaniliyor, dolu, kimse-yok,
+//                                              reddedildi, cok-istek, zaman-asimi
+//   {type:'giris-istegi', id, ad, kayitli} / {type:'istek-kapandi', id, kabul}
+//                                              içeridekilere onay isteği ve sonucu (kayitli: ad zaten
+//                                              beyaz listede)
+//   {type:'atildi', message}                   beyaz listeden atıldın
 //   {type:'oturum-devralindi', message}        aynı anahtar başka sekmede açıldı (bu sekme durur)
-//   {type:'hata', message, kod} / {type:'pong'}
+//   {type:'beyaz-liste', kisiler, maxKullanici}
+//   {type:'kanallar', kanallar} / {type:'kimler', kimler, beyazListe, beyazListeAdlari, maxKullanici}
+//                                              (kanallar'da bağlantısı kopan kişi askida:true görünür)
+//   {type:'yazi', kanal, mesaj} / {type:'gecmis', kanal, mesajlar, bitti}
+//   {type:'yaziyor', kanal, ad} / {type:'sessiz', ad, sessiz, sagir}
+//   {type:'ses-girdi', kanal, kisiler, ice, devam} / {type:'ses-kisi-girdi', kanal, ad, devam} /
+//   {type:'ses-kisi-cikti', kanal, ad} / {type:'ses-kapatildi', kanal}
+//   {type:'sdp', from, sdp, oturum} / {type:'ice', from, ice, oturum} / {type:'yenile', from, oturum}
+//   {type:'ice-sunuculari', ice}
+//   {type:'hata', message, kod?}               kod: ses-dolu, ses-kanal-yok, ...
+//   {type:'pong'}
+// Her çiftte teklifi adı alfabetik olarak büyük olan yapar (çakışma olmaz). Adlar sunucu genelinde benzersiz.
 
 const sesliKanallar = new Map(); // kanal id -> Map<ad, ws>  (bağlantısı kopan kişi kısa süre askıda kalır)
 const jetonlar = new Map(); // yükleme jetonu -> ws
