@@ -17,6 +17,7 @@
 	--yesil: #23a55a;
 	--yesil-acik: #3ba55d;
 	--sari: #f0b232;
+	--turuncu: #f5973b;     /* TURN (relay) üzerinden bağlananlar */
 	--tehlike: #f23f43;
 	--tehlike-koyu: #a12828;
 	--golge: 0 8px 24px rgba(0, 0, 0, 0.45);
@@ -76,14 +77,12 @@ button:disabled { cursor: not-allowed; }
 	width: 56px;
 	height: 56px;
 	margin: 0 auto 10px;
-	border-radius: 16px;
+	border-radius: 15px;
 	display: grid;
 	place-items: center;
-	color: #fff;
-	background: linear-gradient(135deg, var(--vurgu), #7b5cf5);
 	box-shadow: 0 8px 20px rgba(88, 101, 242, 0.4);
 }
-.giris-logo .ikon { width: 30px; height: 30px; }
+.giris-logo .ikon { width: 56px; height: 56px; }
 .giris-kart h1 { font-size: 22px; margin: 0 0 18px; text-align: center; color: var(--parlak); letter-spacing: -0.01em; }
 .alan-adi, .giris-kart label {
 	display: block;
@@ -193,12 +192,9 @@ button:disabled { cursor: not-allowed; }
 .sunucu-logo {
 	width: 28px;
 	height: 28px;
-	border-radius: 9px;
-	color: #fff;
-	background: linear-gradient(135deg, var(--vurgu), #7b5cf5);
 	flex: none;
 }
-.sunucu-logo .ikon { width: 17px; height: 17px; }
+.sunucu-logo .ikon { width: 28px; height: 28px; }
 .sunucu-baslik b { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .sayac {
 	margin-left: auto;
@@ -666,6 +662,7 @@ audio.onizleme { width: min(400px, 100%); }
 .ses-kisi.ben .seviye-cubuk { width: 70px; flex: none; }
 .ses-istatistik { font-size: 12px; color: #8fd3a8; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .ses-istatistik.orta { color: var(--sari); }
+.ses-istatistik.turn { color: var(--turuncu); }
 .ses-istatistik.kotu { color: #ff8a8d; }
 
 /* Mikrofon seviye çubuğu (kendi satırın ve ayarlar). */

@@ -1,7 +1,8 @@
 # Ses Kanalı
 
 Hesapsız, tarayıcıdan girilen Discord'umsu sunucu: **yazılı kanallar** (geçmişi veritabanında tutulur,
-dosya paylaşılabilir) + **sesli kanallar** (ses tarayıcılar arasında doğrudan, P2P akar).
+dosya paylaşılabilir) + **sesli kanallar** (ses tarayıcılar arasında doğrudan, P2P akar). Arayüzde
+sunucunun adı **Diszort** (logo: üstü kırmızı çarpıyla çizilmiş Discord yüzü; sekme başlığı ve simge de).
 
 - **Giriş (beyaz liste):** Adını yazarsın; içerideki herkese *"X girmek istiyor"* diye sorulur. Biri kabul
   ederse sana **yalnızca sende olan bir anahtar** verilir ve tarayıcında saklanır — sonraki girişlerde soru
@@ -198,15 +199,16 @@ tarayıcı ──UDP/TCP 3478──> coturn (konteynerde, sunucu.js başlatır) 
   (128 hex) anahtar üretilir; aynı ad yeniden onaylanırsa anahtar döner (cihaz değişti). Anahtar
   `localStorage`'da tutulur, HTTPS üzerinden gönderilir. **Yalnızca 512 bit anahtarlar kabul edilir**;
   eski/kısa biçimdeki anahtar geçersiz sayılır ve kapıyı çalma akışına düşer.
-- **Giriş freni (sunucu tarafı):** TÜM giriş denemeleri sunucu genelinde tek bir **jeton kovasından** düşer:
-  kova her 10 saniyede 1 dolar (uzun vadede **10 saniyede 1** deneme), en fazla 10 jeton birikir — bağlantı,
-  kişi, ilk deneme ayrımı yok; geçerli anahtarla yapılan deneme de kovadan düşer. Kova neden var: sunucu
-  yeniden başlayınca (her güncellemede) içerideki herkes aynı anda geri bağlanır; tek jetonlu frende yalnızca
-  biri girebiliyor, diğerleri giriş ekranına atılıyor (mikrofonları da açık kalıyordu). Fren yalnızca
-  sunucuda uygulanır (istemci kodu değiştirilerek aşılamaz) ve bekleme sunucuda tutulmaz: istek anında
-  reddedilir ve ne kadar bekleneceği söylenir (`giris-red {kod:'fren', bekle}`); arayüz o kadar bekleyip
-  kendiliğinden yeniden dener. Ayar: `GIRIS_ARALIK_MS` (varsayılan 10000; testler küçültür), `GIRIS_KOVA`
-  (varsayılan 10; `1` eski katı davranış).
+- **Giriş freni (sunucu tarafı):** TÜM giriş denemeleri sunucu genelinde **10 saniyede 1** ile sınırlıdır —
+  bağlantı, kişi, ilk deneme ayrımı yok; geçerli anahtarla yapılan deneme de freni bekler. Fren tek bir
+  jeton kovasıdır: kova her `GIRIS_ARALIK_MS`'de bir dolar, en fazla `GIRIS_KOVA` jeton birikir (varsayılan
+  10000 ms ve **1**). Fren yalnızca sunucuda uygulanır (istemci kodu değiştirilerek aşılamaz) ve bekleme
+  sunucuda tutulmaz: istek anında reddedilir ve ne kadar bekleneceği söylenir (`giris-red {kod:'fren',
+  bekle}`); arayüz o kadar bekleyip **kendiliğinden yeniden dener** (eskiden giriş ekranına atıyor,
+  mikrofonu da açık bırakıyordu). Sunucu yeniden başlayınca (her güncellemede) içeridekiler bu yüzden 10'ar
+  saniye arayla döner; P2P ses bu arada kesilmez, TURN'den geçen ses iki taraf da dönünce yenilenir.
+  **Testler için arttırılabilir:** `GIRIS_KOVA=N` ile N deneme birikir (yeniden başlatmada N kişi
+  beklemeden döner); testler `GIRIS_ARALIK_MS`'yi de küçültür.
 - **Aynı anahtar ikinci sekmede:** son giren kazanır; eski sekmeye haber verilir ve o sekme kendiliğinden
   yeniden bağlanmaz ("Bu sekmede devam et" düğmesi çıkar). Eskiden "başka bir cihazdan bağlı" diye
   reddediliyordu: ağ değişince kopan eski bağlantı sunucu fark edene kadar kişiyi dışarıda bırakıyordu.
@@ -340,8 +342,10 @@ Her çiftte teklifi adı alfabetik olarak büyük olan yapar (çakışma olmaz).
   düğmesi çıkar; bir gözcü 1 saniyede bir çalmayanı yeniden dener. Eskiden iOS için her tuşa/dokunuşa sessiz
   bir ses çalınıyordu: sitenin kendi CSP'si (`media-src 'self' blob:`) bunu her seferinde engelliyordu
   (hiç çalışmamıştı) ve iOS'ta arka plandaki müziği durdurabilirdi; kaldırıldı.
-- **Bağlantı bilgisi:** her kişi için `P2P/TURN · gecikme` (kayıp %1'i geçerse o da) görünür; ipucunda
-  kayıp, gelen/giden kbps, titreşim. Sol alttaki ses panelinin rengi genel durumu gösterir.
+- **Bağlantı bilgisi:** her kişi için `P2P/TURN · gecikme` (kayıp %1'i geçerse o da) görünür: doğrudan
+  (P2P) bağlananlar yeşil, **TURN (relay) üzerinden bağlananlar turuncu**, ciddi sorun (≥%5 kayıp,
+  mikrofon gitmiyor) kırmızı; ipucunda kayıp, gelen/giden kbps, titreşim. Sol alttaki ses panelinin rengi
+  genel durumu gösterir.
 - **Uzaktan teşhis:** istemci 10 saniyede bir kendi ses durumunu (`yön`, `in/out kbps`, `kayıp`, oturum,
   kurtarma sayısı, mikrofon ayarları, tarayıcı) `tani` mesajıyla gönderir; sunucu **yalnızca günlüğe** yazar
   (`sudo docker logs ses-kanali | grep tanı`). Veritabanına yazılmaz, kimseye dağıtılmaz; `.env`'de `TANI=0`

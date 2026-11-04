@@ -191,7 +191,7 @@ function kur({ url = 'https://chat.deneme/', depo = {} } = {}) {
 			const m = new Map();
 			m.set('tr', { type: 'transport', selectedCandidatePairId: 'pair' });
 			m.set('pair', { type: 'candidate-pair', state: 'succeeded', nominated: true, localCandidateId: 'yerel', remoteCandidateId: 'uzak', currentRoundTripTime: 0.031 });
-			m.set('yerel', { id: 'yerel', type: 'local-candidate', candidateType: 'srflx' });
+			m.set('yerel', { id: 'yerel', type: 'local-candidate', candidateType: FakePC.adayTuru });
 			m.set('uzak', { id: 'uzak', type: 'remote-candidate', candidateType: 'srflx' });
 			m.set('gelen', { type: 'inbound-rtp', kind: 'audio', packetsReceived: Math.round(t * 50), packetsLost: 3, bytesReceived: Math.round(t * 12000), jitter: 0.011 });
 			m.set('giden', { type: 'outbound-rtp', kind: 'audio', bytesSent: Math.round(t * 12000) });
@@ -204,6 +204,7 @@ function kur({ url = 'https://chat.deneme/', depo = {} } = {}) {
 	}
 	FakePC.hepsi = [];
 	FakePC.uzaklar = [];
+	FakePC.adayTuru = 'srflx'; // 'relay' → bağlantı TURN üzerinden görünür
 	window.RTCPeerConnection = FakePC;
 	window.AudioContext = class {
 		constructor() {
@@ -278,6 +279,9 @@ const ICE = { iceServers: [{ urls: ['stun:1.2.3.4:3478'] }, { urls: ['turn:1.2.3
 	denetle('sunucu şeridi (en sol bar) yok', d.getElementById('kenar') === null);
 	denetle('anahtarsız açılışta WebSocket açılmadı', !s.oc.ws);
 	denetle('simgeler SVG olarak çizildi', d.querySelectorAll('#ben-mikrofon svg.ikon').length === 1);
+	denetle('sekme başlığı Diszort', d.title === 'Diszort', d.title);
+	denetle('giriş ekranında Diszort adı ve logosu', d.querySelector('#giris h1').textContent === 'Diszort' && !!d.querySelector('.giris-logo svg rect'));
+	denetle('sol üstte Diszort adı ve çarpılı logo', d.querySelector('.sunucu-baslik b').textContent === 'Diszort' && d.querySelectorAll('.sunucu-logo svg path[stroke="#f23f43"]').length === 1);
 
 	// --- 2) ad yaz → kapıyı çal → "izin bekleniyor"
 	d.getElementById('ad').value = 'taha';
@@ -560,6 +564,11 @@ const ICE = { iceServers: [{ urls: ['stun:1.2.3.4:3478'] }, { urls: ['turn:1.2.3
 	const ist = d.querySelector('#ses-kisiler .ses-kisi[data-ad="bora"] .ses-istatistik');
 	denetle('istatistik: bağlantı türü ve gecikme', ist && /P2P/.test(ist.textContent) && /ms/.test(ist.textContent), ist && ist.textContent);
 	denetle('istatistik ayrıntısı (kayıp, bit hızları) ipucunda', ist && /kayıp/.test(ist.title) && /kbps/.test(ist.title), ist && ist.title);
+	denetle('doğrudan (P2P) bağlantı yeşil (turuncu değil)', ist && !ist.classList.contains('turn'), ist && ist.className);
+	s.FakePC.adayTuru = 'relay';
+	await bekle(2300);
+	denetle('TURN (relay) bağlantısı turuncu', ist && /TURN/.test(ist.textContent) && ist.classList.contains('turn'), ist && ist.className + ' ' + ist.textContent);
+	s.FakePC.adayTuru = 'srflx';
 	denetle('ses paneli bağlı', /Ses bağlı/.test(d.getElementById('ses-baglanti-durum').textContent), d.getElementById('ses-baglanti-durum').textContent);
 
 	// --- 12) susturma ve sağırlaştırma

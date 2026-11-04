@@ -108,10 +108,10 @@ MAX_KISI=10
 MAX_KULLANICI=10
 
 # Giriş freni: TÜM giriş denemeleri sunucu genelinde tek bir jeton kovasından düşer; kova her
-# GIRIS_ARALIK_MS'de bir dolar (10000 = uzun vadede 10 saniyede 1), en fazla GIRIS_KOVA birikir
-# (sunucu yeniden başlayınca herkes aynı anda geri girebilsin). Yalnızca otomatik testler küçültür.
+# GIRIS_ARALIK_MS'de bir dolar, en fazla GIRIS_KOVA birikir (10000 + 1 = 10 saniyede 1 deneme,
+# üretimde böyle kalmalı). Testler için arttırılabilir (GIRIS_KOVA=N: N deneme birikir).
 # GIRIS_ARALIK_MS=10000
-# GIRIS_KOVA=10
+# GIRIS_KOVA=1
 
 # Sesli kanaldayken bağlantısı kopanın yeri bu kadar ms askıda kalır (geri gelirse ses kesilmez).
 # SES_ASKI_MS=20000

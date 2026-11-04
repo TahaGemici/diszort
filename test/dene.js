@@ -434,7 +434,7 @@ async function turnAl(port, kullanici, sifre) {
 		assert.match(r.headers.get('content-type'), /text\/html/);
 		assert.match(r.headers.get('content-security-policy') || '', /default-src 'self'/);
 		const sayfa = await r.text();
-		assert.match(sayfa, /Ses Kanalı/);
+		assert.match(sayfa, /Diszort/);
 		// Arayüz vaadi: yazılı + sesli kanalların ikisi de sayfada olmalı.
 		assert.match(sayfa, /Yazılı Kanallar/);
 		assert.match(sayfa, /Sesli Kanallar/);

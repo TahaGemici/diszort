@@ -132,15 +132,16 @@ const ANAHTAR_BAYT = 64;
 const ANAHTAR_UZUNLUK = ANAHTAR_BAYT * 2;
 const ANAHTAR_KALIBI = /^[0-9a-f]{128}$/;
 // Giriş freni: TÜM giriş denemeleri sunucu genelinde (tüm bağlantılar, tüm kişiler) tek bir
-// jeton kovasından düşer: kova her GIRIS_ARALIK_MS'de 1 dolar (uzun vadede 10 saniyede 1 deneme),
-// en fazla GIRIS_KOVA jeton birikir. İlk deneme, yeni bağlantı, geçerli anahtar ayrımı YOKTUR.
-// Kova neden var: sunucu yeniden başlayınca (her güncellemede) içerideki herkes aynı anda geri
-// bağlanır; tek jetonlu frende yalnızca biri girebiliyor, diğerleri giriş ekranına atılıyordu.
-// Yalnızca sunucu tarafında uygulanır; istemci kodu değiştirilerek aşılamaz. GIRIS_KOVA=1 eski
-// katı davranıştır (art arda iki deneme arasında en az GIRIS_ARALIK_MS).
+// jeton kovasından düşer: kova her GIRIS_ARALIK_MS'de 1 dolar, en fazla GIRIS_KOVA jeton birikir.
+// Varsayılan GIRIS_KOVA=1: art arda iki deneme arasında en az GIRIS_ARALIK_MS (10 saniyede 1).
+// İlk deneme, yeni bağlantı, geçerli anahtar ayrımı YOKTUR. Yalnızca sunucu tarafında uygulanır;
+// istemci kodu değiştirilerek aşılamaz. Reddedilen istemci söylenen süre kadar bekleyip kendiliğinden
+// yeniden dener (sunucu yeniden başlayınca içeridekiler 10'ar saniye arayla döner; P2P ses bu arada
+// sürer). Testler için (ya da yeniden başlatmada herkes beklemeden dönsün istenirse) arttırılabilir:
+// GIRIS_KOVA=N ise N deneme birikebilir.
 const GIRIS_ARALIK_MS = sayiAyar('GIRIS_ARALIK_MS', 10000, 0, 600000);
-const GIRIS_KOVA = sayiAyar('GIRIS_KOVA', 10, 1, 100);
-let girisJetonu = GIRIS_KOVA; // açılışta kova dolu: yeniden başlatmada herkes hemen geri girer
+const GIRIS_KOVA = sayiAyar('GIRIS_KOVA', 1, 1, 100);
+let girisJetonu = GIRIS_KOVA; // açılışta kova dolu
 let girisDolumZamani = Date.now();
 // Sesli kanaldayken bağlantısı beklenmedik şekilde kopan kişinin yeri bu süre kadar "askıda" tutulur.
 // Aynı kişi bu sürede geri bağlanıp kanala devam ederse diğerlerine çıktı/girdi denmez: P2P ses
@@ -660,6 +661,10 @@ function oturumAc(ws, ad, kimlik, anahtar, sesDevam) {
 		anahtar: anahtar || undefined,
 		ice: iceSunuculari(ws.host),
 		turnNesli: TURN_NESLI,
+		// İstemci, sunucu yeniden başladıktan sonra henüz dönmemiş eşleri ne kadar bekleyeceğini
+		// giriş frenine göre hesaplar (fren sıkıysa son kişi dakikalar sonra dönebilir).
+		girisAralikMs: GIRIS_ARALIK_MS,
+		girisKova: GIRIS_KOVA,
 		surum: SURUM, // istemci sürüm değişince (güncelleme) sayfayı yeniler
 	});
 	// Bu kişi bağlı değilken kapıyı çalanlar da ona sorulsun (yeni gelen ya da bağlantısı kopup dönen).

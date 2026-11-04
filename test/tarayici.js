@@ -51,6 +51,14 @@ const PORT = 18000 + Math.floor(Math.random() * 1000);
 const TURN_PORT = 23000 + Math.floor(Math.random() * 1000);
 const ADRES = DIS_ADRES ? DIS_ADRES.replace(/\/$/, '') : `http://127.0.0.1:${PORT}`;
 let turnVar = true;
+// Kendi açtığımız sunucunun ayarları. Giriş kovası üretimdeki gibi 1; aralık denemeler hızlı geçsin
+// diye 1 sn (yeniden başlatma denemesi üretim aralığına, 10 sn'ye geçer). Ortam değişkeniyle
+// değiştirilebilir (ör. GIRIS_KOVA=10: testlerde kova arttırılabilir).
+const sunucuOrtami = {
+	GIRIS_ARALIK_MS: process.env.GIRIS_ARALIK_MS || '1000',
+	GIRIS_KOVA: process.env.GIRIS_KOVA || '1',
+	SES_ASKI_MS: process.env.SES_ASKI_MS || '20000',
+};
 
 async function sunucuBaslat() {
 	if (DIS_ADRES) return;
@@ -65,9 +73,7 @@ async function sunucuBaslat() {
 			TURN_PORT: String(TURN_PORT),
 			TURN_ADRESI: process.env.TURN_ADRESI || ip,
 			ILK_ANAHTAR: ANAHTAR,
-			GIRIS_ARALIK_MS: process.env.GIRIS_ARALIK_MS || '10000', // üretimdeki fren: kova yetmeli
-			GIRIS_KOVA: process.env.GIRIS_KOVA || '10',
-			SES_ASKI_MS: process.env.SES_ASKI_MS || '20000',
+			...sunucuOrtami,
 			TANI: process.env.TANI || '0',
 		},
 		stdio: ['ignore', 'pipe', 'pipe'],
@@ -99,7 +105,8 @@ async function sunucuDurdur() {
 	await Promise.race([bitti, bekle(5000)]);
 }
 
-async function sunucuyuYenidenBaslat(aradaBekle = 0) {
+// ek: kendi açtığımız sunucuda bundan sonraki ayarlar (dış sunucuda yok sayılır).
+async function sunucuyuYenidenBaslat(ek = {}) {
 	if (DIS_ADRES) {
 		execSync(process.env.YENIDEN_BASLAT, { stdio: 'inherit' });
 		for (let i = 0; i < 60; i++) {
@@ -111,7 +118,7 @@ async function sunucuyuYenidenBaslat(aradaBekle = 0) {
 		throw new Error('sunucu yeniden başlamadı');
 	}
 	await sunucuDurdur();
-	if (aradaBekle) await bekle(aradaBekle);
+	Object.assign(sunucuOrtami, ek);
 	await sunucuBaslat();
 }
 const yenidenBaslatilabilir = () => !DIS_ADRES || !!process.env.YENIDEN_BASLAT;
@@ -358,6 +365,9 @@ async function sidebarKisileri(k, kanal = 'Sesli Sohbet') {
 		}
 		assert.deepEqual(await sidebarKisileri(taha), ['mert', 'taha', 'zeynep']);
 		assert.equal(await taha.sayfa.locator('#ses-kisiler .ses-kisi').count(), 3, 'ses kartında 3 kişi (kendisi dahil)');
+		// Bağlantı türü ortadaki kartta: doğrudan (P2P) yeşil, turuncu değil.
+		await bekleKosul('P2P bilgisi göründü', () => taha.sayfa.evaluate(() => /P2P/.test(document.querySelector('#ses-kisiler .ses-kisi[data-ad="zeynep"] .ses-istatistik').textContent)));
+		assert.equal(await taha.sayfa.evaluate(() => document.querySelectorAll('#ses-kisiler .ses-istatistik.turn').length), 0, 'P2P bağlantı turuncu görünmemeli');
 	});
 
 	await dene('ses kalitesi: Opus ~96 kbps gönderiliyor (varsayılan tarayıcıda ~30 kbps kalıyordu)', async () => {
@@ -435,7 +445,7 @@ async function sidebarKisileri(k, kanal = 'Sesli Sohbet') {
 	});
 
 	if (yenidenBaslatilabilir()) {
-		await dene('sunucu yeniden başlarken P2P ses kesilmez, herkes kendiliğinden geri döner (10 sn fren + kova)', async () => {
+		await dene('sunucu yeniden başlarken P2P ses kesilmez, herkes kendiliğinden geri döner (üretim freni: 10 sn\'de 1)', async () => {
 			const once = {};
 			for (const k of [taha, zeynep, mert]) once[k.ad] = await durumu(k);
 			// Sunucu kapalıyken (3 sn) ses akmaya devam etmeli.
@@ -445,14 +455,20 @@ async function sidebarKisileri(k, kanal = 'Sesli Sohbet') {
 				await bekleKosul('istemciler kopuşu fark etti', async () => !(await durumu(taha)).bagliyim, 8000);
 				const arada = await sesOlc(taha, 'zeynep', 3000);
 				assert.ok(arada.enerji > SES_VAR, 'sunucu kapalıyken P2P ses sürmeli: ' + arada.enerji.toFixed(4));
+				// Üretimdeki fren: 10 saniyede 1 giriş, kova 1 → üç kişi 10'ar saniye arayla döner.
+				Object.assign(sunucuOrtami, { GIRIS_ARALIK_MS: '10000', GIRIS_KOVA: '1' });
 				await sunucuBaslat();
 			} else {
 				await sunucuyuYenidenBaslat();
 			}
+			const t0 = Date.now();
 			for (const k of [taha, zeynep, mert]) {
-				await bekleKosul(`${k.ad} sunucuya geri döndü`, async () => (await durumu(k)).bagliyim, 40000);
+				await bekleKosul(`${k.ad} sunucuya geri döndü`, async () => (await durumu(k)).bagliyim, 45000);
 			}
 			await bekleKosul('kanalda yine 3 kişi', async () => (await sidebarKisileri(taha)).length === 3, 30000);
+			console.log(`     üçü de ${((Date.now() - t0) / 1000).toFixed(1)} sn içinde döndü`);
+			// Sırasını bekleyenin sesi bu arada kesilmemeli (P2P).
+			await duyuyor(zeynep, 'mert', 'sırasını beklerken P2P ses');
 			for (const k of [taha, zeynep, mert]) assert.equal(await k.sayfa.isVisible('#giris-ekrani'), false, `${k.ad} giriş ekranına atılmamalı`);
 			await baglantilarHazir(taha, ['zeynep', 'mert']);
 			await baglantilarHazir(zeynep, ['taha', 'mert']);
@@ -500,11 +516,18 @@ async function sidebarKisileri(k, kanal = 'Sesli Sohbet') {
 			const o = await duyuyor(ayse, 'bora');
 			assert.equal(o.tip, 'TURN', 'zorla TURN: bağlantı relay üzerinden olmalı');
 			await duyuyor(bora, 'ayse');
+			await bekleKosul('relay bağlantısı ortadaki kartta turuncu', () =>
+				ayse.sayfa.evaluate(() => {
+					const e = document.querySelector('#ses-kisiler .ses-kisi[data-ad="bora"] .ses-istatistik');
+					return !!e && /TURN/.test(e.textContent) && e.classList.contains('turn') && getComputedStyle(e).color === 'rgb(245, 151, 59)';
+				}),
+			);
 			if (yenidenBaslatilabilir()) {
 				// coturn da yeniden başlar (yeni sır): eski aktarım ölür, taze şifreyle kurtarılmalı.
 				const oncekiOturum = (await durumu(ayse)).esler.bora.oturum;
 				const t0 = Date.now();
-				await sunucuyuYenidenBaslat();
+				// Hızlı frene dön: burada ölçülen istemcinin kurtarma hızı (beş kişinin sırayla girmesi değil).
+				await sunucuyuYenidenBaslat({ GIRIS_ARALIK_MS: '1000' });
 				await bekleKosul('ayse geri döndü', async () => (await durumu(ayse)).bagliyim, 40000);
 				const o2 = await sesGelenekadar(ayse, 'bora');
 				console.log(`     TURN yeniden başladıktan ${((Date.now() - t0) / 1000).toFixed(1)} sn sonra ses yeniden akıyor (oturum ${o2.oturum === oncekiOturum ? 'aynı: ICE yenilendi' : 'yeni'})`);

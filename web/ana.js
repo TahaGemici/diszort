@@ -63,7 +63,10 @@ const SIMGE_KULAKLIK =
 	'<path d="M3.5 17v-4.5a8.5 8.5 0 0 1 17 0V17"/><path d="M20.5 15.5V17a2.5 2.5 0 0 1-2.5 2.5h-1v-6h1a2.5 2.5 0 0 1 2.5 2z"/>' +
 	'<path d="M3.5 15.5V17A2.5 2.5 0 0 0 6 19.5h1v-6H6a2.5 2.5 0 0 0-2.5 2z"/>';
 const SIMGELER = {
-	logo: '<path class="dolu" d="M4 9.2h3.6L12.3 5v14l-4.7-4.2H4z"/><path d="M15.6 8.8a4.6 4.6 0 0 1 0 6.4"/><path d="M18.5 6a8.6 8.6 0 0 1 0 12"/>',
+	// Diszort: Discord'a benzeyen oyun kolu yüzü (kendi çizimimiz) ve üstünde kırmızı çarpı. Renkleri
+	// kendinden (simgelerin currentColor çizgisi kullanılmaz).
+	diszort:
+		'<rect width="24" height="24" rx="6.5" fill="#5865f2" stroke="none"/><g transform="translate(12 12.3) scale(0.84) translate(-12 -12)"><path fill="#fff" stroke="none" fill-rule="evenodd" d="M6.6 4.9C9.6 5.9 14.4 5.9 17.4 4.9C19.4 5.6 20.6 7.2 21.2 9.6C22 12.6 21.9 15.4 21.2 17.3C20 18.4 18.6 19.1 17.3 19.4L16.3 17.9C13.5 18.6 10.5 18.6 7.7 17.9L6.7 19.4C5.4 19.1 4 18.4 2.8 17.3C2.1 15.4 2 12.6 2.8 9.6C3.4 7.2 4.6 5.6 6.6 4.9ZM7.35 12.5a1.65 1.85 0 1 0 3.3 0a1.65 1.85 0 1 0 -3.3 0ZM13.35 12.5a1.65 1.85 0 1 0 3.3 0a1.65 1.85 0 1 0 -3.3 0Z"/></g><path d="M5.6 5.6 18.4 18.4M18.4 5.6 5.6 18.4" fill="none" stroke="#5865f2" stroke-width="3" stroke-linecap="round"/><path d="M5.6 5.6 18.4 18.4M18.4 5.6 5.6 18.4" fill="none" stroke="#f23f43" stroke-width="1.75" stroke-linecap="round"/>',
 	mik: '<rect x="9" y="3" width="6" height="11.5" rx="3"/><path d="M5.5 11.5a6.5 6.5 0 0 0 13 0"/><path d="M12 18v3"/>',
 	'mik-kapali':
 		'<path d="M15 10.5V6a3 3 0 0 0-5.6-1.5"/><path d="M9 9v2.5a3 3 0 0 0 4.4 2.6"/><path d="M5.5 11.5a6.5 6.5 0 0 0 10.6 5"/>' +
@@ -420,6 +423,8 @@ function mesaj(m) {
 
 let sunucuSurumu = '';
 let turnNesli = '';
+let girisAraligi = 10000; // sunucunun giriş freni (hazir'den)
+let girisKovasi = 1;
 // Sunucu yeni sürüme geçti (yeniden bağlanınca 'hazir.surum' değişti): eski arayüz yeni sunucuyla
 // konuşmasın diye sayfayı yenile. Sesli kanal ve yazılmakta olan mesaj yenilemeden sonra geri gelir.
 function surumYenile() {
@@ -452,6 +457,8 @@ function oturumHazir(m) {
 	// beklemeden taze şifreyle yenile. Doğrudan (P2P) bağlantılara dokunulmaz.
 	const turnYenilendi = !!turnNesli && !!m.turnNesli && m.turnNesli !== turnNesli;
 	if (m.turnNesli) turnNesli = m.turnNesli;
+	if (Number(m.girisAralikMs) >= 0) girisAraligi = Number(m.girisAralikMs);
+	if (Number(m.girisKova) >= 1) girisKovasi = Number(m.girisKova);
 	bagliyim = true;
 	oturumVardi = true;
 	durduruldu = false;
@@ -766,7 +773,7 @@ function uyeleriCiz() {
 function baslikGuncelle() {
 	let toplam = 0;
 	for (const n of okunmamis.values()) toplam += n;
-	document.title = (toplam ? `(${toplam}) ` : '') + 'Ses Kanalı';
+	document.title = (toplam ? `(${toplam}) ` : '') + 'Diszort';
 }
 
 // ---------------------------------------------------------------- giriş istekleri (kapıyı çalanlar)
@@ -2093,13 +2100,18 @@ function kurtarmaDurdur() {
 	clearInterval(kurtarmaZamanlayici);
 	kurtarmaZamanlayici = null;
 }
+// Sunucu yeniden başladıktan sonra listede olmayan eş ne kadar beklenir: giriş freni herkesi sırayla
+// içeri alır (varsayılan 10 saniyede 1), son kişi (kişi sayısı × aralık) sonra dönebilir. Bağlantısı
+// sağlam olan bu sürede kapatılmaz (P2P ses sürüyor); bağlantısı ölmüş olan 25 sn sonra kapatılır.
+const donusBeklemesi = () => Math.max(25000, (girisAraligi / Math.max(1, girisKovasi)) * (esler.size + 1) + 15000);
 function kurtarmaTuru() {
 	if (!sesKanal) return;
 	const simdi = Date.now();
 	for (const es of [...esler.values()]) {
-		// Sunucu yeniden başladıktan sonra listede yoktu ve geri dönmedi: kapat.
 		if (es.bekleniyor) {
-			if (simdi - es.bekleniyor > 25000) {
+			const gecen = simdi - es.bekleniyor;
+			const olu = !es.pc || es.pc.connectionState === 'failed' || es.pc.connectionState === 'closed';
+			if (gecen > donusBeklemesi() || (olu && gecen > 25000)) {
 				esKapat(es.ad);
 				sesKartiOzetCiz();
 			}
@@ -2714,7 +2726,8 @@ async function istatistikTuru() {
 		if (sinif === 'kotu') ozet.kotu = true;
 		else if (sinif === 'orta') ozet.orta = true;
 		if (!parcalar.length) continue;
-		esIstatistikYaz(es, parcalar.join(' · '), sinif);
+		// Renk: TURN (relay) üzerinden bağlananlar turuncu; ciddi sorun (kırmızı) her zaman öne geçer.
+		esIstatistikYaz(es, parcalar.join(' · '), sinif !== 'kotu' && es.sonTip === 'TURN' ? 'turn' : sinif);
 		ayrinti.push('titreşim ' + (es.jitter != null ? es.jitter + ' ms' : '?'), 'gönderim tavanı ' + gonderimHizi() + ' kbps');
 		es.istatistik.title = parcalar.concat(ayrinti.filter((x) => !parcalar.includes(x))).join(' · ') + ' (Opus VBR: ağ izin verdiği kadarını kullanır)';
 	}
