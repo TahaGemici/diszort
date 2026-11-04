@@ -1,5 +1,6 @@
-# Ses Kanalı: main'e her push'ta Docker imajı derlenir, kur.sh ile uçtan uca denenir,
-# ghcr.io'ya (v1, v2, ... ve latest) yüklenir ve kur.sh GitHub sürümü olarak yayınlanır.
+# Ses Kanalı: main'e her push'ta Docker imajı derlenir, kur.sh ile uçtan uca denenir (sunucu
+# denemeleri + jsdom arayüz denemesi + gerçek Chromium'la WebRTC/ses denemesi), ghcr.io'ya
+# (v1, v2, ... ve latest) yüklenir ve kur.sh GitHub sürümü olarak yayınlanır.
 #
 # Sunucuda kurmak, başlatmak ve güncellemek (tek komut, son sürümü çeker):
 #   curl -fsSL https://github.com/KULLANICI/DEPO/releases/latest/download/kur.sh | sudo sh
@@ -24,6 +25,11 @@ env:
   GIRIS_ARALIK_MS: '500'
   # Sesli kanal doluluk denemesi 10 kişi + 1 fazla ister; beyaz liste sınırı buna izin vermeli.
   MAX_KULLANICI: '15'
+  # Kopan kişinin sesli kanal yerinin askıda kalma süresi: kısa ki dene.js süre dolumunu da denesin.
+  SES_ASKI_MS: '3000'
+  # Gerçek tarayıcı denemesi (test/tarayici.js) için.
+  PLAYWRIGHT_SURUM: '1.63.0'
+  JSDOM_SURUM: '30.1.3'
 
 defaults:
   run:
@@ -45,18 +51,30 @@ jobs:
           node --check sunucu/veritabani.js
           node --check web/ana.js
           node --check test/dene.js
+          node --check test/arayuz.js
+          node --check test/tarayici.js
           sh -n kurulum/kur.sh
           docker compose -f docker-compose.yml config --quiet
 
-      - name: Deneme bağımlılığı (test/dene.js için ws)
-        run: npm install --no-audit --no-fund
+      - name: Deneme bağımlılıkları (ws, jsdom, Playwright + Chromium)
+        run: |
+          npm install --no-audit --no-fund
+          npm install --no-save --no-audit --no-fund "jsdom@$JSDOM_SURUM" "playwright@$PLAYWRIGHT_SURUM"
+          npx playwright install --with-deps chromium
+
+      - name: Arayüz (jsdom)
+        run: node test/arayuz.js
 
       - name: İmajı derle
         run: docker build --build-arg SURUM="$SURUM" -t "ses-kanali:$SURUM" .
 
       - name: kur.sh ile kur (yerel imaj)
         run: |
-          sudo sh -c "IMAJ=ses-kanali:$SURUM ILK_ANAHTAR=$ILK_ANAHTAR MAX_KULLANICI=$MAX_KULLANICI GIRIS_ARALIK_MS=$GIRIS_ARALIK_MS sh kurulum/kur.sh" | tee kur.log
+          # Chromium mikrofon izni varken 127.0.0.1'deki STUN/TURN'ü kullanmıyor: makinenin IP'si verilir.
+          # Bu IP 10.x olduğu için coturn'ün iç ağ yasağından yalnızca o muaf tutulur (relay denemesi).
+          IP=$(hostname -I | awk '{print $1}')
+          echo "TURN adresi: $IP"
+          sudo sh -c "IMAJ=ses-kanali:$SURUM ILK_ANAHTAR=$ILK_ANAHTAR MAX_KULLANICI=$MAX_KULLANICI GIRIS_ARALIK_MS=$GIRIS_ARALIK_MS SES_ASKI_MS=$SES_ASKI_MS TURN_ADRESI=$IP TURN_IZINLI_IP=$IP sh kurulum/kur.sh" | tee kur.log
           grep -q 'Ayar dosyası oluşturuldu' kur.log
           grep -q 'Docker konteynerinde çalışıyor' kur.log
 
@@ -67,6 +85,13 @@ jobs:
           # Kök olmayan kullanıcı (imaj: uid 1000) ile çalışmalı
           grep -Eq '^ *[0-9]+ +1000 +node$' ps.log
           grep -Eq '^ *[0-9]+ +1000 +turnserver$' ps.log
+
+      - name: Gerçek tarayıcı (Chromium) ile sesli kanal
+        env:
+          # Sunucu yeniden başlarken herkesin kendiliğinden geri dönmesi de denenir.
+          YENIDEN_BASLAT: sudo docker restart ses-kanali
+          TARAYICI_ZORUNLU: '1'
+        run: node test/tarayici.js http://127.0.0.1:8080
 
       - name: Yazılı kanallar ve dosyalar yeniden başlatmada kalıyor
         run: |
@@ -102,7 +127,7 @@ jobs:
       - name: Yeniden kurulumda .env kalır
         run: |
           echo 'MAX_KISI=7' | sudo tee -a /var/lib/chat/.env
-          sudo sh -c "IMAJ=ses-kanali:$SURUM ILK_ANAHTAR=$ILK_ANAHTAR MAX_KULLANICI=$MAX_KULLANICI GIRIS_ARALIK_MS=$GIRIS_ARALIK_MS sh kurulum/kur.sh" | tee kur2.log
+          sudo sh -c "IMAJ=ses-kanali:$SURUM ILK_ANAHTAR=$ILK_ANAHTAR MAX_KULLANICI=$MAX_KULLANICI GIRIS_ARALIK_MS=$GIRIS_ARALIK_MS SES_ASKI_MS=$SES_ASKI_MS sh kurulum/kur.sh" | tee kur2.log
           if grep -q 'Ayar dosyası oluşturuldu' kur2.log; then echo ".env yeniden oluşturuldu"; exit 1; fi
           sudo grep -q '^MAX_KISI=7' /var/lib/chat/.env
           MAX_KISI=7 node test/dene.js http://127.0.0.1:8080

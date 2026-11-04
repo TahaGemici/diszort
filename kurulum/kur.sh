@@ -107,9 +107,14 @@ MAX_KISI=10
 # içeridekilerin onayıyla eklenir. İçeridekiler arayüzden (− / +) çalışırken değiştirebilir.
 MAX_KULLANICI=10
 
-# Giriş freni (ms): TÜM giriş denemeleri sunucu genelinde bu aralıkla sınırlıdır.
-# 10000 = 10 saniyede 1 deneme (üretimde böyle kalmalı). Yalnızca otomatik testler küçültür.
+# Giriş freni: TÜM giriş denemeleri sunucu genelinde tek bir jeton kovasından düşer; kova her
+# GIRIS_ARALIK_MS'de bir dolar (10000 = uzun vadede 10 saniyede 1), en fazla GIRIS_KOVA birikir
+# (sunucu yeniden başlayınca herkes aynı anda geri girebilsin). Yalnızca otomatik testler küçültür.
 # GIRIS_ARALIK_MS=10000
+# GIRIS_KOVA=10
+
+# Sesli kanaldayken bağlantısı kopanın yeri bu kadar ms askıda kalır (geri gelirse ses kesilmez).
+# SES_ASKI_MS=20000
 
 # Beyaz liste boşken ilk anahtarı alacak kişinin adı (anahtar: /var/lib/chat/ilk-anahtar.txt).
 YONETICI_ADI=taha
@@ -117,7 +122,8 @@ YONETICI_ADI=taha
 # Yazılı kanallarda paylaşılabilecek en büyük dosya (MB). Dosyalar /var/lib/chat/yuklemeler'de tutulur.
 DOSYA_MB=25
 
-# STUN/TURN portu (UDP) ve TURN aktarım portları (UDP). Güvenlik duvarında açık olmalı.
+# STUN/TURN portu (UDP + TCP yedeği) ve TURN aktarım portları (UDP). Güvenlik duvarında açık olmalı:
+# UDP 3478, TCP 3478 ve UDP 49152-61000.
 TURN_PORT=3478
 RELAY_MIN_PORT=49152
 RELAY_MAX_PORT=61000
@@ -137,7 +143,8 @@ AYARLAR
 		echo "Ayarlar korunuyor: $VERI/.env"
 	fi
 	# Test/kurulum kolaylığı: bu değişkenler verilmişse .env'e yaz (CI uçtan uca denemede kullanır).
-	for cift in "ILK_ANAHTAR=${ILK_ANAHTAR:-}" "MAX_KULLANICI=${MAX_KULLANICI:-}" "GIRIS_ARALIK_MS=${GIRIS_ARALIK_MS:-}"; do
+	for cift in "ILK_ANAHTAR=${ILK_ANAHTAR:-}" "MAX_KULLANICI=${MAX_KULLANICI:-}" "GIRIS_ARALIK_MS=${GIRIS_ARALIK_MS:-}" \
+		"GIRIS_KOVA=${GIRIS_KOVA:-}" "SES_ASKI_MS=${SES_ASKI_MS:-}" "TURN_ADRESI=${TURN_ADRESI:-}" "TURN_IZINLI_IP=${TURN_IZINLI_IP:-}"; do
 		ad=${cift%%=*}
 		deger=${cift#*=}
 		[ -n "$deger" ] || continue

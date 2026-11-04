@@ -4,6 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="color-scheme" content="dark">
+<meta name="theme-color" content="#1e1f22">
 <title>Ses Kanalı</title>
 <link rel="icon" href="/favicon.svg" type="image/svg+xml">
 <link rel="icon" href="/favicon.ico" sizes="48x48">
@@ -12,97 +13,137 @@
 </head>
 <body>
 
-<!-- Giriş: yalnızca ad. Hesap yok. -->
+<!-- Giriş: yalnızca ad. Anahtarı olan kendiliğinden girer. -->
 <div id="giris-ekrani" class="perde">
 	<form id="giris" class="giris-kart">
-		<h1>🔊 Ses Kanalı</h1>
+		<div class="giris-logo" aria-hidden="true"><span data-ikon="logo"></span></div>
+		<h1>Ses Kanalı</h1>
 		<label for="ad">Adın</label>
-		<input id="ad" maxlength="32" autocomplete="nickname" required>
-		<button id="gir" type="submit">Sunucuya gir</button>
+		<input id="ad" maxlength="32" autocomplete="nickname" spellcheck="false" required>
+		<button id="gir" class="birincil" type="submit">Sunucuya gir</button>
+		<button id="burada-devam" class="birincil" type="button" hidden>Bu sekmede devam et</button>
 		<button id="giris-iptal" class="ikincil" type="button" hidden>İsteği geri çek</button>
 		<p id="giris-durum" class="durum" role="status" aria-live="polite"></p>
 		<noscript><p>Bu sayfa JavaScript ister.</p></noscript>
 	</form>
 </div>
 
-<!-- Sunucu: kanal listesi + sohbet + üyeler -->
+<!-- Sunucu: kanal listesi · sohbet · üyeler -->
 <div id="uygulama" hidden>
-	<aside id="kanal-panosu">
+	<aside id="kanal-panosu" aria-label="Kanallar">
 		<header class="sunucu-baslik">
+			<span class="sunucu-logo" data-ikon="logo"></span>
 			<b>Ses Kanalı</b>
 			<span id="cevrimici-sayac" class="sayac" title="Çevrimiçi kişi">0</span>
-			<button id="kenar-kapat" class="ikon-dugme mobil" type="button" aria-label="Kanalları kapat">✕</button>
+			<button id="kenar-kapat" class="ikon-dugme mobil" type="button" aria-label="Kanalları kapat" data-ikon="x"></button>
 		</header>
 		<div class="kanal-kaydir">
 			<div class="bolum-baslik">
 				<span>Yazılı Kanallar</span>
-				<button id="yazi-ekle" class="bolum-ekle" type="button" title="Yazılı kanal ekle" aria-label="Yazılı kanal ekle">＋</button>
+				<button id="yazi-ekle" class="bolum-ekle" type="button" title="Yazılı kanal ekle" aria-label="Yazılı kanal ekle" data-ikon="arti"></button>
 			</div>
 			<div id="yazi-kanallari" class="kanal-listesi"></div>
 			<div class="bolum-baslik">
 				<span>Sesli Kanallar</span>
-				<button id="ses-ekle" class="bolum-ekle" type="button" title="Sesli kanal ekle" aria-label="Sesli kanal ekle">＋</button>
+				<button id="ses-ekle" class="bolum-ekle" type="button" title="Sesli kanal ekle" aria-label="Sesli kanal ekle" data-ikon="arti"></button>
 			</div>
 			<div id="ses-kanallari" class="kanal-listesi"></div>
 		</div>
+
+		<!-- Sesli kanaldayken: bağlantı durumu + ayrıl -->
+		<div id="ses-baglanti" class="ses-baglanti" hidden>
+			<span id="ses-sinyal" class="sinyal" data-ikon="sinyal"></span>
+			<span class="ses-baglanti-bilgi">
+				<b id="ses-baglanti-durum">Ses bağlı</b>
+				<small id="ses-baglanti-kanal"></small>
+			</span>
+			<button id="ben-kapat" class="ikon-dugme tehlike" type="button" title="Sesli kanaldan ayrıl" aria-label="Sesli kanaldan ayrıl" data-ikon="ayril"></button>
+		</div>
+
 		<div class="ben-kart">
 			<span id="ben-avatar" class="avatar kucuk-avatar">?</span>
 			<span class="ben-bilgi">
 				<b id="ben-ad">—</b>
-				<small id="ben-alt">bağlı</small>
+				<small id="ben-alt">çevrimiçi</small>
 			</span>
-			<button id="ben-mikrofon" class="ikon-dugme" type="button" title="Mikrofonu kapat/aç" aria-label="Mikrofonu kapat veya aç" aria-pressed="false">🎤</button>
-			<button id="ben-kapat" class="ikon-dugme tehlike" type="button" title="Sesli kanaldan ayrıl" aria-label="Sesli kanaldan ayrıl" hidden>📞</button>
+			<button id="ben-mikrofon" class="ikon-dugme" type="button" aria-pressed="false" data-ikon="mik"></button>
+			<button id="ben-sagir" class="ikon-dugme" type="button" aria-pressed="false" data-ikon="kulaklik"></button>
+			<button id="ben-ayarlar" class="ikon-dugme" type="button" title="Ses ayarları" aria-label="Ses ayarları" data-ikon="ayar"></button>
 		</div>
 	</aside>
 
 	<main id="ana">
 		<header id="kanal-ust">
-			<button id="menu" class="ikon-dugme mobil" type="button" aria-label="Kanalları göster">☰</button>
-			<b id="kanal-ad">#genel</b>
-			<span id="baglanti-durumu" class="etiket" hidden></span>
+			<button id="menu" class="ikon-dugme mobil" type="button" aria-label="Kanalları göster" data-ikon="menu"></button>
+			<span class="kanal-ust-isaret" data-ikon="kare"></span>
+			<b id="kanal-ad">—</b>
+			<span id="baglanti-durumu" class="etiket bag" hidden></span>
+			<button id="uye-ac" class="ikon-dugme" type="button" title="Üyeler" aria-label="Üyeleri göster" aria-pressed="true" data-ikon="kisiler"></button>
 		</header>
 
 		<div id="mesaj-alani">
 			<button id="daha-eski" type="button" class="daha-eski" hidden>Daha eski mesajları yükle</button>
 			<div id="mesajlar" aria-live="polite"></div>
 		</div>
+		<button id="yeni-mesaj" class="yeni-mesaj" type="button" hidden>Yeni mesajlar</button>
 
-		<div id="ses-karti" hidden>
-			<div class="bolum-baslik">Sesli: <b id="ses-kart-kanal"></b></div>
-			<button id="ses-ac" type="button" hidden>🔈 Sesi başlat (dokun)</button>
-			<div id="ses-kisiler"><div id="ben-ses-satir" class="ses-kisi"></div></div>
-		</div>
+		<!-- Sesli kanal kartı: içindeyken sohbetin altında -->
+		<section id="ses-karti" aria-label="Sesli kanal" hidden>
+			<header class="ses-kart-ust">
+				<span class="ses-kart-isaret" data-ikon="hoparlor"></span>
+				<b id="ses-kart-kanal"></b>
+				<span id="ses-kart-ozet" class="ses-kart-ozet"></span>
+				<button id="ses-ac" class="ses-ac" type="button" hidden>Sesi başlat (dokun)</button>
+				<span class="ses-kart-denetim">
+					<button id="kart-mikrofon" class="ikon-dugme" type="button" aria-pressed="false" data-ikon="mik"></button>
+					<button id="kart-sagir" class="ikon-dugme" type="button" aria-pressed="false" data-ikon="kulaklik"></button>
+					<button id="kart-ayril" class="ikon-dugme tehlike" type="button" title="Sesli kanaldan ayrıl" aria-label="Sesli kanaldan ayrıl" data-ikon="ayril"></button>
+					<button id="ses-kucult" class="ikon-dugme" type="button" aria-expanded="true" aria-label="Sesli kanal kartını küçült" title="Küçült / büyüt" data-ikon="asagi"></button>
+				</span>
+			</header>
+			<div id="ses-uyari" class="ses-uyari" hidden></div>
+			<div id="ses-kisiler"><div id="ben-ses-satir" class="ses-kisi ben"></div></div>
+		</section>
 
 		<div id="yaziyor" class="yaziyor"></div>
 
 		<form id="yazma">
-			<button id="dosya-sec" class="ikon-dugme" type="button" title="Dosya ekle" aria-label="Dosya ekle">＋</button>
-			<input id="dosya" type="file" hidden>
-			<textarea id="metin" rows="1" maxlength="2000" placeholder="Mesaj yaz… (Enter gönderir, Shift+Enter alt satır)" aria-label="Mesaj"></textarea>
-			<button id="gonder" type="submit" class="gonder" title="Gönder" aria-label="Gönder">➤</button>
+			<div class="yazma-kutu">
+				<button id="dosya-sec" class="ikon-dugme" type="button" title="Dosya ekle" aria-label="Dosya ekle" data-ikon="ekle"></button>
+				<input id="dosya" type="file" hidden>
+				<textarea id="metin" rows="1" maxlength="2000" placeholder="Mesaj yaz…" aria-label="Mesaj"></textarea>
+				<button id="gonder" class="ikon-dugme gonder" type="submit" title="Gönder" aria-label="Gönder" data-ikon="gonder"></button>
+			</div>
 		</form>
 		<div id="yukleme" class="yukleme" hidden>
 			<div class="yukleme-cubuk"><div id="yukleme-dolgu"></div></div>
 			<span id="yukleme-yazi"></span>
 		</div>
+		<div id="birak" class="birak" hidden><div><span data-ikon="ekle"></span><b>Dosyayı bırak</b><small id="birak-kanal"></small></div></div>
 	</main>
 
-	<aside id="uye-panosu">
-		<div class="bolum-baslik">Çevrimiçi — <span id="uye-sayi">0</span></div>
-		<div id="uye-listesi"></div>
+	<aside id="uye-panosu" aria-label="Üyeler">
+		<header class="uye-ust">
+			<b>Üyeler</b>
+			<button id="uye-kapat" class="ikon-dugme mobil" type="button" aria-label="Üyeleri kapat" data-ikon="x"></button>
+		</header>
+		<div class="uye-kaydir">
+			<div class="bolum-baslik"><span>Çevrimiçi — <span id="uye-sayi">0</span></span></div>
+			<div id="uye-listesi"></div>
+		</div>
 		<div class="bolum-bilgi limit-satir">
 			<span id="beyaz-liste"></span>
 			<button id="limit-az" class="limit-dugme" type="button" title="Kişi limitini azalt" aria-label="Kişi limitini azalt">−</button>
 			<button id="limit-cok" class="limit-dugme" type="button" title="Kişi limitini arttır" aria-label="Kişi limitini arttır">+</button>
 		</div>
 	</aside>
+	<div id="ortu" class="ortu" hidden></div>
 </div>
 
 <!-- İçeri girmek isteyenler: içeridekiler kabul eder ya da reddeder -->
 <div id="istekler" class="istekler" aria-live="polite"></div>
 
-<!-- Kanal ekleme / silme onayı için küçük pencere -->
+<!-- Kanal ekleme / silme / atma onayı -->
 <div id="pencere" class="pencere" hidden>
 	<form id="pencere-form" class="pencere-kart" role="dialog" aria-modal="true" aria-labelledby="pencere-baslik">
 		<h2 id="pencere-baslik">Kanal ekle</h2>
@@ -115,6 +156,54 @@
 	</form>
 </div>
 
-<p id="durum" class="durum tost" role="status" aria-live="polite"></p>
+<!-- Ses ayarları -->
+<div id="ayarlar" class="pencere" hidden>
+	<div class="pencere-kart ayar-kart" role="dialog" aria-modal="true" aria-labelledby="ayarlar-baslik">
+		<header class="ayar-ust">
+			<h2 id="ayarlar-baslik">Ses ayarları</h2>
+			<button id="ayarlar-kapat" class="ikon-dugme" type="button" aria-label="Kapat" data-ikon="x"></button>
+		</header>
+		<section class="ayar-bolum">
+			<h3>Mikrofon</h3>
+			<label class="alan-adi" for="ayar-mik">Giriş aygıtı</label>
+			<select id="ayar-mik"></select>
+			<label class="alan-adi" for="ayar-mik-seviye">Mikrofon seviyesi <output id="ayar-mik-seviye-deger" for="ayar-mik-seviye">%100</output></label>
+			<input id="ayar-mik-seviye" type="range" min="0" max="200" step="5" value="100">
+			<div class="olcer-satir">
+				<div class="olcer" aria-hidden="true"><div id="ayar-olcer-dolgu"></div></div>
+				<button id="ayar-mik-dene" class="ikincil kucuk" type="button">Mikrofonu dene</button>
+			</div>
+			<label class="anahtar"><input id="ayar-gurultu" type="checkbox"><span>Gürültü bastırma</span></label>
+			<label class="anahtar"><input id="ayar-yanki" type="checkbox"><span>Yankı engelleme</span></label>
+			<label class="anahtar"><input id="ayar-kazanc" type="checkbox"><span>Otomatik ses düzeyi (AGC)</span></label>
+		</section>
+		<section class="ayar-bolum">
+			<h3>Hoparlör</h3>
+			<label class="alan-adi" for="ayar-cikis">Çıkış aygıtı</label>
+			<select id="ayar-cikis"></select>
+		</section>
+		<section class="ayar-bolum">
+			<h3>Kalite</h3>
+			<label class="alan-adi" for="ayar-kalite">Gönderdiğin ses</label>
+			<select id="ayar-kalite">
+				<option value="48">Standart · 48 kbps</option>
+				<option value="96">Yüksek · 96 kbps</option>
+				<option value="128">En yüksek · 128 kbps (müzik)</option>
+			</select>
+			<label class="anahtar"><input id="ayar-sesler" type="checkbox"><span>Giriş / çıkış sesleri</span></label>
+		</section>
+		<p class="ayar-not">Kulaklık kullanıyorsan yankı engellemeyi kapatmak sesi biraz daha doğal yapar. Kalabalık kanallarda gönderilen kalite kendiliğinden düşürülür. Kısayollar: Ctrl+Shift+M mikrofon, Ctrl+Shift+D sağırlaştır.</p>
+	</div>
+</div>
+
+<!-- Resim büyüteci -->
+<div id="buyutec" class="buyutec" hidden>
+	<img id="buyutec-resim" alt="">
+</div>
+
+<!-- Gelen sesler. Görünmez ama ekranda çizilir: iOS Safari display:none bir <audio>'yu çalmıyor. -->
+<div id="ses-akislari" class="ses-akislari" aria-hidden="true"></div>
+
+<p id="durum" class="tost" role="status" aria-live="polite"></p>
 </body>
 </html>

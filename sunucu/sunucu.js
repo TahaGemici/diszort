@@ -131,11 +131,21 @@ const YONETICI_ADI = ayar('YONETICI_ADI', 'taha'); // beyaz liste boşken ilk an
 const ANAHTAR_BAYT = 64;
 const ANAHTAR_UZUNLUK = ANAHTAR_BAYT * 2;
 const ANAHTAR_KALIBI = /^[0-9a-f]{128}$/;
-// Giriş freni: TÜM giriş denemeleri sunucu genelinde (tüm bağlantılar, tüm kişiler) bu aralıkla
-// sınırlıdır — 10 saniyede 1. İlk deneme, yeni bağlantı, geçerli anahtar ayrımı YOKTUR.
-// Yalnızca sunucu tarafında uygulanır; istemci kodu değiştirilerek aşılamaz.
+// Giriş freni: TÜM giriş denemeleri sunucu genelinde (tüm bağlantılar, tüm kişiler) tek bir
+// jeton kovasından düşer: kova her GIRIS_ARALIK_MS'de 1 dolar (uzun vadede 10 saniyede 1 deneme),
+// en fazla GIRIS_KOVA jeton birikir. İlk deneme, yeni bağlantı, geçerli anahtar ayrımı YOKTUR.
+// Kova neden var: sunucu yeniden başlayınca (her güncellemede) içerideki herkes aynı anda geri
+// bağlanır; tek jetonlu frende yalnızca biri girebiliyor, diğerleri giriş ekranına atılıyordu.
+// Yalnızca sunucu tarafında uygulanır; istemci kodu değiştirilerek aşılamaz. GIRIS_KOVA=1 eski
+// katı davranıştır (art arda iki deneme arasında en az GIRIS_ARALIK_MS).
 const GIRIS_ARALIK_MS = sayiAyar('GIRIS_ARALIK_MS', 10000, 0, 600000);
-let sonGirisDenemesi = 0; // sunucu geneli: son kabul edilen giriş denemesinin zamanı
+const GIRIS_KOVA = sayiAyar('GIRIS_KOVA', 10, 1, 100);
+let girisJetonu = GIRIS_KOVA; // açılışta kova dolu: yeniden başlatmada herkes hemen geri girer
+let girisDolumZamani = Date.now();
+// Sesli kanaldayken bağlantısı beklenmedik şekilde kopan kişinin yeri bu süre kadar "askıda" tutulur.
+// Aynı kişi bu sürede geri bağlanıp kanala devam ederse diğerlerine çıktı/girdi denmez: P2P ses
+// sunucudan geçmediği için konuşma hiç kesilmeden sürer (ağ değişimi, sunucu güncellemesi).
+const SES_ASKI_MS = sayiAyar('SES_ASKI_MS', 20000, 0, 300000);
 const ILK_ANAHTAR = ayar('ILK_ANAHTAR'); // test/kurulum için sabit ilk anahtar (üretimde boş bırak)
 const SITE_ADRESI = ayar('SITE_ADRESI', 'https://chat.tahagemici.com'); // ilk anahtar bağlantısında kullanılır
 // Ses teşhisi: istemciler 10 saniyede bir kendi ses durumlarını gönderir, sunucu YALNIZCA günlüğe
@@ -152,6 +162,12 @@ const DIS_IP_ELLE = !!ayar('DIS_IP'); // .env'de sabitlenmişse meta veriye doku
 let disIp = ayar('DIS_IP') || '';
 const IC_IP = ayar('IC_IP') || icIpBul();
 let turnAdresi = ayar('TURN_ADRESI') || ''; // tarayıcıya verilen STUN/TURN adresi (boşsa sayfanın adresi)
+// Yasaklı iç ağ aralıklarından yine de aktarım yapılabilecek adresler (virgülle; "a.b.c.d" ya da
+// "a.b.c.d-e.f.g.h"). Yalnızca özel kurulumlar ve otomatik denemeler için (ör. CI makinesinin 10.x IP'si).
+const TURN_IZINLI_IP = ayar('TURN_IZINLI_IP')
+	.split(',')
+	.map((x) => x.trim())
+	.filter(Boolean);
 const SURUM = surumBul();
 const VERI_KLASORU = ayar('VERI_KLASORU') || (fs.existsSync('/veri') ? '/veri' : path.join(KOK, 'veri'));
 const YUKLEME_KLASORU = path.join(VERI_KLASORU, 'yuklemeler');
@@ -166,6 +182,12 @@ if (ILK_ANAHTAR && !ANAHTAR_KALIBI.test(ILK_ANAHTAR)) {
 for (const [ad, deger] of [['DIS_IP', disIp], ['IC_IP', IC_IP]]) {
 	if (deger && !ipv4mu(deger)) {
 		console.error(`Ayar hatası: ${ad}=${deger} bir IPv4 adresi değil (${AYAR_DOSYASI})`);
+		process.exit(1);
+	}
+}
+for (const aralik of TURN_IZINLI_IP) {
+	if (!aralik.split('-').every(ipv4mu) || aralik.split('-').length > 2) {
+		console.error(`Ayar hatası: TURN_IZINLI_IP içinde "${aralik}" bir IPv4 adresi ya da "a-b" aralığı değil (${AYAR_DOSYASI})`);
 		process.exit(1);
 	}
 }
@@ -210,6 +232,10 @@ function benzersizKimlik(ad) {
 // coturn da her açılışta yeniden başladığı için eski şifrelere gerek kalmaz; diskte saklanacak sır yoktur.
 const TURN_SIRRI = crypto.randomBytes(32).toString('hex');
 const TURN_SURESI = 24 * 60 * 60;
+// Bu açılışın TURN "nesli" (sırrın kendisi değil, rastgele bir etiket). İstemci yeniden bağlanınca
+// değiştiğini görürse coturn yeniden başlamıştır: TURN üzerinden akan bağlantıları ölmelerini
+// beklemeden taze şifreyle hemen yeniler.
+const TURN_NESLI = crypto.randomBytes(6).toString('hex');
 
 // ---------------------------------------------------------------- web dosyaları
 
@@ -292,8 +318,9 @@ function turnAyarDosyasi() {
 		// Kötüye kullanıma karşı: kullanıcı başına ve toplam aktarım sayısı, aktarım başına bant genişliği.
 		'user-quota=24',
 		'total-quota=240',
-		// Aktarım (relay) bant genişliği sınırı: 96 kbps gelen+giden toplamı için dar ve relay'li
-		// görüşmelerde ses kesilmesine yol açıyordu; ses için bol, kötüye kullanıma karşı sınırlı.
+		// Aktarım (relay) başına bant genişliği sınırı. Birimi BAYT/saniye (coturn: "bytes per second",
+		// gelen ve giden ayrı sayılır): 512000 B/s ≈ 4 Mbit/s. Ses akışı ~100 kbit/s olduğu için bol;
+		// yine de TURN'ü dosya taşımak gibi işlere kullanmayı sınırlar.
 		'max-bps=512000',
 		'stale-nonce=600',
 		'no-cli',
@@ -316,6 +343,7 @@ function turnAyarDosyasi() {
 		'denied-peer-ip=::1',
 		'denied-peer-ip=fc00::-fdff:ffff:ffff:ffff:ffff:ffff:ffff:ffff',
 		'denied-peer-ip=fe80::-febf:ffff:ffff:ffff:ffff:ffff:ffff:ffff',
+		...TURN_IZINLI_IP.map((ip) => `allowed-peer-ip=${ip}`),
 		'log-file=stdout',
 		'simple-log',
 		`pidfile=${path.join(klasor, 'turnserver.pid')}`,
@@ -389,12 +417,18 @@ async function turnHazirBekle() {
 	return turnDurumu === 'çalışıyor';
 }
 
-function iceSunuculari(req) {
+// STUN/TURN adresleri + bir günlük geçici TURN şifresi. YALNIZCA içeridekilere (beyaz listedekilere)
+// verilir: 'hazir' ve 'ses-girdi' mesajlarında, ya da jetonla /api/ice'tan. Şifre dışarıya açık olsaydı
+// herkes sunucuyu ücretsiz aktarıcı (relay) olarak kullanabilirdi.
+// Not: TURN sırrı her açılışta yeniden üretilir; istemci her bağlanışta taze şifre alır (eskiden
+// sayfanın ilk açılışında aldığı şifreyi saklıyordu → her güncellemeden sonra TURN'e ihtiyaç duyan
+// kişiler sayfayı yenileyene kadar bağlanamıyordu).
+function iceSunuculari(host) {
 	if (turnDurumu !== 'çalışıyor') return { iceServers: [] };
 	let adres = turnAdresi;
 	if (!adres) {
 		// Dış IP ayarlanmadıysa tarayıcı sayfayı hangi adresten açtıysa onu kullanır.
-		const host = String(req.headers.host || '');
+		host = String(host || '');
 		adres = host.startsWith('[') ? host.slice(0, host.indexOf(']') + 1) : host.replace(/:\d+$/, '');
 	}
 	if (adres.includes(':') && !adres.startsWith('[')) adres = `[${adres}]`;
@@ -403,39 +437,45 @@ function iceSunuculari(req) {
 	return {
 		iceServers: [
 			{ urls: [`stun:${adres}:${TURN_PORT}`] },
-			{ urls: [`turn:${adres}:${TURN_PORT}?transport=udp`], username: kullanici, credential: sifre },
+			// UDP önce; UDP'nin kapalı olduğu ağlar (bazı okul/iş/otel ağları) için aynı portta TCP yedeği.
+			{ urls: [`turn:${adres}:${TURN_PORT}?transport=udp`, `turn:${adres}:${TURN_PORT}?transport=tcp`], username: kullanici, credential: sifre },
 		],
+		gecerlilik: TURN_SURESI,
 	};
 }
 
 // ---------------------------------------------------------------- signaling + sohbet (/rtc)
 //
+// Tam liste README'de ("WebSocket protokolü"). Özetle:
 // İstemci -> sunucu:
-//   {type:'giris', ad, id}                     adı al (bir kez); 'hazir' yanıtı gelir
+//   {type:'giris', ad, id, anahtar, ses}       giriş; ses: devam edilecek sesli kanal (yeniden bağlanırken)
 //   {type:'yazi', kanal, metin}                yazılı kanala mesaj gönder
 //   {type:'gecmis', kanal, once}               eski mesajları iste (once: en eski bilinen id)
 //   {type:'yaziyor', kanal}                    "yazıyor" göstergesi
-//   {type:'ses-gir', kanal} / {type:'ses-cik'} sesli kanala gir/çık
-//   {type:'sdp', to, sdp} / {type:'ice', to, ice}   WebRTC (aynı sesli kanaldaki kişiye)
-//   {type:'sessiz', sessiz}                    mikrofon kapalı mı (diğerlerine gösterilir)
+//   {type:'ses-gir', kanal, devam} / {type:'ses-cik'}   sesli kanala gir/çık (devam: bağlantılar ayakta)
+//   {type:'sdp', to, sdp, oturum} / {type:'ice', to, ice, oturum} / {type:'yenile', to, oturum}
+//                                              WebRTC (aynı sesli kanaldaki kişiye)
+//   {type:'sessiz', sessiz, sagir}             mikrofon kapalı / sağırlaştırılmış mı
+//   {type:'ice-iste'}                          taze STUN/TURN şifresi
 //   {type:'ping'}
 // Sunucu -> istemci:
-//   {type:'hazir', ad, kanallar, kimler, max, dosyaMb, jeton}
+//   {type:'hazir', ad, kanallar, kimler, max, dosyaMb, jeton, ice}
 //   {type:'kanallar', kanallar} / {type:'kimler', kimler}
 //   {type:'yazi', kanal, mesaj} / {type:'gecmis', kanal, mesajlar, bitti}
 //   {type:'yaziyor', kanal, ad}
-//   {type:'ses-girdi', kanal, kisiler} / {type:'ses-kisi-girdi', kanal, ad} / {type:'ses-kisi-cikti', kanal, ad}
-//   {type:'sessiz', ad, sessiz}
-//   {type:'sdp', from, sdp} / {type:'ice', from, ice}
-//   {type:'hata', message} / {type:'pong'}
+//   {type:'ses-girdi', kanal, kisiler, ice, devam} / {type:'ses-kisi-girdi', kanal, ad, devam} / {type:'ses-kisi-cikti', kanal, ad}
+//   {type:'sessiz', ad, sessiz, sagir}
+//   {type:'sdp', from, sdp, oturum} / {type:'ice', from, ice, oturum} / {type:'yenile', from, oturum}
+//   {type:'oturum-devralindi', message}        aynı anahtar başka sekmede açıldı (bu sekme durur)
+//   {type:'hata', message, kod} / {type:'pong'}
 
-const sesliKanallar = new Map(); // kanal id -> Map<ad, ws>
+const sesliKanallar = new Map(); // kanal id -> Map<ad, ws>  (bağlantısı kopan kişi kısa süre askıda kalır)
 const jetonlar = new Map(); // yükleme jetonu -> ws
 const wss = new WebSocketServer({ noServer: true, maxPayload: 64 * 1024 });
 let db = null;
 
 function gonder(ws, nesne) {
-	if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(nesne));
+	if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(nesne));
 }
 function herkes(nesne, haric) {
 	for (const ws of wss.clients) if (ws !== haric && ws.ad) gonder(ws, nesne);
@@ -447,7 +487,13 @@ function kanalHerkes(kanal, nesne, haric) {
 function kanalDurumu() {
 	return kanallar.map((k) => {
 		const o = { id: k.id, ad: k.ad, tur: k.tur };
-		if (k.tur === 'ses') o.kisiler = [...(sesliKanallar.get(k.id) || new Map()).values()].map((ws) => ({ ad: ws.ad, sessiz: !!ws.sessiz }));
+		if (k.tur === 'ses') {
+			o.kisiler = [...(sesliKanallar.get(k.id) || new Map()).entries()].map(([ad, ws]) => {
+				const kisi = { ad, sessiz: !!ws.sessiz, sagir: !!ws.sagir };
+				if (ws.askida) kisi.askida = true; // bağlantısı koptu, geri dönmesi bekleniyor
+				return kisi;
+			});
+		}
 		return o;
 	});
 }
@@ -469,7 +515,9 @@ function beyazListeTazele(yayinla = true) {
 
 function kimler() {
 	const liste = [];
-	for (const ws of wss.clients) if (ws.ad) liste.push({ ad: ws.ad, sessiz: !!ws.sessiz, ses: ws.sesKanal || null });
+	for (const ws of wss.clients) {
+		if (ws.ad) liste.push({ ad: ws.ad, sessiz: !!ws.sessiz, sagir: !!ws.sagir, ses: ws.sesKanal || null });
+	}
 	return liste.sort((a, b) => a.ad.localeCompare(b.ad, 'tr'));
 }
 // Kim girdi/çıktı, hangi sesli kanalda kim var: herkese tek seferde.
@@ -483,29 +531,68 @@ function durumYayinla() {
 	}
 }
 
+// Sesli kanaldan kalıcı olarak çıkar (kendi isteğiyle, kanal değiştirince ya da askı süresi dolunca).
+function koltukBirak(kanal, ad, ws) {
+	const uyeler = sesliKanallar.get(kanal);
+	if (!uyeler || uyeler.get(ad) !== ws) return false;
+	clearTimeout(ws.askiZamani);
+	ws.askida = false;
+	uyeler.delete(ad);
+	if (!uyeler.size) sesliKanallar.delete(kanal);
+	else kanalHerkes(kanal, { type: 'ses-kisi-cikti', kanal, ad });
+	return true;
+}
+
 function sesCikar(ws) {
 	const kanal = ws.sesKanal;
 	if (!kanal) return;
 	ws.sesKanal = null;
-	const uyeler = sesliKanallar.get(kanal);
-	if (uyeler && uyeler.get(ws.ad) === ws) {
-		uyeler.delete(ws.ad);
-		if (!uyeler.size) sesliKanallar.delete(kanal);
-		else kanalHerkes(kanal, { type: 'ses-kisi-cikti', kanal, ad: ws.ad });
-		console.log(`[ses] ${kanal}: ${ws.ad} çıktı`);
-	}
+	if (ws.ad && koltukBirak(kanal, ws.ad, ws)) console.log(`[ses] ${kanal}: ${ws.ad} çıktı`);
 }
 
-// Bağlantı kapanınca adı ve sesli kanal üyeliğini bırak.
+// Bağlantısı kopan kişinin sesli kanal yeri hemen boşaltılmaz: SES_ASKI_MS boyunca askıda kalır.
+// Kişi bu sürede geri bağlanıp {type:'ses-gir', devam:true} derse yerine oturur (bkz. sesGir).
+function sesAskiyaAl(ws) {
+	const kanal = ws.sesKanal;
+	const ad = ws.ad;
+	const uyeler = kanal && sesliKanallar.get(kanal);
+	if (!uyeler || uyeler.get(ad) !== ws) return;
+	if (!SES_ASKI_MS) {
+		sesCikar(ws);
+		return;
+	}
+	ws.askida = true;
+	clearTimeout(ws.askiZamani);
+	ws.askiZamani = setTimeout(() => {
+		if (koltukBirak(kanal, ad, ws)) {
+			console.log(`[ses] ${kanal}: ${ad} geri dönmedi, çıkarıldı`);
+			durumYayinla();
+		}
+	}, SES_ASKI_MS);
+	ws.askiZamani.unref?.();
+	console.log(`[ses] ${kanal}: ${ad} bağlantısı koptu, ${Math.round(SES_ASKI_MS / 1000)} sn askıda`);
+}
+
+// Bu adın askıdaki sesli kanal yeri (varsa): { kanal, ws }.
+function askidakiKoltuk(ad) {
+	for (const [kanal, uyeler] of sesliKanallar) {
+		const ws = uyeler.get(ad);
+		if (ws && ws.askida) return { kanal, ws };
+	}
+	return null;
+}
+
+// Bağlantı kapanınca adı bırak. Sesli kanaldaysa yeri askıya alınır (ses P2P olduğu için konuşma
+// bu sürede kesilmeyebilir); kendi isteğiyle çıkan zaten 'ses-cik' göndermiştir.
 function ayril(ws) {
-	const vardi = ws.ad || ws.sesKanal;
-	sesCikar(ws);
-	if (!ws.ad) return;
-	const kimlik = ws.kimlik;
+	if (!ws.ad) {
+		ws.sesKanal = null;
+		return;
+	}
+	if (ws.sesKanal) sesAskiyaAl(ws);
 	ws.ad = null;
 	if (ws.jeton) jetonlar.delete(ws.jeton);
-	if (vardi) durumYayinla();
-	return kimlik;
+	durumYayinla();
 }
 
 function adSahibi(ad) {
@@ -530,20 +617,35 @@ function temizAd(ham) {
 		.slice(0, 32);
 }
 
-function oturumAc(ws, ad, kimlik, anahtar) {
+// Aynı adın başka bir bağlantısı oturumu bırakır. Başka sekme/cihazsa ona haber verilir ve o sekme
+// kendiliğinden yeniden bağlanmaz ("Bu sekmede devam et" düğmesi çıkar); aynı sekme yeniden
+// bağlandıysa eski bağlantı sessizce kapatılır. Sesli kanal yeri askıya alınır: yeni bağlantı
+// 'ses-gir {devam:true}' derse ses kesilmeden sürer.
+function eskiOturumuKapat(eski, yeniKimlik) {
+	const ayniSekme = !!yeniKimlik && eski.kimlik === yeniKimlik;
+	ayril(eski);
+	if (!ayniSekme) gonder(eski, { type: 'oturum-devralindi', message: 'Bu hesapla başka bir sekmede ya da cihazda girildi.' });
+	setTimeout(() => eski.terminate(), ayniSekme ? 0 : 300);
+}
+
+function oturumAc(ws, ad, kimlik, anahtar, sesDevam) {
 	// Aynı adla açık başka bir bağlantı varsa (sekme yenilendi / yeniden onaylandı) onu düşür.
 	const eski = adSahibi(ad);
-	if (eski && eski !== ws) {
-		ayril(eski);
-		eski.terminate();
-	}
+	if (eski && eski !== ws) eskiOturumuKapat(eski, kimlik);
 	if (ws.jeton) jetonlar.delete(ws.jeton);
 	ws.ad = ad;
 	ws.kimlik = kimlik || '';
 	ws.jeton = crypto.randomBytes(16).toString('hex');
 	ws.yaziPencere = 0;
 	ws.yaziAdet = 0;
+	ws.sessiz = false;
+	ws.sagir = false;
 	jetonlar.set(ws.jeton, ws);
+	// Askıdaki sesli kanal yeri: istemci o kanala devam etmeyecekse hemen bırak (diğerleri boşuna beklemesin).
+	const askida = askidakiKoltuk(ad);
+	if (askida && askida.kanal !== sesDevam && koltukBirak(askida.kanal, ad, askida.ws)) {
+		console.log(`[ses] ${askida.kanal}: ${ad} geri döndü ama kanala devam etmedi`);
+	}
 	gonder(ws, {
 		type: 'hazir',
 		ad,
@@ -556,7 +658,14 @@ function oturumAc(ws, ad, kimlik, anahtar) {
 		dosyaMb: DOSYA_MB,
 		jeton: ws.jeton,
 		anahtar: anahtar || undefined,
+		ice: iceSunuculari(ws.host),
+		turnNesli: TURN_NESLI,
+		surum: SURUM, // istemci sürüm değişince (güncelleme) sayfayı yeniler
 	});
+	// Bu kişi bağlı değilken kapıyı çalanlar da ona sorulsun (yeni gelen ya da bağlantısı kopup dönen).
+	for (const [id, b] of bekleyenler) {
+		if (b.ws !== ws && !b.karar) gonder(ws, { type: 'giris-istegi', id, ad: b.ad, kayitli: !!b.kayitli });
+	}
 	durumYayinla();
 }
 
@@ -570,24 +679,31 @@ function istekKapat(id, kabul, ad) {
 	return kayit;
 }
 
+function girisRed(ws, message, kod, ek) {
+	gonder(ws, { type: 'giris-red', message, kod, ...ek });
+}
+
 async function kapiCal(ws, ad, anahtarGecersiz) {
 	let kisiSayisi = 0;
+	let kayitli = false;
 	try {
 		kisiSayisi = await db.kisiSayisi();
+		kayitli = !!(await db.kisiAd(ad));
 	} catch {}
-	if (kisiSayisi >= maxKullanici) {
-		return gonder(ws, { type: 'giris-red', message: `Sunucu dolu (en fazla ${maxKullanici} kişi).` });
+	if (ws.readyState !== WebSocket.OPEN) return;
+	if (kisiSayisi >= maxKullanici && !kayitli) {
+		return girisRed(ws, `Sunucu dolu (en fazla ${maxKullanici} kişi).`, 'dolu');
 	}
 	const cevrimici = [...wss.clients].filter((x) => x.ad);
 	if (!cevrimici.length) {
-		return gonder(ws, { type: 'giris-red', message: 'Şu an içeride kimse yok; biraz sonra tekrar dene.' });
+		return girisRed(ws, 'Şu an içeride kimse yok; biraz sonra tekrar dene.', 'kimse-yok');
 	}
-	// Aynı IP'den istek yağmasın: aynı anda en fazla 3 bekleyen, dakikada en fazla 100 deneme.
+	// Aynı IP'den istek yağmasın: aynı anda en fazla 3 bekleyen, dakikada en fazla 600 deneme.
 	// (Aynı ev/NAT arkasındaki birkaç kişi birbirini engellemesin diye pencere geniş tutuldu.)
 	const ip = ws.ip || '';
 	if (ip) {
 		const ayniIp = [...bekleyenler.values()].filter((b) => b.ip === ip);
-		if (ayniIp.length >= 3) return gonder(ws, { type: 'giris-red', message: 'Çok fazla istek; biraz bekle.' });
+		if (ayniIp.length >= 3) return girisRed(ws, 'Çok fazla istek; biraz bekle.', 'cok-istek');
 		const simdi = Date.now();
 		const kayit = kapiDenemeleri.get(ip) || { baslangic: simdi, adet: 0 };
 		if (simdi - kayit.baslangic > 60000) {
@@ -597,7 +713,7 @@ async function kapiCal(ws, ad, anahtarGecersiz) {
 		// Dakikada 600 deneme: insan trafiği için bol, otomatik flood için sınır.
 		if (++kayit.adet > 600) {
 			kapiDenemeleri.set(ip, kayit);
-			return gonder(ws, { type: 'giris-red', message: 'Çok fazla giriş denemesi; bir dakika bekle.' });
+			return girisRed(ws, 'Çok fazla giriş denemesi; bir dakika bekle.', 'cok-istek');
 		}
 		kapiDenemeleri.set(ip, kayit);
 	}
@@ -605,33 +721,42 @@ async function kapiCal(ws, ad, anahtarGecersiz) {
 	for (const [id, b] of bekleyenler) if (b.ad === ad) istekKapat(id, false, ad);
 
 	const id = crypto.randomBytes(6).toString('hex');
-	bekleyenler.set(id, { ad, ip, zaman: Date.now(), ws, kimlik: ws.kimlik || '' });
+	// kayitli: bu ad zaten beyaz listede (yeni cihaz ya da adı taklit eden biri). Kabul edilirse
+	// eski anahtar iptal olur; içeridekilere bu yüzden ayrıca gösterilir.
+	bekleyenler.set(id, { ad, ip, zaman: Date.now(), ws, kimlik: ws.kimlik || '', kayitli });
 	ws.knockId = id;
 	gonder(ws, { type: 'bekleniyor', ad, anahtarGecersiz: !!anahtarGecersiz });
-	for (const x of cevrimici) gonder(x, { type: 'giris-istegi', id, ad });
-	console.log(`[kapı] ${ad} izin istiyor (${cevrimici.length} kişiye soruldu${anahtarGecersiz ? ', anahtar geçersiz' : ''})`);
+	for (const x of cevrimici) gonder(x, { type: 'giris-istegi', id, ad, kayitli });
+	console.log(`[kapı] ${ad} izin istiyor (${cevrimici.length} kişiye soruldu${anahtarGecersiz ? ', anahtar geçersiz' : ''}${kayitli ? ', ad kayıtlı' : ''})`);
 }
 
-// Giriş freni: sunucu genelinde tek sayaç. Her giriş denemesi (anahtarlı/anahtarsız, ilk deneme
-// dahil) 10 saniyede 1'e tabidir. Bekleme sunucuda tutulmaz: istek hemen reddedilir, zamanlayıcı yok.
+// Giriş freni (jeton kovası, sunucu geneli): her deneme bir jeton harcar; kova GIRIS_ARALIK_MS'de
+// bir dolar. Bekleme sunucuda tutulmaz: jeton yoksa istek hemen reddedilir ve ne kadar beklenmesi
+// gerektiği söylenir (istemci o kadar bekleyip kendiliğinden yeniden dener).
+// Dönüş: 0 = geçebilir (jeton harcandı), >0 = beklenecek ms.
 function girisFreni(simdi) {
-	const kalan = GIRIS_ARALIK_MS - (simdi - sonGirisDenemesi);
-	return kalan > 0 ? kalan : 0;
+	if (!GIRIS_ARALIK_MS) return 0;
+	girisJetonu = Math.min(GIRIS_KOVA, girisJetonu + (simdi - girisDolumZamani) / GIRIS_ARALIK_MS);
+	girisDolumZamani = simdi;
+	if (girisJetonu >= 1) {
+		girisJetonu -= 1;
+		return 0;
+	}
+	return Math.max(1, Math.ceil((1 - girisJetonu) * GIRIS_ARALIK_MS));
 }
 
 async function girisYap(ws, m) {
 	const ad = temizAd(m.ad);
 	const kimlik = String(m.id ?? '').slice(0, 64);
 	const anahtar = String(m.anahtar ?? '').trim().slice(0, ANAHTAR_UZUNLUK);
+	const sesDevam = typeof m.ses === 'string' ? m.ses.slice(0, 40) : '';
 	ws.kimlik = kimlik;
 
 	// Önce fren: DB'ye bile gitmeden reddedilir.
-	const simdi = Date.now();
-	const kalan = girisFreni(simdi);
+	const kalan = girisFreni(Date.now());
 	if (kalan > 0) {
-		return gonder(ws, { type: 'giris-red', message: `Çok sık deneme; ${Math.ceil(kalan / 1000)} saniye sonra tekrar dene.` });
+		return girisRed(ws, `Çok sık deneme; ${Math.ceil(kalan / 1000)} saniye sonra tekrar dene.`, 'fren', { bekle: kalan });
 	}
-	sonGirisDenemesi = simdi;
 
 	// 1) Geçerli anahtar → doğrudan giriş (ad, anahtarın sahibinden gelir).
 	// Yalnızca 512 bit (128 hex) anahtarlar sorgulanır; eski biçimdeki anahtarlar geçersizdir.
@@ -642,33 +767,26 @@ async function girisYap(ws, m) {
 		} catch (e) {
 			console.error('[beyaz liste] anahtar okunamadı:', e.message);
 		}
+		if (ws.readyState !== WebSocket.OPEN) return;
 		if (kisi) {
-			const sahibi = adSahibi(kisi.ad);
-			if (sahibi && sahibi !== ws) {
-				// Aynı sekme yeniden bağlandıysa eski bağlantıyı düşür; başka cihazsa reddet.
-				if (!kimlik || sahibi.kimlik !== kimlik) {
-					return gonder(ws, { type: 'giris-red', message: `"${kisi.ad}" şu anda başka bir cihazdan bağlı.` });
-				}
-				ayril(sahibi);
-				sahibi.terminate();
-			}
+			// Aynı anahtar başka bir bağlantıda açıksa son giren kazanır (oturumAc eskisini kapatır).
+			// Bir anahtar tek cihaza aittir (yeni cihaz onaylanınca anahtar değişir); ikinci bağlantı
+			// ya aynı cihazın başka sekmesidir ya da ağ değişince kopmuş eski bağlantının yerine gelendir.
 			if (ws.ad && ws.ad !== kisi.ad) ayril(ws);
-			oturumAc(ws, kisi.ad, kimlik, anahtar);
+			oturumAc(ws, kisi.ad, kimlik, anahtar, sesDevam);
 			console.log(`[giriş] ${kisi.ad} anahtarıyla girdi`);
-			try {
-				db.kisiSonGiris(kisi.ad);
-			} catch {}
+			db.kisiSonGiris(kisi.ad).catch(() => {});
 			return;
 		}
 	}
 
 	// 2) Anahtarsız / geçersiz anahtar → kapıyı çal.
 	if (!ad) {
-		return gonder(ws, { type: 'giris-red', message: anahtar ? 'Anahtar geçersiz; adını yazıp izin iste.' : 'Ad gerekli.' });
+		return girisRed(ws, anahtar ? 'Anahtar geçersiz; adını yazıp izin iste.' : 'Ad gerekli.', anahtar ? 'anahtar' : 'ad');
 	}
 	const sahibi = adSahibi(ad);
 	if (sahibi && sahibi !== ws && (!kimlik || sahibi.kimlik !== kimlik)) {
-		return gonder(ws, { type: 'giris-red', message: `"${ad}" adı şu anda kullanılıyor; başka bir ad seç.` });
+		return girisRed(ws, `"${ad}" adı şu anda kullanılıyor; başka bir ad seç.`, 'ad-kullaniliyor');
 	}
 	await kapiCal(ws, ad, !!anahtar);
 }
@@ -678,14 +796,17 @@ async function girisKarari(ws, m) {
 	if (!ws.ad) return gonder(ws, { type: 'hata', message: 'Önce giriş yap.' });
 	const id = String(m.id ?? '');
 	const kayit = bekleyenler.get(id);
-	if (!kayit) return gonder(ws, { type: 'hata', message: 'Bu giriş isteği artık geçerli değil.' });
+	// karar: aynı isteği iki kişi aynı anda kabul ederse ikinci kabul düşer (eskiden iki anahtar
+	// üretilip iki 'hazir' gidiyordu).
+	if (!kayit || kayit.karar) return gonder(ws, { type: 'hata', message: 'Bu giriş isteği artık geçerli değil.' });
 
 	if (!m.kabul) {
 		istekKapat(id, false, kayit.ad);
-		gonder(kayit.ws, { type: 'giris-red', message: 'Giriş isteğin reddedildi.' });
+		girisRed(kayit.ws, 'Giriş isteğin reddedildi.', 'reddedildi');
 		console.log(`[kapı] ${kayit.ad} reddedildi (${ws.ad})`);
 		return;
 	}
+	kayit.karar = ws.ad;
 
 	let sayi = 0;
 	let mevcut = null;
@@ -693,10 +814,15 @@ async function girisKarari(ws, m) {
 		sayi = await db.kisiSayisi();
 		mevcut = await db.kisiAd(kayit.ad);
 	} catch {}
+	// Kapıyı çalan bu arada vazgeçtiyse (sekmeyi kapattı) anahtar üretme: kimseye ulaşmayacak.
+	if (kayit.ws.readyState !== WebSocket.OPEN) {
+		istekKapat(id, false, kayit.ad);
+		return;
+	}
 	if (sayi >= maxKullanici && !mevcut) {
 		gonder(ws, { type: 'hata', message: `Beyaz liste dolu (${sayi}/${maxKullanici}); önce birini at.` });
 		istekKapat(id, false, kayit.ad);
-		gonder(kayit.ws, { type: 'giris-red', message: `Sunucu dolu (en fazla ${maxKullanici} kişi).` });
+		girisRed(kayit.ws, `Sunucu dolu (en fazla ${maxKullanici} kişi).`, 'dolu');
 		return;
 	}
 
@@ -705,6 +831,7 @@ async function girisKarari(ws, m) {
 		await db.kisiKaydet({ ad: kayit.ad, anahtar: yeniAnahtar });
 	} catch (e) {
 		console.error('[beyaz liste] kişi kaydedilemedi:', e.message);
+		kayit.karar = null; // başka biri (ya da aynı kişi) yeniden deneyebilsin
 		return gonder(ws, { type: 'hata', message: 'Kişi kaydedilemedi; tekrar dene.' });
 	}
 	beyazListeSayisi = mevcut ? sayi : sayi + 1;
@@ -712,11 +839,12 @@ async function girisKarari(ws, m) {
 	istekKapat(id, true, kayit.ad);
 	if (kayit.ws.readyState !== WebSocket.OPEN) return;
 	oturumAc(kayit.ws, kayit.ad, kayit.kimlik, yeniAnahtar);
-	console.log(`[kapı] ${kayit.ad} kabul edildi (${ws.ad}) → anahtar verildi`);
+	console.log(`[kapı] ${kayit.ad} kabul edildi (${ws.ad}) → anahtar verildi${mevcut ? ' (eski anahtar iptal)' : ''}`);
 }
 
-// İstemcinin ses teşhisi: 10 saniyede bir, bağlantı başına en fazla 5 saniyede 1 kez günlüğe yazılır.
-// Yalnızca hata ayıklama içindir; DB'ye yazmaz, başka istemciye göndermez.
+// İstemcinin ses teşhisi: istemci 10 saniyede bir (ve önemli olaylarda) gönderir; bağlantı başına en
+// fazla 1,5 saniyede 1 kez günlüğe yazılır. Yalnızca hata ayıklama içindir; DB'ye yazmaz, başka
+// istemciye göndermez.
 function taniKaydet(ws, m) {
 	if (!ws.ad || !TANI) return;
 	const simdi = Date.now();
@@ -789,8 +917,13 @@ async function kisiAt(ws, m) {
 	console.log(`[beyaz liste] ${ws.ad} → ${ad} atıldı`);
 	if (hedef) {
 		gonder(hedef, { type: 'atildi', message: 'Sunucudan atıldın; tekrar girmek için izin istemen gerek.' });
+		sesCikar(hedef); // atılanın sesli kanal yeri askıda beklemesin
+		ayril(hedef);
 		setTimeout(() => hedef.terminate(), 300);
 	}
+	// Bağlantısı zaten kopmuşsa askıdaki sesli kanal yerini de hemen boşalt.
+	const askida = askidakiKoltuk(ad);
+	if (askida) koltukBirak(askida.kanal, ad, askida.ws);
 	durumYayinla();
 }
 
@@ -833,36 +966,61 @@ async function gecmisGonder(ws, m) {
 	}
 }
 
+// Sesli kanala gir. devam:true → istemcinin eşlerle WebRTC bağlantıları ayakta (sunucuya bağlantısı
+// koptu ve geri geldi, ya da sunucu yeniden başladı); bu bayrak diğerlerine de iletilir ki onlar da
+// bağlantıyı yeniden kurmak yerine sürdürsün. Askıda bir yeri varsa (bkz. sesAskiyaAl) ona oturur.
 function sesGir(ws, m) {
 	if (!ws.ad) return gonder(ws, { type: 'hata', message: 'Önce adını gir.' });
 	const kanal = String(m.kanal ?? '');
-	if (!sesKanali(kanal)) return gonder(ws, { type: 'hata', message: 'Bilinmeyen sesli kanal.' });
+	if (!sesKanali(kanal)) return gonder(ws, { type: 'hata', message: 'Bilinmeyen sesli kanal.', kod: 'ses-kanal-yok' });
+	const devam = !!m.devam;
+	const digerAdlar = () => [...(sesliKanallar.get(kanal) || new Map()).keys()].filter((a) => a !== ws.ad);
 	if (ws.sesKanal === kanal) {
-		return gonder(ws, { type: 'ses-girdi', kanal, kisiler: [...sesliKanallar.get(kanal).keys()].filter((a) => a !== ws.ad) });
+		return gonder(ws, { type: 'ses-girdi', kanal, kisiler: digerAdlar(), ice: iceSunuculari(ws.host), devam: true });
+	}
+	const askida = askidakiKoltuk(ws.ad);
+	const geriAl = !!askida && devam && askida.kanal === kanal;
+	// Doluluk, bulunduğu kanaldan çıkarılmadan ÖNCE denetlenir (eskiden önce çıkarılıyordu: kişi
+	// eski kanalından düşüyor, yenisine giremiyor, arayüzü ise hâlâ eski kanalda sanıyordu).
+	const dolu = [...(sesliKanallar.get(kanal) || new Map()).keys()].filter((a) => a !== ws.ad).length >= MAX_KISI;
+	if (!geriAl && dolu) {
+		return gonder(ws, { type: 'hata', message: `Sesli kanal dolu (en fazla ${MAX_KISI} kişi).`, kod: 'ses-dolu' });
 	}
 	sesCikar(ws);
+	if (askida && !geriAl) koltukBirak(askida.kanal, ws.ad, askida.ws);
 	const uyeler = sesliKanallar.get(kanal) || new Map();
-	if (uyeler.size >= MAX_KISI) {
-		return gonder(ws, { type: 'hata', message: `Sesli kanal dolu (en fazla ${MAX_KISI} kişi).` });
+	if (geriAl) {
+		clearTimeout(askida.ws.askiZamani);
+		askida.ws.askida = false;
+		askida.ws.sesKanal = null;
+		uyeler.delete(ws.ad);
 	}
 	const digerleri = [...uyeler.keys()];
 	uyeler.set(ws.ad, ws);
 	sesliKanallar.set(kanal, uyeler);
 	ws.sesKanal = kanal;
-	ws.sessiz = false;
-	console.log(`[ses] ${kanal}: ${ws.ad} girdi (${uyeler.size}/${MAX_KISI})`);
-	gonder(ws, { type: 'ses-girdi', kanal, kisiler: digerleri });
-	kanalHerkes(kanal, { type: 'ses-kisi-girdi', kanal, ad: ws.ad }, ws);
+	ws.sessiz = !!m.sessiz;
+	ws.sagir = !!m.sagir;
+	console.log(`[ses] ${kanal}: ${ws.ad} ${geriAl ? 'geri döndü (bağlantılar sürüyor)' : devam ? 'devam ediyor' : 'girdi'} (${uyeler.size}/${MAX_KISI})`);
+	gonder(ws, { type: 'ses-girdi', kanal, kisiler: digerleri, ice: iceSunuculari(ws.host), devam });
+	kanalHerkes(kanal, { type: 'ses-kisi-girdi', kanal, ad: ws.ad, devam }, ws);
 	durumYayinla();
 }
 
+// WebRTC mesajlarını aynı sesli kanaldaki kişiye ilet. oturum: eş bağlantısının kimliği (teklif eden
+// üretir); alıcı eski bir bağlantıya ait aday/yanıtları bununla ayırır. yenile: "bağlantımız bozuk ya
+// da bende yok, yeniden kur" isteği (yalnızca yanıtlayan taraf gönderir, teklif eden yeni teklif verir).
 function sdpIlet(ws, m, tur) {
-	if (!ws.sesKanal) return;
+	if (!ws.sesKanal || !ws.ad) return;
 	const hedef = String(m.to ?? '');
 	const uyeler = sesliKanallar.get(ws.sesKanal);
 	const karsi = uyeler && uyeler.get(hedef);
 	if (!karsi || karsi === ws) return;
-	gonder(karsi, tur === 'sdp' ? { type: 'sdp', from: ws.ad, sdp: m.sdp } : { type: 'ice', from: ws.ad, ice: m.ice });
+	const ileti = { type: tur, from: ws.ad };
+	if (typeof m.oturum === 'string' && /^[A-Za-z0-9_-]{1,40}$/.test(m.oturum)) ileti.oturum = m.oturum;
+	if (tur === 'sdp') ileti.sdp = m.sdp;
+	else if (tur === 'ice') ileti.ice = m.ice;
+	gonder(karsi, ileti);
 }
 
 
@@ -933,37 +1091,99 @@ async function kanalSilHandler(ws, m) {
 	}
 	if (!kanalHizi(ws)) return;
 
+	// Kanal bellekten hemen düşer (silinirken içine mesaj/dosya yazılamasın); veritabanı silemezse
+	// eski yerine geri konur (eskiden DB hatasında kanal arayüzden kayboluyor, yeniden başlatınca
+	// geri geliyordu).
+	const sira = kanallar.findIndex((k) => k.id === id);
 	kanallar = kanallar.filter((k) => k.id !== id);
-	// Sesli kanaldaysa içindekileri çıkar.
+	let silinenDosyalar;
+	try {
+		silinenDosyalar = await db.kanalSil(id);
+	} catch (e) {
+		console.error('[kanal] silinemedi:', e.message);
+		if (!kanallar.some((k) => k.id === id)) kanallar.splice(Math.min(sira, kanallar.length), 0, kanal);
+		return gonder(ws, { type: 'hata', message: 'Kanal silinemedi; tekrar dene.' });
+	}
+	for (const d of silinenDosyalar) {
+		dosyaOnbellek.delete(d);
+		fs.promises.unlink(path.join(YUKLEME_KLASORU, d)).catch(() => {});
+	}
+	// Sesli kanaldaysa içindekileri çıkar (askıdakiler de).
 	const uyeler = sesliKanallar.get(id);
 	if (uyeler) {
 		for (const uye of uyeler.values()) {
+			clearTimeout(uye.askiZamani);
+			uye.askida = false;
 			uye.sesKanal = null;
 			gonder(uye, { type: 'ses-kapatildi', kanal: id });
 		}
 		sesliKanallar.delete(id);
 	}
-	try {
-		const dosyalar = await db.kanalSil(id);
-		for (const d of dosyalar) {
-			dosyaOnbellek.delete(d);
-			fs.promises.unlink(path.join(YUKLEME_KLASORU, d)).catch(() => {});
-		}
-	} catch (e) {
-		console.error('[kanal] silinemedi:', e.message);
-		return gonder(ws, { type: 'hata', message: 'Kanal silinemedi; tekrar dene.' });
-	}
 	console.log(`[kanal] ${ws.ad} → -${kanal.tur} "${kanal.ad}" (${id}); toplam ${kanallar.length}`);
 	durumYayinla();
 }
+
+// Async işleyicilerdeki beklenmedik bir istisna süreci düşürmesin (unhandled rejection Node'u
+// kapatır → konteyner yeniden başlar → herkesin bağlantısı kopar). Günlüğe yazıp devam ederiz.
+function guvenli(ad, is) {
+	try {
+		const sonuc = is();
+		if (sonuc && typeof sonuc.catch === 'function') sonuc.catch((e) => console.error(`[${ad}] beklenmeyen hata:`, e && e.stack ? e.stack : e));
+	} catch (e) {
+		console.error(`[${ad}] beklenmeyen hata:`, e && e.stack ? e.stack : e);
+	}
+}
+
+const ISLEYICILER = {
+	giris: girisYap,
+	'giris-karari': girisKarari,
+	'giris-iptal': (ws) => ws.knockId && istekKapat(ws.knockId, false, null),
+	at: kisiAt,
+	'kisi-limiti': kisiLimitiAyarla,
+	tani: taniKaydet,
+	'beyaz-liste': (ws) => {
+		if (!ws.ad) return;
+		return db
+			.kisiler()
+			.then((kisiler) => gonder(ws, { type: 'beyaz-liste', kisiler, maxKullanici: maxKullanici }))
+			.catch(() => gonder(ws, { type: 'hata', message: 'Beyaz liste okunamadı.' }));
+	},
+	yazi: yaziGonder,
+	gecmis: gecmisGonder,
+	yaziyor: (ws, m) => {
+		if (ws.ad && yaziKanali(String(m.kanal ?? ''))) herkes({ type: 'yaziyor', kanal: String(m.kanal), ad: ws.ad }, ws);
+	},
+	'ses-gir': sesGir,
+	'ses-cik': (ws) => {
+		sesCikar(ws);
+		durumYayinla();
+	},
+	'kanal-ekle': kanalEkleHandler,
+	'kanal-sil': kanalSilHandler,
+	sdp: (ws, m) => sdpIlet(ws, m, 'sdp'),
+	ice: (ws, m) => sdpIlet(ws, m, 'ice'),
+	yenile: (ws, m) => sdpIlet(ws, m, 'yenile'),
+	sessiz: (ws, m) => {
+		if (!ws.ad) return;
+		ws.sessiz = !!m.sessiz;
+		ws.sagir = !!m.sagir;
+		herkes({ type: 'sessiz', ad: ws.ad, sessiz: ws.sessiz, sagir: ws.sagir });
+		durumYayinla();
+	},
+	// Uzun süre açık kalan sekme (TURN şifresi 24 saatlik) ya da sunucu yeniden başladıktan sonra.
+	'ice-iste': (ws) => ws.ad && gonder(ws, { type: 'ice-sunuculari', ice: iceSunuculari(ws.host) }),
+	ping: (ws) => gonder(ws, { type: 'pong' }),
+};
 
 wss.on('connection', (ws, req) => {
 	ws.ip = String((req && req.headers && req.headers['x-forwarded-for']) || '')
 		.split(',')[0]
 		.trim() || (req && req.socket ? req.socket.remoteAddress : '') || '';
+	ws.host = String((req && req.headers && req.headers.host) || '');
 	ws.ad = null;
 	ws.sesKanal = null;
 	ws.sessiz = false;
+	ws.sagir = false;
 	ws.canli = true;
 	ws.on('pong', () => (ws.canli = true));
 	ws.on('message', (veri, ikili) => {
@@ -975,78 +1195,16 @@ wss.on('connection', (ws, req) => {
 			return;
 		}
 		if (!m || typeof m !== 'object') return;
-		switch (m.type) {
-			case 'giris':
-				girisYap(ws, m);
-				break;
-			case 'giris-karari':
-				girisKarari(ws, m);
-				break;
-			case 'giris-iptal':
-				if (ws.knockId) istekKapat(ws.knockId, false, null);
-				break;
-			case 'at':
-				kisiAt(ws, m);
-				break;
-			case 'kisi-limiti':
-				kisiLimitiAyarla(ws, m);
-				break;
-			case 'tani':
-				taniKaydet(ws, m);
-				break;
-			case 'beyaz-liste':
-				if (!ws.ad) return;
-				db.kisiler()
-					.then((kisiler) => gonder(ws, { type: 'beyaz-liste', kisiler, maxKullanici: maxKullanici }))
-					.catch(() => gonder(ws, { type: 'hata', message: 'Beyaz liste okunamadı.' }));
-				break;
-			case 'yazi':
-				yaziGonder(ws, m);
-				break;
-			case 'gecmis':
-				gecmisGonder(ws, m);
-				break;
-			case 'yaziyor':
-				if (ws.ad && yaziKanali(String(m.kanal ?? ''))) {
-					herkes({ type: 'yaziyor', kanal: String(m.kanal), ad: ws.ad }, ws);
-				}
-				break;
-			case 'ses-gir':
-				sesGir(ws, m);
-				break;
-			case 'kanal-ekle':
-				kanalEkleHandler(ws, m);
-				break;
-			case 'kanal-sil':
-				kanalSilHandler(ws, m);
-				break;
-			case 'ses-cik':
-				sesCikar(ws);
-				durumYayinla();
-				break;
-			case 'sdp':
-			case 'ice':
-				sdpIlet(ws, m, m.type);
-				break;
-			case 'sessiz':
-				if (!ws.ad) return;
-				ws.sessiz = !!m.sessiz;
-				herkes({ type: 'sessiz', ad: ws.ad, sessiz: ws.sessiz });
-				durumYayinla();
-				break;
-			case 'ping':
-				gonder(ws, { type: 'pong' });
-				break;
-		}
+		const isleyici = Object.prototype.hasOwnProperty.call(ISLEYICILER, m.type) ? ISLEYICILER[m.type] : null;
+		if (isleyici) guvenli(m.type, () => isleyici(ws, m));
 	});
-	ws.on('close', () => {
+	const kapandi = () => {
+		ws.canli = false;
 		if (ws.knockId) istekKapat(ws.knockId, false, null);
 		ayril(ws);
-	});
-	ws.on('error', () => {
-		if (ws.knockId) istekKapat(ws.knockId, false, null);
-		ayril(ws);
-	});
+	};
+	ws.on('close', kapandi);
+	ws.on('error', kapandi);
 });
 
 // Kapıda bekleyen istekler 2 dakikada bir düşsün (kimse karar vermezse).
@@ -1055,11 +1213,12 @@ const kapiZamanlayici = setInterval(() => {
 	for (const [id, b] of bekleyenler) {
 		if (simdi - b.zaman < beklemeSuresi) continue;
 		istekKapat(id, false, b.ad);
-		gonder(b.ws, { type: 'giris-red', message: 'İstek zaman aşımına düştü; tekrar dene.' });
+		girisRed(b.ws, 'İstek zaman aşımına düştü; tekrar dene.', 'zaman-asimi');
 	}
 }, 15000);
 
-// Kopan bağlantıları (telefon uykuya geçti, ağ değişti...) 30 saniyede bir temizle.
+// Kopan bağlantıları (telefon uykuya geçti, ağ değişti...) 15 saniyede bir yokla; iki yoklamaya
+// yanıt vermeyen düşürülür (sesli kanaldaysa yeri askıya alınır).
 const nabiz = setInterval(() => {
 	for (const ws of wss.clients) {
 		if (!ws.canli) {
@@ -1069,7 +1228,7 @@ const nabiz = setInterval(() => {
 		ws.canli = false;
 		ws.ping();
 	}
-}, 30000);
+}, 15000);
 
 // Dış IP değişirse (bulutun geçici IP'si) STUN/TURN sessizce ölür: relay adayı hiç oluşmaz,
 // ses bağlantısı kurulmaz. Konteyneri bilerek yeniden başlatıyoruz; açılışta yeni IP okunur.
@@ -1255,6 +1414,8 @@ const sunucu = http.createServer((req, res) => {
 			kanal: kanallar.length,
 			maxKullanici: maxKullanici,
 			girisAralikMs: GIRIS_ARALIK_MS,
+			girisKova: GIRIS_KOVA,
+			sesAskiMs: SES_ASKI_MS,
 			disIp: disIp || null, // STUN/TURN'ün duyurduğu dış IP (yanlışsa ses hiç kurulmaz)
 			turnAdresi: turnAdresi || null,
 			veritabani: db ? 'açık' : 'kapalı',
@@ -1274,10 +1435,10 @@ const sunucu = http.createServer((req, res) => {
 		);
 	}
 	if (yol === '/api/ice') {
-		return yanit(res, 200, JSON.stringify(iceSunuculari(req)), {
-			'Content-Type': 'application/json; charset=utf-8',
-			'Cache-Control': 'no-store',
-		});
+		// TURN şifresi yalnızca oturumu olan (beyaz listedeki) kişiye: Authorization: Bearer <jeton>.
+		const sahibi = jetonlar.get(String(req.headers.authorization || '').replace(/^Bearer\s+/i, ''));
+		if (!sahibi || !sahibi.ad) return jsonYanit(res, 401, { hata: 'Oturum gerekli.' });
+		return jsonYanit(res, 200, iceSunuculari(req.headers.host));
 	}
 	if (yol.startsWith('/dosya/')) {
 		const id = yol.slice('/dosya/'.length).replace(/\/$/, '');
@@ -1321,6 +1482,8 @@ async function kapat(sinyal) {
 }
 process.on('SIGTERM', () => kapat('SIGTERM'));
 process.on('SIGINT', () => kapat('SIGINT'));
+// Son güvenlik ağı: yakalanmamış bir söz reddi sunucuyu (ve herkesin bağlantısını) düşürmesin.
+process.on('unhandledRejection', (e) => console.error('[sunucu] yakalanmamış hata:', e && e.stack ? e.stack : e));
 
 sunucu.on('error', (e) => {
 	console.error(`HTTP ${HOST}:${PORT} açılamadı: ${e.message}`);
@@ -1396,12 +1559,14 @@ async function main() {
 	console.log(`[turn] dış IP ${disIp || 'yok'}${DIS_IP_ELLE ? ' (.env)' : ' (meta veri)'}, tarayıcıya verilen adres ${turnAdresi || 'sayfa adresi'}`);
 	disIpIzle();
 	turnBaslat();
-	sunucu.listen(PORT, HOST, async () => {
-		const turnTamam = await turnHazirBekle();
-		if (!turnTamam && turn) {
-			console.error(`[turn] coturn UDP ${TURN_PORT}'te yanıt vermiyor.`);
-			process.exit(1);
-		}
+	// Önce coturn hazır olsun, SONRA dinlemeye başla: yoksa yeniden başlatmadan hemen sonra bağlanan
+	// istemciler 'hazir' içinde boş STUN/TURN listesi alıyor, TURN'e muhtaç olanlar hiç bağlanamıyordu.
+	const turnTamam = await turnHazirBekle();
+	if (!turnTamam && turn) {
+		console.error(`[turn] coturn UDP ${TURN_PORT}'te yanıt vermiyor.`);
+		process.exit(1);
+	}
+	sunucu.listen(PORT, HOST, () => {
 		const turnBilgi = turnTamam
 			? `STUN/TURN udp/${TURN_PORT} (aktarım ${RELAY_MIN_PORT}-${RELAY_MAX_PORT}, dış IP ${disIp || 'yok'}, iç IP ${IC_IP || 'yok'})`
 			: 'STUN/TURN kapalı';

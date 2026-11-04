@@ -1,11 +1,13 @@
 {
   "name": "ses-kanali",
   "private": true,
-  "description": "Hesapsız, tarayıcıdan girilen sesli oda (mesh WebRTC + coturn)",
+  "description": "Beyaz listeli, tarayıcıdan girilen Discord'umsu sunucu: yazılı kanallar + P2P sesli kanallar (mesh WebRTC + coturn)",
   "license": "MIT",
   "scripts": {
     "start": "node sunucu/sunucu.js",
-    "test": "node test/dene.js"
+    "test": "node test/dene.js",
+    "test:arayuz": "node test/arayuz.js",
+    "test:tarayici": "node test/tarayici.js"
   },
   "dependencies": {
     "ws": "^8.18.0"

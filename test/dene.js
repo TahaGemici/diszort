@@ -1,7 +1,8 @@
-// Çalışan bir Ses Kanalı'nı dışarıdan dener: web sayfası, sağlık, /api/ice, yazılı sohbet
-// (gönderme, geçmiş, hız sınırı), dosya paylaşımı (yetki, yükleme, indirme), sesli kanal
-// signaling'i (mesh mesajları, doluluk, aynı ad), STUN ve TURN (geçici şifreyle aktarım;
-// yanlış şifreyle alamama).
+// Çalışan bir Ses Kanalı'nı dışarıdan dener: beyaz liste (anahtar, kapıyı çalma, kabul/red, atma,
+// giriş freni), web sayfası, sağlık, /api/ice (yalnızca oturumla), yazılı sohbet (gönderme, geçmiş,
+// hız sınırı), dosya paylaşımı (yetki, yükleme, indirme), sesli kanal signaling'i (mesh mesajları,
+// oturum/yenile iletimi, doluluk, aynı ad, kopunca askıda kalma ve geri dönme), STUN ve TURN
+// (geçici şifreyle aktarım; yanlış şifreyle alamama).
 // Bağımlılık: Node 22+ yerleşik WebSocket'i kullanır; eski Node'da depodaki ws paketini (npm install).
 //
 //   node test/dene.js [http://127.0.0.1:8080]
@@ -69,6 +70,16 @@ function istemci() {
 		};
 		ws.topla = () => gelen.splice(0);
 		ws.yolla = (o) => ws.send(JSON.stringify(o));
+		// Düzgün istemci gibi kapat: sesli kanaldaysa önce 'ses-cik' (sekme kapanırken arayüz de
+		// böyle yapar). Ağ kopması gibi sessiz kapanış için ws.kopar().
+		const kapat = ws.close.bind(ws);
+		ws.kopar = kapat;
+		ws.close = () => {
+			try {
+				if (ws.readyState === 1) ws.send(JSON.stringify({ type: 'ses-cik' }));
+			} catch {}
+			kapat();
+		};
 		ws.onopen = () => coz(ws);
 		ws.onerror = () => red(new Error('WebSocket açılamadı: ' + WS_ADRES));
 	});
@@ -274,6 +285,8 @@ async function turnAl(port, kullanici, sifre) {
 		if (!ANAHTAR) throw new Error('ILK_ANAHTAR yok (test ortamı: .env veya ortam değişkeni)');
 		yonetici = await yoneticiGir();
 		assert.equal(yonetici.hazir.ad, 'taha', 'ilk anahtarın sahibi YONETICI_ADI olmalı');
+		// TURN şifresi yalnızca oturum açana: 'hazir' içinde gelir.
+		assert.ok(yonetici.hazir.ice && Array.isArray(yonetici.hazir.ice.iceServers), 'hazir.ice gelmeli');
 		await hepsiniAt(); // önceki çalıştırmalardan kalan kişileri temizle
 		assert.ok(yonetici.hazir.beyazListe >= 1);
 		assert.ok(Array.isArray(yonetici.hazir.beyazListeAdlari), 'hazir.beyazListeAdlari dizi olmalı');
@@ -313,6 +326,7 @@ async function turnAl(port, kullanici, sifre) {
 		yonetici.yolla({ type: 'giris-karari', id: istek.id, kabul: false });
 		const red = await ws.bekle('giris-red');
 		assert.match(red.message, /reddedildi/);
+		assert.equal(red.kod, 'reddedildi', 'red nedeni kodla da gelmeli (istemci yeniden denemeyi buna göre seçer)');
 		ws.close();
 	});
 
@@ -341,6 +355,7 @@ async function turnAl(port, kullanici, sifre) {
 			await girisGonder(ws, { type: 'giris', ad: 'gec-kalan-' + kimlik, id: 'g1' });
 			const red = await ws.bekle('giris-red');
 			assert.match(red.message, /kimse yok/);
+			assert.equal(red.kod, 'kimse-yok');
 			ws.close();
 		} finally {
 			yonetici = await yoneticiGir(); // geri al
@@ -364,17 +379,27 @@ async function turnAl(port, kullanici, sifre) {
 		ws2.close();
 	});
 
-	await dene('giriş freni: tüm denemeler sunucu genelinde 10 saniyede 1', async () => {
+	await dene('giriş freni: tüm denemeler tek kovadan (sunucu geneli), kova boşalınca bekleme süresi söylenir', async () => {
 		const aralik = await girisAraligi();
 		assert.ok(aralik > 0, 'fren kapalı (GIRIS_ARALIK_MS=0); bu deneme freni doğrulayamaz');
+		const s = await (await fetch(ADRES + '/saglik')).json();
+		const kova = Number(s.girisKova) || 1;
 		const ws = await istemci();
-		// 1) Freni doldur: aralığa uyarak gönderilir (sunucu kabul eder, "Ad gerekli" der).
+		// 1) İlk deneme aralığa uyarak gönderilir (sunucu kabul eder, "Ad gerekli" der).
 		await girisGonder(ws, { type: 'giris', ad: '', id: 'fr1' });
-		assert.match((await ws.bekle('giris-red')).message, /Ad gerekli/);
-		// 2) Aralık dolmadan, istemcide beklemeden gönderilen deneme sunucuda reddedilmeli.
+		const ilk = await ws.bekle('giris-red');
+		assert.match(ilk.message, /Ad gerekli/);
+		assert.equal(ilk.kod, 'ad');
+		// 2) Beklemeden art arda: kova boşalınca sunucu reddeder ve ne kadar bekleneceğini söyler.
+		for (let i = 0; i < kova + 1; i++) ws.yolla({ type: 'giris', ad: '', id: 'fr1' });
+		const fren = await ws.bekle((m) => m.type === 'giris-red' && m.kod === 'fren');
+		assert.match(fren.message, /saniye sonra tekrar dene/);
+		assert.ok(fren.bekle > 0 && fren.bekle <= aralik, 'bekle (ms) 0 ile aralık arasında olmalı: ' + fren.bekle);
+		// 3) Söylenen süre kadar bekleyince yeniden girilebilir (istemci bunu kendiliğinden yapar).
+		await new Promise((r) => setTimeout(r, fren.bekle + 30));
+		ws.topla();
 		ws.yolla({ type: 'giris', ad: '', id: 'fr1' });
-		const fren = await ws.bekle((m) => m.type === 'giris-red' && /saniye sonra tekrar dene/.test(m.message || ''));
-		assert.ok(fren, 'sunucu ikinci denemeyi frenlemeli (istemci tarafı bekleme yok)');
+		assert.equal((await ws.bekle('giris-red')).kod, 'ad', 'bekleme sonrası deneme freni geçmeli');
 		sonGiris = Date.now(); // sonraki testlerin girişleri aralığa uysun
 		ws.close();
 	});
@@ -425,6 +450,8 @@ async function turnAl(port, kullanici, sifre) {
 		assert.equal(r.status, 200);
 		const s = await r.json();
 		assert.equal(s.durum, 'tamam');
+		assert.ok(s.girisKova >= 1, 'girisKova');
+		assert.equal(typeof s.sesAskiMs, 'number');
 		assert.equal(s.turn, 'çalışıyor');
 		assert.equal(s.veritabani, 'açık');
 		assert.equal(typeof s.mesaj, 'number');
@@ -432,16 +459,27 @@ async function turnAl(port, kullanici, sifre) {
 		console.log('     sürüm', s.surum, '· mesaj', s.mesaj, '· dosya', s.dosya);
 	});
 
-	await dene('/api/ice geçici TURN şifresi verir', async () => {
-		ice = await (await fetch(ADRES + '/api/ice')).json();
+	await dene('/api/ice: TURN şifresi yalnızca oturumu olana verilir', async () => {
+		// Oturumsuz: 401 (TURN sunucusu dışarıdan gelenlere ücretsiz aktarıcı olmasın).
+		const anonim = await fetch(ADRES + '/api/ice');
+		assert.equal(anonim.status, 401, 'oturumsuz istek reddedilmeli');
+		assert.ok(!JSON.stringify(await anonim.json()).includes('credential'), 'oturumsuz yanıtta şifre olmamalı');
+		assert.equal((await fetch(ADRES + '/api/ice', { headers: { Authorization: 'Bearer ' + 'f'.repeat(32) } })).status, 401, 'uydurma jeton');
+		const yetkili = { headers: { Authorization: 'Bearer ' + yonetici.hazir.jeton } };
+		ice = await (await fetch(ADRES + '/api/ice', yetkili)).json();
 		assert.equal(ice.iceServers.length, 2);
 		const t = ice.iceServers[1];
 		assert.match(t.urls[0], /^turn:.+:\d+\?transport=udp$/);
+		assert.ok(t.urls.some((u) => /\?transport=tcp$/.test(u)), 'UDP kapalı ağlar için TCP yedeği olmalı');
 		assert.match(t.username, /^\d+:[0-9a-f]+$/);
 		assert.ok(Number(t.username.split(':')[0]) > Date.now() / 1000 + 3600, 'şifre en az bir saat geçerli olmalı');
 		turnPort = Number(t.urls[0].match(/:(\d+)\?/)[1]);
-		const ikinci = await (await fetch(ADRES + '/api/ice')).json();
+		const ikinci = await (await fetch(ADRES + '/api/ice', yetkili)).json();
 		assert.notEqual(ikinci.iceServers[1].username, t.username, 'her istekte yeni kullanıcı');
+		// WebSocket üzerinden de tazelenir (uzun açık kalan sekme / sunucu yeniden başladıktan sonra).
+		yonetici.yolla({ type: 'ice-iste' });
+		const ws = await yonetici.bekle('ice-sunuculari');
+		assert.equal(ws.ice.iceServers.length, 2);
 	});
 
 	await dene('STUN yanıt veriyor', async () => {
@@ -579,17 +617,85 @@ async function turnAl(port, kullanici, sifre) {
 		assert.deepEqual(g2.kisiler, ['ayse-' + kimlik], 'kanaldaki diğer kişiler bildirilir');
 		assert.equal((await a.bekle((m) => m.type === 'ses-kisi-girdi' && m.ad === 'bora-' + kimlik)).kanal, SES_KANAL);
 
-		b.yolla({ type: 'sdp', to: 'ayse-' + kimlik, sdp: { type: 'offer', sdp: 'v=0' } });
+		assert.ok(g2.ice && g2.ice.iceServers, 'ses-girdi taze ICE sunucularını taşımalı');
+		assert.equal(g2.devam, false);
+
+		b.yolla({ type: 'sdp', to: 'ayse-' + kimlik, sdp: { type: 'offer', sdp: 'v=0' }, oturum: 'o1abc' });
 		const s = await a.bekle('sdp');
 		assert.equal(s.from, 'bora-' + kimlik);
 		assert.equal(s.sdp.type, 'offer');
-		a.yolla({ type: 'ice', to: 'bora-' + kimlik, ice: { candidate: 'x' } });
-		assert.equal((await b.bekle('ice')).from, 'ayse-' + kimlik);
+		assert.equal(s.oturum, 'o1abc', 'oturum kimliği iletilmeli');
+		a.yolla({ type: 'ice', to: 'bora-' + kimlik, ice: { candidate: 'x' }, oturum: 'o1abc' });
+		const i = await b.bekle('ice');
+		assert.equal(i.from, 'ayse-' + kimlik);
+		assert.equal(i.oturum, 'o1abc');
+		// yenile: yanıtlayan taraf "bağlantıyı yeniden kur" der; geçersiz oturum değeri ayıklanır.
+		a.yolla({ type: 'yenile', to: 'bora-' + kimlik, oturum: 'bozuk oturum <>' });
+		const y = await b.bekle('yenile');
+		assert.equal(y.from, 'ayse-' + kimlik);
+		assert.equal(y.oturum, undefined, 'geçersiz oturum iletilmemeli');
+		// Kanal dışındaki birine iletilmez.
+		a.yolla({ type: 'sdp', to: 'taha', sdp: { type: 'offer', sdp: 'v=0' } });
+		await new Promise((r) => setTimeout(r, 150));
+		assert.ok(!yonetici.topla().some((m) => m.type === 'sdp'), 'kanalda olmayana sdp gitmemeli');
 
 		b.yolla({ type: 'ping' });
 		await b.bekle('pong');
-		b.close();
-		assert.equal((await a.bekle((m) => m.type === 'ses-kisi-cikti' && m.ad === 'bora-' + kimlik)).kanal, SES_KANAL);
+		b.close(); // ses-cik + kapanış: hemen çıkar
+		assert.equal((await a.bekle((m) => m.type === 'ses-kisi-cikti' && m.ad === 'bora-' + kimlik, 1500)).kanal, SES_KANAL);
+		a.close();
+	});
+
+	await dene('sesli kanal: bağlantısı kopan askıda kalır, geri dönünce ses kesilmeden devam eder', async () => {
+		const saglik = await (await fetch(ADRES + '/saglik')).json();
+		const aski = Number(saglik.sesAskiMs) || 0;
+		assert.ok(aski > 0, 'SES_ASKI_MS=0: askı kapalı');
+		const a = await gir('aski-a-' + kimlik, 'q1');
+		const b = await gir('aski-b-' + kimlik, 'q2');
+		a.yolla({ type: 'ses-gir', kanal: SES_KANAL });
+		await a.bekle('ses-girdi');
+		b.yolla({ type: 'ses-gir', kanal: SES_KANAL });
+		await b.bekle('ses-girdi');
+		await a.bekle((m) => m.type === 'ses-kisi-girdi' && m.ad === 'aski-b-' + kimlik);
+
+		// b ağdan kopar (ses-cik yok): a'ya hemen "çıktı" denmez, b askıda görünür.
+		b.kopar();
+		const liste = await a.bekle((m) => m.type === 'kanallar' && m.kanallar.some((k) => (k.kisiler || []).some((p) => p.ad === 'aski-b-' + kimlik && p.askida)));
+		assert.ok(liste, 'kopan kişi askıda işaretlenmeli');
+		assert.ok(!a.topla().some((m) => m.type === 'ses-kisi-cikti'), 'askıdaki kişi için hemen ses-kisi-cikti gitmemeli');
+
+		// b aynı anahtar + sekmeyle geri gelir ve kanala devam eder.
+		const b2 = await istemci();
+		await girisGonder(b2, { type: 'giris', ad: '', id: 'q2', anahtar: b.anahtar, ses: SES_KANAL });
+		await b2.bekle('hazir');
+		b2.yolla({ type: 'ses-gir', kanal: SES_KANAL, devam: true });
+		const g = await b2.bekle('ses-girdi');
+		assert.equal(g.devam, true);
+		assert.deepEqual(g.kisiler, ['aski-a-' + kimlik]);
+		const geri = await a.bekle((m) => m.type === 'ses-kisi-girdi' && m.ad === 'aski-b-' + kimlik);
+		assert.equal(geri.devam, true, 'diğerleri bağlantıyı sürdürsün diye devam:true iletilmeli');
+		assert.ok(!a.topla().some((m) => m.type === 'ses-kisi-cikti'), 'geri dönüşte ses-kisi-cikti gitmemeli');
+
+		// Geri gelip kanala DEVAM ETMEYEN kişinin askıdaki yeri hemen boşalır.
+		b2.kopar();
+		await a.bekle((m) => m.type === 'kanallar' && m.kanallar.some((k) => (k.kisiler || []).some((p) => p.ad === 'aski-b-' + kimlik && p.askida)));
+		const b3 = await istemci();
+		await girisGonder(b3, { type: 'giris', ad: '', id: 'q2', anahtar: b.anahtar, ses: '' });
+		await b3.bekle('hazir');
+		assert.equal((await a.bekle((m) => m.type === 'ses-kisi-cikti' && m.ad === 'aski-b-' + kimlik, 1500)).kanal, SES_KANAL);
+
+		// Hiç dönmeyenin yeri askı süresi dolunca boşalır.
+		if (aski <= 5000) {
+			b3.yolla({ type: 'ses-gir', kanal: SES_KANAL });
+			await b3.bekle('ses-girdi');
+			await a.bekle((m) => m.type === 'ses-kisi-girdi' && m.ad === 'aski-b-' + kimlik);
+			b3.kopar();
+			const cikti = await a.bekle((m) => m.type === 'ses-kisi-cikti' && m.ad === 'aski-b-' + kimlik, aski + 3000);
+			assert.equal(cikti.kanal, SES_KANAL, 'askı süresi dolunca çıkarılmalı');
+		} else {
+			console.log(`     (askı süresi ${aski} ms; süre dolumu denemesi atlandı — SES_ASKI_MS<=5000 ile çalıştır)`);
+			b3.close();
+		}
 		a.close();
 	});
 
@@ -597,12 +703,71 @@ async function turnAl(port, kullanici, sifre) {
 		const a = await gir('can-' + kimlik, 's1');
 		const b = await istemci();
 		await girisGonder(b, { type: 'giris', ad: 'can-' + kimlik, id: 's2' });
-		assert.match((await b.bekle('giris-red')).message, /kullanılıyor/);
+		const red = await b.bekle('giris-red');
+		assert.match(red.message, /kullanılıyor/);
+		assert.equal(red.kod, 'ad-kullaniliyor');
 		b.close();
 		const a2 = await gir('can-' + kimlik, 's1', a.anahtar); // aynı sekme + anahtar → doğrudan giriş
 		assert.equal(a2.hazir.ad, 'can-' + kimlik);
-		a2.close();
+		// Aynı anahtar BAŞKA sekmeden: son giren kazanır, eskisine haber verilir (eskiden "başka
+		// cihazdan bağlı" diye reddediliyordu; ağ değişince kopan bağlantı bir dakika kilitliyordu).
+		const a3 = await gir('can-' + kimlik, 's3', a.anahtar);
+		assert.equal(a3.hazir.ad, 'can-' + kimlik);
+		const devir = await a2.bekle('oturum-devralindi');
+		assert.match(devir.message, /başka/);
+		a3.close();
 		a.close();
+	});
+
+	await dene('beyaz liste: aynı isteği iki kişi aynı anda kabul ederse tek anahtar verilir', async () => {
+		const ikinci = await gir('onayci-' + kimlik, 'o1');
+		const ws = await istemci();
+		await girisGonder(ws, { type: 'giris', ad: 'cift-' + kimlik, id: 'c1' });
+		await ws.bekle('bekleniyor');
+		const i1 = await yonetici.bekle((m) => m.type === 'giris-istegi' && m.ad === 'cift-' + kimlik);
+		await ikinci.bekle((m) => m.type === 'giris-istegi' && m.id === i1.id);
+		yonetici.yolla({ type: 'giris-karari', id: i1.id, kabul: true });
+		ikinci.yolla({ type: 'giris-karari', id: i1.id, kabul: true });
+		const h = await ws.bekle('hazir');
+		assert.match(h.anahtar, /^[0-9a-f]{128}$/);
+		onaylananlar.add('cift-' + kimlik);
+		await new Promise((r) => setTimeout(r, 300));
+		assert.ok(!ws.topla().some((m) => m.type === 'hazir'), 'ikinci bir hazir (ikinci anahtar) gelmemeli');
+		// Verilen anahtar geçerli olmalı (ikinci kabul onu ezmemeli).
+		ws.close();
+		const tekrar = await gir('x', 'c2', h.anahtar);
+		assert.equal(tekrar.hazir.ad, 'cift-' + kimlik);
+		tekrar.close();
+		ikinci.close();
+	});
+
+	await dene('beyaz liste: sonradan gelene bekleyen istekler gösterilir; kayıtlı ad işaretlenir', async () => {
+		const ws = await istemci();
+		await girisGonder(ws, { type: 'giris', ad: 'sonra-' + kimlik, id: 'n1' });
+		await ws.bekle('bekleniyor');
+		const istek = await yonetici.bekle((m) => m.type === 'giris-istegi' && m.ad === 'sonra-' + kimlik);
+		assert.equal(istek.kayitli, false);
+		// İstek varken giren kişi de onu görmeli.
+		const gelen = await gir('yeni-gelen-' + kimlik, 'n2');
+		const ona = await gelen.bekle((m) => m.type === 'giris-istegi' && m.id === istek.id);
+		assert.equal(ona.ad, 'sonra-' + kimlik);
+		yonetici.yolla({ type: 'giris-karari', id: istek.id, kabul: false });
+		await ws.bekle('giris-red');
+		ws.close();
+		// Beyaz listedeki bir adla kapı çalınırsa (yeni cihaz / taklit) kayitli:true gelir.
+		const taklit = await istemci();
+		await girisGonder(taklit, { type: 'giris', ad: 'yeni-gelen-' + kimlik, id: 'n3' });
+		assert.match((await taklit.bekle('giris-red')).message, /kullanılıyor/, 'çevrimiçi adla kapı çalınamaz');
+		taklit.close();
+		gelen.close();
+		await new Promise((r) => setTimeout(r, 200));
+		const taklit2 = await istemci();
+		await girisGonder(taklit2, { type: 'giris', ad: 'yeni-gelen-' + kimlik, id: 'n4' });
+		await taklit2.bekle('bekleniyor');
+		const kayitliIstek = await yonetici.bekle((m) => m.type === 'giris-istegi' && m.ad === 'yeni-gelen-' + kimlik);
+		assert.equal(kayitliIstek.kayitli, true, 'beyaz listedeki ad için kayitli:true');
+		yonetici.yolla({ type: 'giris-karari', id: kayitliIstek.id, kabul: false });
+		taklit2.close();
 	});
 
 	await dene('sesli kanal dolunca reddedilir', async () => {
@@ -628,8 +793,21 @@ async function turnAl(port, kullanici, sifre) {
 			acik.push(w);
 		}
 		const fazla = await gir('fazla-' + kimlik, 'f');
+		// Başka bir sesli kanaldayken dolu kanala geçmeye çalışan, olduğu kanalda kalmalı.
+		const baska = fazla.hazir.kanallar.find((k) => k.tur === 'ses' && k.id !== SES_KANAL);
+		if (baska) {
+			fazla.yolla({ type: 'ses-gir', kanal: baska.id });
+			await fazla.bekle((m) => m.type === 'ses-girdi' && m.kanal === baska.id);
+		}
 		fazla.yolla({ type: 'ses-gir', kanal: SES_KANAL });
-		assert.match((await fazla.bekle('hata')).message, /dolu/);
+		const dolu = await fazla.bekle('hata');
+		assert.match(dolu.message, /dolu/);
+		assert.equal(dolu.kod, 'ses-dolu');
+		if (baska) {
+			fazla.yolla({ type: 'ses-gir', kanal: baska.id });
+			const yine = await fazla.bekle((m) => m.type === 'ses-girdi' && m.kanal === baska.id);
+			assert.equal(yine.devam, true, 'dolu kanala geçemeyen eski kanalında kalmalı');
+		}
 		for (const w of [...acik, fazla]) w.close();
 		// Geçici olarak yükseltilen kişi limitini geri al.
 		if (kisiLimiti < max + 2) {
@@ -641,13 +819,22 @@ async function turnAl(port, kullanici, sifre) {
 
 	// --- kanal yönetimi (ekle / sil) ve çık-gir
 
-	const kanalBekle = (ws, kosul) => ws.bekle((m) => m.type === 'kanallar' && kosul(m.kanallar));
+	// Tampondaki eski 'kanallar' mesajları (ör. kanal eklenmeden önceki yayın) yanlışlıkla eşleşmesin:
+	// önce tampon boşaltılır, sonra yalnızca yeni gelen yayın beklenir.
+	const kanalBekle = (ws, kosul) => {
+		ws.topla();
+		return ws.bekle((m) => m.type === 'kanallar' && kosul(m.kanallar));
+	};
+	const kanalIslem = (ws, ileti, kosul) => {
+		ws.topla();
+		ws.yolla(ileti);
+		return ws.bekle((m) => m.type === 'kanallar' && kosul(m.kanallar));
+	};
 
 	await dene('kanal: yazılı kanal eklenir, mesaj alır, silinince mesajları da gider', async () => {
 		const a = await gir('kanalci-' + kimlik, 'k1');
 		const ad = 'deneme ' + crypto.randomBytes(3).toString('hex');
-		a.yolla({ type: 'kanal-ekle', tur: 'yazi', ad });
-		const liste = await kanalBekle(a, (ks) => ks.some((k) => k.ad === ad && k.tur === 'yazi'));
+		const liste = await kanalIslem(a, { type: 'kanal-ekle', tur: 'yazi', ad }, (ks) => ks.some((k) => k.ad === ad && k.tur === 'yazi'));
 		const kanal = liste.kanallar.find((k) => k.ad === ad);
 		assert.match(kanal.id, /^[a-z0-9-]+$/, 'kanal kimliği sadeleştirilmiş olmalı');
 
@@ -659,8 +846,7 @@ async function turnAl(port, kullanici, sifre) {
 		const g = await a.bekle((m) => m.type === 'gecmis' && m.kanal === kanal.id);
 		assert.equal(g.mesajlar.length, 1, 'yeni kanalın geçmişi kendi mesajını içerir');
 
-		a.yolla({ type: 'kanal-sil', kanal: kanal.id });
-		await kanalBekle(a, (ks) => !ks.some((k) => k.id === kanal.id));
+		await kanalIslem(a, { type: 'kanal-sil', kanal: kanal.id }, (ks) => !ks.some((k) => k.id === kanal.id));
 		a.yolla({ type: 'gecmis', kanal: kanal.id });
 		assert.match((await a.bekle('hata')).message, /Bilinmeyen kanal/, 'silinen kanalın geçmişi yok');
 		a.close();
@@ -670,8 +856,7 @@ async function turnAl(port, kullanici, sifre) {
 		const a = await gir('sesli-a-' + kimlik, 'v1');
 		const b = await gir('sesli-b-' + kimlik, 'v2');
 		const ad = 'deneme ses ' + crypto.randomBytes(3).toString('hex');
-		a.yolla({ type: 'kanal-ekle', tur: 'ses', ad });
-		const liste = await kanalBekle(a, (ks) => ks.some((k) => k.ad === ad && k.tur === 'ses'));
+		const liste = await kanalIslem(a, { type: 'kanal-ekle', tur: 'ses', ad }, (ks) => ks.some((k) => k.ad === ad && k.tur === 'ses'));
 		const kanal = liste.kanallar.find((k) => k.ad === ad);
 
 		a.yolla({ type: 'ses-gir', kanal: kanal.id });
@@ -682,7 +867,8 @@ async function turnAl(port, kullanici, sifre) {
 		a.yolla({ type: 'kanal-sil', kanal: kanal.id });
 		assert.equal((await a.bekle('ses-kapatildi')).kanal, kanal.id, 'silinen kanaldaki kişi çıkarılır');
 		assert.equal((await b.bekle('ses-kapatildi')).kanal, kanal.id);
-		await kanalBekle(a, (ks) => !ks.some((k) => k.id === kanal.id));
+		// Silme yayını ses-kapatildi'den hemen sonra gelir; tamponda olabilir, boşaltmadan bekle.
+		await a.bekle((m) => m.type === 'kanallar' && !m.kanallar.some((k) => k.id === kanal.id));
 		a.close();
 		b.close();
 	});
@@ -690,8 +876,7 @@ async function turnAl(port, kullanici, sifre) {
 	await dene('kanal: aynı ad, geçersiz tür ve olmayan kanal reddedilir', async () => {
 		const a = await gir('kural-' + kimlik, 'r1');
 		const ad = 'kural ' + crypto.randomBytes(3).toString('hex');
-		a.yolla({ type: 'kanal-ekle', tur: 'yazi', ad });
-		const liste = await kanalBekle(a, (ks) => ks.some((k) => k.ad === ad));
+		const liste = await kanalIslem(a, { type: 'kanal-ekle', tur: 'yazi', ad }, (ks) => ks.some((k) => k.ad === ad));
 		const kanal = liste.kanallar.find((k) => k.ad === ad);
 
 		a.yolla({ type: 'kanal-ekle', tur: 'yazi', ad });
@@ -703,8 +888,7 @@ async function turnAl(port, kullanici, sifre) {
 		a.yolla({ type: 'kanal-sil', kanal: 'boyle-bir-kanal-yok' });
 		assert.match((await a.bekle('hata')).message, /bulunamadı/);
 
-		a.yolla({ type: 'kanal-sil', kanal: kanal.id });
-		await kanalBekle(a, (ks) => !ks.some((k) => k.id === kanal.id));
+		await kanalIslem(a, { type: 'kanal-sil', kanal: kanal.id }, (ks) => !ks.some((k) => k.id === kanal.id));
 		a.close();
 	});
 

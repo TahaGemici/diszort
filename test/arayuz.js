@@ -1,8 +1,10 @@
 // Tarayıcısız arayüz denemesi: gerçek index.html + ana.js, jsdom içinde.
-// WebSocket/fetch/getUserMedia/RTCPeerConnection taklit edilir; giriş (kapıyı çalma + anahtar),
-// kanal seçimi, mesaj çizimi, kanal ekleme/silme, giriş istekleri, atma, sesli kanal satırları,
-// bağlantı istatistikleri ve çık-gir akışı doğrulanır.
-// Sunucuda gerçek tarayıcı çalıştırılmaz (VPS'i kastırıyor); jsdom hafif ve ayrı bir Node süreci.
+// WebSocket/getUserMedia/RTCPeerConnection/AudioContext taklit edilir. Giriş (kapıyı çalma +
+// anahtar), kanal seçimi, mesaj çizimi (gruplama, bahsetme, bağlantılar), kanal ekleme/silme,
+// giriş istekleri (kayıtlı ad uyarısı), atma, kişi limiti, sesli kanal (mikrofon kısıtları, teklif/
+// yanıt + oturum kimliği, Opus ayarları, seviye, susturma/sağırlaştırma), bağlantı istatistikleri,
+// sunucu bağlantısı koparken ses bağlantılarının korunması, giriş freninde uygulamada kalma,
+// oturum devri ve atılma doğrulanır. Gerçek WebRTC için: test/tarayici.js.
 //
 //   npm install --no-save jsdom && node test/arayuz.js      (jsdom yoksa deneme atlanır)
 'use strict';
@@ -34,14 +36,14 @@ const denetle = (ad, kosul, ek = '') => {
 	}
 };
 
-// Sayfayı kur: DOM + taklitler + ana.js. Birden çok kez çağrılabilir (hash/çerez senaryoları).
+const OPUS_TEKLIF = 'v=0\r\nm=audio 9 UDP/TLS/RTP/SAVPF 111\r\na=rtpmap:111 opus/48000/2\r\na=fmtp:111 minptime=10;useinbandfec=1\r\n';
+
+// Sayfayı kur: DOM + taklitler + ana.js. Birden çok kez çağrılabilir (hash/depo senaryoları).
 function kur({ url = 'https://chat.deneme/', depo = {} } = {}) {
 	const dom = new JSDOM(HTML, { url, pretendToBeVisual: true, runScripts: 'dangerously' });
 	const { window } = dom;
-	const d = window.document;
 	for (const [k, v] of Object.entries(depo)) window.localStorage.setItem(k, v);
-
-	const durum = { gonderilen: [], ws: null, mikrofon: 0 };
+	const durum = { gonderilen: [], ws: null, wsler: [], mikrofon: 0, micKisit: null };
 
 	class FakeWS {
 		static OPEN = 1;
@@ -49,6 +51,7 @@ function kur({ url = 'https://chat.deneme/', depo = {} } = {}) {
 			this.url = hedef;
 			this.readyState = 1;
 			durum.ws = this;
+			durum.wsler.push(this);
 			setTimeout(() => this.onopen && this.onopen(), 0);
 		}
 		send(metin) {
@@ -60,67 +63,126 @@ function kur({ url = 'https://chat.deneme/', depo = {} } = {}) {
 		}
 	}
 	window.WebSocket = FakeWS;
-	window.fetch = async () => ({ ok: true, status: 200, json: async () => ({ iceServers: [] }) });
+	window.fetch = async () => ({ ok: true, status: 200, json: async () => ({}) });
+	const izYap = () => {
+		const iz = {
+			enabled: true,
+			kind: 'audio',
+			readyState: 'live',
+			dinleyiciler: {},
+			stop() {
+				this.readyState = 'ended';
+			},
+			addEventListener(ad, fn) {
+				(this.dinleyiciler[ad] = this.dinleyiciler[ad] || []).push(fn);
+			},
+			getSettings: () => ({ echoCancellation: true, noiseSuppression: true, autoGainControl: false, channelCount: 1, sampleRate: 48000 }),
+		};
+		return iz;
+	};
 	Object.defineProperty(window.navigator, 'mediaDevices', {
 		value: {
-			// AGC kapalı istenir (şiddet oynamasın); kısıtlar kaydedilir, sonradan denetlenir.
 			getUserMedia: async (kisitlar) => {
 				durum.mikrofon++;
 				durum.micKisit = kisitlar && kisitlar.audio ? { ...kisitlar.audio } : null;
-				const parca = {
-					enabled: true,
-					kind: 'audio',
-					readyState: 'live',
-					stop() { this.readyState = 'ended'; },
-					getSettings: () => ({ echoCancellation: true, noiseSuppression: true, autoGainControl: false, channelCount: 1 }),
-				};
-				return { getTracks: () => [parca], getAudioTracks: () => [parca] };
+				const iz = izYap();
+				durum.sonIz = iz;
+				return { getTracks: () => [iz], getAudioTracks: () => [iz] };
 			},
+			enumerateDevices: async () => [],
+			addEventListener() {},
+			ondevicechange: null,
 		},
 		configurable: true,
 	});
+	window.MediaStream = class {
+		constructor(izler) {
+			this.izler = izler || [];
+		}
+		getAudioTracks() {
+			return this.izler;
+		}
+		getTracks() {
+			return this.izler;
+		}
+	};
+	window.HTMLMediaElement.prototype.play = function () {
+		this._caliyor = true;
+		return Promise.resolve();
+	};
+	Object.defineProperty(window.HTMLMediaElement.prototype, 'paused', {
+		get() {
+			return !this._caliyor;
+		},
+		configurable: true,
+	});
+
 	class FakePC {
-		constructor() {
+		constructor(ayar) {
 			FakePC.hepsi.push(this);
+			this.ayar = ayar;
 			this.signalingState = 'stable';
 			this.connectionState = 'new';
+			this.iceConnectionState = 'new';
 			this.remoteDescription = null;
-			this._senders = [];
+			this.localDescription = null;
 			this._transceivers = [];
 		}
-		addTransceiver(track, ayar) {
-			const parca = typeof track === 'string' ? null : track;
+		_tr(track, yon, mid) {
 			const tr = {
-				sender: { track: parca, replaceTrack: async () => {}, setStreams() {} },
+				mid: mid ?? null,
+				direction: yon,
+				currentDirection: null,
 				receiver: { track: { kind: 'audio' } },
-				direction: (ayar && ayar.direction) || 'sendrecv',
+				sender: {
+					track,
+					async replaceTrack(t) {
+						this.track = t;
+					},
+					getParameters: () => ({ encodings: [{}] }),
+					async setParameters(p) {
+						tr.parametreler = p;
+					},
+				},
 			};
 			this._transceivers.push(tr);
 			return tr;
 		}
-		addTrack(t) {
-			this._senders.push({ track: t, getParameters: () => ({ encodings: [{}] }), setParameters: async () => {} });
-		}
-		getSenders() {
-			return this._senders;
+		addTransceiver(track, ayar) {
+			const tr = this._tr(typeof track === 'string' ? null : track, (ayar && ayar.direction) || 'sendrecv');
+			setTimeout(() => this.onnegotiationneeded && this.onnegotiationneeded(), 0);
+			return tr;
 		}
 		getTransceivers() {
 			return this._transceivers;
 		}
-		async setLocalDescription() {
-			this.localDescription = { type: 'offer', sdp: 'v=0' };
-			this.signalingState = 'have-local-offer';
+		getSenders() {
+			return this._transceivers.map((t) => t.sender);
 		}
-		async setRemoteDescription(aciklama) {
-			this.remoteDescription = aciklama;
-			// Tarayıcı gibi: teklifteki ses m-line'ı için transceiver oluşur, varsayılan yön recvonly.
-			if (aciklama && aciklama.type === 'offer' && !this._transceivers.length) {
-				const tr = { mid: '0', direction: 'recvonly', receiver: { track: { kind: 'audio' } }, sender: { track: null, setStreams() {} } };
-				tr.sender.replaceTrack = async (t) => {
-					tr.sender.track = t;
-				};
-				this._transceivers.push(tr);
-			}
+		getConfiguration() {
+			return { ...this.ayar };
+		}
+		setConfiguration(a) {
+			this.ayar = a;
+		}
+		async createOffer() {
+			return { type: 'offer', sdp: OPUS_TEKLIF };
+		}
+		async createAnswer() {
+			return { type: 'answer', sdp: OPUS_TEKLIF };
+		}
+		async setLocalDescription(d) {
+			this.localDescription = d;
+			this.signalingState = d.type === 'offer' ? 'have-local-offer' : 'stable';
+		}
+		async setRemoteDescription(d) {
+			this.remoteDescription = d;
+			FakePC.uzaklar.push(d);
+			if (d.type === 'offer') {
+				this.signalingState = 'have-remote-offer';
+				// Tarayıcı gibi: teklifteki ses m-line'ı için transceiver oluşur, varsayılan yön recvonly.
+				if (!this._transceivers.length) this._tr(null, 'recvonly', '0');
+			} else this.signalingState = 'stable';
 		}
 		async addIceCandidate() {}
 		async getStats() {
@@ -128,53 +190,49 @@ function kur({ url = 'https://chat.deneme/', depo = {} } = {}) {
 			const t = Date.now() / 1000;
 			const m = new Map();
 			m.set('tr', { type: 'transport', selectedCandidatePairId: 'pair' });
-			m.set('pair', {
-				type: 'candidate-pair',
-				state: 'succeeded',
-				nominated: true,
-				localCandidateId: 'yerel',
-				remoteCandidateId: 'uzak',
-				currentRoundTripTime: 0.031,
-			});
+			m.set('pair', { type: 'candidate-pair', state: 'succeeded', nominated: true, localCandidateId: 'yerel', remoteCandidateId: 'uzak', currentRoundTripTime: 0.031 });
 			m.set('yerel', { id: 'yerel', type: 'local-candidate', candidateType: 'srflx' });
 			m.set('uzak', { id: 'uzak', type: 'remote-candidate', candidateType: 'srflx' });
-			m.set('gelen', {
-				type: 'inbound-rtp',
-				kind: 'audio',
-				packetsReceived: Math.round(t * 50),
-				packetsLost: 3,
-				bytesReceived: Math.round(t * 8000),
-				jitter: 0.011,
-			});
+			m.set('gelen', { type: 'inbound-rtp', kind: 'audio', packetsReceived: Math.round(t * 50), packetsLost: 3, bytesReceived: Math.round(t * 12000), jitter: 0.011 });
+			m.set('giden', { type: 'outbound-rtp', kind: 'audio', bytesSent: Math.round(t * 12000) });
 			return m;
 		}
-		restartIce() {}
 		close() {
 			this.signalingState = 'closed';
+			this.kapandi = true;
 		}
 	}
 	FakePC.hepsi = [];
+	FakePC.uzaklar = [];
 	window.RTCPeerConnection = FakePC;
 	window.AudioContext = class {
 		constructor() {
 			this.state = 'running';
+			this.currentTime = 0;
 		}
 		createAnalyser() {
-			return { fftSize: 256, frequencyBinCount: 128, getByteFrequencyData() {} };
+			return { fftSize: 1024, getFloatTimeDomainData(v) { v.fill(0.1); } };
 		}
 		createMediaStreamSource() {
 			return { connect() {}, disconnect() {} };
 		}
+		createOscillator() {
+			return { frequency: {}, connect() {}, start() {}, stop() {} };
+		}
+		createGain() {
+			return { gain: { value: 1, setValueAtTime() {}, linearRampToValueAtTime() {}, exponentialRampToValueAtTime() {} }, connect() {}, disconnect() {} };
+		}
 		resume() {
 			return Promise.resolve();
 		}
-		close() {
-			return Promise.resolve();
-		}
 	};
-
-	window.eval(BETIK);
-	return { window, d, ...durum, oc: durum, FakePC };
+	// <script> öğesiyle yükle (tarayıcıdaki gibi): üst düzey let/const genel kapsamda olur ve
+	// deneme window.eval('esler') gibi iç duruma bakabilir. window.eval(BETIK) 'use strict' yüzünden
+	// bunları o eval'e hapsediyordu.
+	const betik = window.document.createElement('script');
+	betik.textContent = BETIK;
+	window.document.body.append(betik);
+	return { window, d: window.document, oc: durum, FakePC };
 }
 
 const kanallar = [
@@ -183,46 +241,60 @@ const kanallar = [
 	{ id: 'sesli-sohbet', ad: 'Sesli Sohbet', tur: 'ses', kisiler: [] },
 	{ id: 'muzik', ad: 'Müzik', tur: 'ses', kisiler: [] },
 ];
+const ICE = { iceServers: [{ urls: ['stun:1.2.3.4:3478'] }, { urls: ['turn:1.2.3.4:3478?transport=udp'], username: 'u', credential: 'c' }] };
 
 (async () => {
 	// --- 0) anahtar kurulum bağlantısı: #anahtar=… → localStorage + otomatik giriş
 	{
 		const s = kur({ url: 'https://chat.deneme/#anahtar=abc123def456', depo: { ad: 'taha' } });
-		await bekle(200); // otomatik giriş ICE'yi bekler
+		await bekle(50);
 		denetle('hash ile anahtar kaydedildi', s.window.localStorage.getItem('anahtar') === 'abc123def456', String(s.window.localStorage.getItem('anahtar')));
 		denetle('adres çubuğu temizlendi', !s.window.location.hash, s.window.location.hash);
 		const g = s.oc.gonderilen.find((m) => m.type === 'giris');
-		denetle('anahtarla otomatik giriş yapıldı', g && g.anahtar === 'abc123def456', JSON.stringify(g));
+		denetle('anahtarla otomatik giriş yapıldı', g && g.anahtar === 'abc123def456' && g.ad === '', JSON.stringify(g));
+		// Sunucu kapalıyken açıldı: bağlantı kopunca kendiliğinden yeniden denenmeli (eskiden takılıyordu).
+		s.oc.ws.close();
+		await bekle(1500);
+		denetle('anahtarla açılışta sunucu yoksa yeniden denenir', s.oc.wsler.length >= 2, String(s.oc.wsler.length));
+		// Giriş freni: söylenen süre kadar bekleyip yeniden dener.
+		s.oc.ws.onmessage({ data: JSON.stringify({ type: 'giris-red', message: 'Çok sık deneme; 1 saniye sonra tekrar dene.', kod: 'fren', bekle: 200 }) });
+		await bekle(80);
+		denetle('frende giriş ekranında geri sayım', /yeniden denenecek/.test(s.d.getElementById('giris-durum').textContent), s.d.getElementById('giris-durum').textContent);
+		const once = s.oc.wsler.length;
+		await bekle(1700);
+		denetle('frenden sonra kendiliğinden yeniden denendi', s.oc.wsler.length > once, `${once} → ${s.oc.wsler.length}`);
 	}
 
 	// --- 1) giriş ekranı: sadece ad
 	const s = kur();
 	const d = s.d;
 	const w = s.window;
+	const gelsin = (m) => s.oc.ws.onmessage({ data: JSON.stringify(m) });
+	const son = (tur) => s.oc.gonderilen.filter((m) => m.type === tur).at(-1);
 	denetle('giriş ekranı görünür', !d.getElementById('giris-ekrani').hidden);
 	denetle('uygulama gizli', d.getElementById('uygulama').hidden);
 	denetle('giriş alanında örnek yazı yok', d.getElementById('ad').getAttribute('placeholder') === null);
 	denetle('giriş açıklaması yok', !d.querySelector('#giris .alt') && !/Hesap yok/i.test(d.getElementById('giris').textContent));
 	denetle('sunucu şeridi (en sol bar) yok', d.getElementById('kenar') === null);
 	denetle('anahtarsız açılışta WebSocket açılmadı', !s.oc.ws);
+	denetle('simgeler SVG olarak çizildi', d.querySelectorAll('#ben-mikrofon svg.ikon').length === 1);
 
 	// --- 2) ad yaz → kapıyı çal → "izin bekleniyor"
 	d.getElementById('ad').value = 'taha';
 	d.getElementById('giris').dispatchEvent(new w.Event('submit', { cancelable: true, bubbles: true }));
-	await bekle(80);
+	await bekle(40);
 	denetle('WebSocket açıldı', !!s.oc.ws && s.oc.ws.url.endsWith('/rtc'), s.oc.ws && s.oc.ws.url);
 	const girisMesaji = s.oc.gonderilen.find((m) => m.type === 'giris');
 	denetle('giris mesajı gönderildi', girisMesaji && girisMesaji.ad === 'taha', JSON.stringify(girisMesaji));
 	denetle('anahtarsız istekte anahtar boş', girisMesaji && !girisMesaji.anahtar);
-
-	s.oc.ws.onmessage({ data: JSON.stringify({ type: 'bekleniyor', ad: 'taha', anahtarGecersiz: false }) });
-	await bekle(40);
+	gelsin({ type: 'bekleniyor', ad: 'taha', anahtarGecersiz: false });
+	await bekle(30);
 	denetle('izin bekleniyor durumu gösterildi', /izin bekleniyor/i.test(d.getElementById('giris-durum').textContent), d.getElementById('giris-durum').textContent);
 	denetle('ad alanı kilitlendi', d.getElementById('ad').disabled === true);
 	denetle('istek geri çek düğmesi göründü', d.getElementById('giris-iptal').hidden === false);
 
 	// --- 3) onaylandı → anahtar saklandı, arayüz açıldı
-	const hazir = {
+	gelsin({
 		type: 'hazir',
 		ad: 'taha',
 		kanallar,
@@ -237,77 +309,102 @@ const kanallar = [
 		dosyaMb: 25,
 		jeton: 'a'.repeat(32),
 		anahtar: 'f'.repeat(128),
-	};
-	s.oc.ws.onmessage({ data: JSON.stringify(hazir) });
-	await bekle(60);
-
+		ice: ICE,
+		surum: 'v1',
+		turnNesli: 'n1',
+	});
+	await bekle(50);
 	denetle('giriş ekranı kapandı', d.getElementById('giris-ekrani').hidden);
 	denetle('uygulama açıldı', !d.getElementById('uygulama').hidden);
 	denetle('verilen anahtar localStorage’a yazıldı', w.localStorage.getItem('anahtar') === 'f'.repeat(128));
+	denetle('TURN bilgisi hazir mesajından alındı', w.eval('ice.iceServers.length') === 2);
 	denetle('kendi adı yazıldı', d.getElementById('ben-ad').textContent === 'taha', d.getElementById('ben-ad').textContent);
 	denetle('yazılı kanallar çizildi', d.querySelectorAll('#yazi-kanallari .kanal-satir').length === 2, String(d.querySelectorAll('#yazi-kanallari .kanal-satir').length));
 	denetle('sesli kanallar çizildi', d.querySelectorAll('#ses-kanallari .kanal-satir').length === 2, String(d.querySelectorAll('#ses-kanallari .kanal-satir').length));
 	denetle('kanal silme düğmesi var', d.querySelectorAll('#yazi-kanallari .kanal-sil').length === 2);
 	denetle('kanal ekleme düğmeleri var', !!d.getElementById('yazi-ekle') && !!d.getElementById('ses-ekle'));
-	denetle('ilk kanal #genel seçildi', d.getElementById('kanal-ad').textContent === '#genel', d.getElementById('kanal-ad').textContent);
+	denetle('ilk kanal genel seçildi', d.getElementById('kanal-ad').textContent === 'genel', d.getElementById('kanal-ad').textContent);
 	denetle('çevrimiçi sayısı 2', d.getElementById('uye-sayi').textContent === '2', d.getElementById('uye-sayi').textContent);
 	denetle('beyaz liste göstergesi', /3\/10/.test(d.getElementById('beyaz-liste').textContent), d.getElementById('beyaz-liste').textContent);
-	// Beyaz listede olup çevrimdışı olan kişi de üye panelinde görünür (soluk + "çevrimdışı").
 	denetle('çevrimdışı beyaz liste üyesi listelendi', d.querySelectorAll('#uye-listesi .uye').length === 3, String(d.querySelectorAll('#uye-listesi .uye').length));
-	denetle('çevrimdışı üye işaretli', d.querySelectorAll('#uye-listesi .uye.cevrimdisi').length === 1, String(d.querySelectorAll('#uye-listesi .uye.cevrimdisi').length));
-	denetle('çevrimdışı üye adı + etiketi', /deniz/.test(d.querySelector('#uye-listesi .uye.cevrimdisi')?.textContent || '') && /çevrimdışı/.test(d.querySelector('#uye-listesi .uye.cevrimdisi')?.textContent || ''), d.querySelector('#uye-listesi .uye.cevrimdisi')?.textContent);
+	denetle('çevrimdışı üye işaretli', d.querySelectorAll('#uye-listesi .uye.cevrimdisi').length === 1);
+	const cevrimdisi = d.querySelector('#uye-listesi .uye.cevrimdisi');
+	denetle('çevrimdışı üye adı + etiketi', /deniz/.test(cevrimdisi?.textContent || '') && /çevrimdışı/.test(cevrimdisi?.textContent || ''), cevrimdisi?.textContent);
 	denetle('üye listesinde atma düğmesi (kendinde yok)', d.querySelectorAll('#uye-listesi .uye-at').length === 2, String(d.querySelectorAll('#uye-listesi .uye-at').length));
 	denetle('geçmiş istendi', s.oc.gonderilen.some((m) => m.type === 'gecmis' && m.kanal === 'genel'));
-	denetle('mic düğmesi sesli kanal yokken kapalı', d.getElementById('ben-mikrofon').disabled === true);
+	denetle('mikrofon düğmesi sesli kanal dışında da kullanılabilir (kanala susturulmuş girmek için)', d.getElementById('ben-mikrofon').disabled === false);
 
-	// --- 4) geçmiş çizilir (gruplama + gün ayırıcı + bahsetme + resim)
+	// --- 4) geçmiş çizilir (gruplama + gün ayırıcı + bahsetme + resim + bağlantı)
 	const simdi = Date.now();
-	s.oc.ws.onmessage({
-		data: JSON.stringify({
-			type: 'gecmis',
-			kanal: 'genel',
-			bitti: false,
-			mesajlar: [
-				{ id: 1, ad: 'bora', metin: 'selam', zaman: simdi - 3600000 },
-				{ id: 2, ad: 'bora', metin: 'ikinci mesaj', zaman: simdi - 3500000 },
-				{ id: 3, ad: 'bora', metin: '@taha duyuyor musun', zaman: simdi - 60000 },
-				{ id: 4, ad: 'bora', metin: '', zaman: simdi - 50000, dosya: { id: 'b'.repeat(18), ad: 'resim.png', boyut: 2048, tur: 'image/png' } },
-			],
-		}),
+	gelsin({
+		type: 'gecmis',
+		kanal: 'genel',
+		bitti: false,
+		mesajlar: [
+			{ id: 1, ad: 'bora', metin: 'selam', zaman: simdi - 3600000 },
+			{ id: 2, ad: 'bora', metin: 'ikinci mesaj', zaman: simdi - 3500000 },
+			{ id: 3, ad: 'bora', metin: '@taha duyuyor musun https://ornek.com/a?b=1.', zaman: simdi - 60000 },
+			{ id: 4, ad: 'bora', metin: '', zaman: simdi - 50000, dosya: { id: 'b'.repeat(18), ad: 'resim.png', boyut: 2048, tur: 'image/png' } },
+		],
 	});
-	await bekle(40);
+	await bekle(30);
 	const mesajlar = d.querySelectorAll('#mesajlar .mesaj');
 	denetle('4 mesaj çizildi', mesajlar.length === 4, String(mesajlar.length));
 	denetle('gruplama: 2. mesaj gruplu', mesajlar[1].classList.contains('gruplu'));
+	denetle('gruplu mesajda saat yan tarafta', !!mesajlar[1].querySelector('.yan-saat'));
 	denetle('gün ayırıcı var', d.querySelectorAll('#mesajlar .gun').length >= 1);
 	denetle('bahsetme vurgulandı', d.querySelectorAll('#mesajlar .bahsetme').length === 1);
+	denetle('bahseden mesaj işaretli', d.querySelectorAll('#mesajlar .mesaj.bahsediliyor').length === 1);
+	const baglanti = d.querySelector('#mesajlar .metin a');
+	denetle('bağlantı tıklanabilir (sondaki nokta hariç)', baglanti && baglanti.getAttribute('href') === 'https://ornek.com/a?b=1', baglanti && baglanti.getAttribute('href'));
+	denetle('bağlantı yeni sekmede, noopener', baglanti && baglanti.target === '_blank' && /noopener/.test(baglanti.rel));
 	denetle('resim önizlemesi var', !!d.querySelector('#mesajlar img.onizleme'));
 	denetle('daha eski düğmesi görünür', d.getElementById('daha-eski').hidden === false);
+	// Metin HTML olarak yorumlanmaz.
+	gelsin({ type: 'yazi', kanal: 'genel', mesaj: { id: 9, ad: 'bora', metin: '<img src=x onerror=alert(1)>', zaman: Date.now() } });
+	await bekle(20);
+	denetle('mesaj metni HTML olarak çalışmaz', !d.querySelector('#mesajlar .metin img'));
 
 	// --- 5) yeni mesaj + okunmamış rozeti
-	s.oc.ws.onmessage({ data: JSON.stringify({ type: 'yazi', kanal: 'genel', mesaj: { id: 5, ad: 'bora', metin: 'yeni mesaj', zaman: Date.now() } }) });
-	await bekle(30);
-	denetle('yeni mesaj eklendi', d.querySelectorAll('#mesajlar .mesaj').length === 5, String(d.querySelectorAll('#mesajlar .mesaj').length));
-	s.oc.ws.onmessage({ data: JSON.stringify({ type: 'yazi', kanal: 'muhabbet', mesaj: { id: 6, ad: 'bora', metin: 'başka kanal', zaman: Date.now() } }) });
-	await bekle(30);
-	const muhabbetDugme = [...d.querySelectorAll('#yazi-kanallari .kanal')].find((b) => b.textContent.includes('muhabbet'));
-	denetle('okunmamış rozeti', !!muhabbetDugme.querySelector('.rozet'));
+	gelsin({ type: 'yazi', kanal: 'genel', mesaj: { id: 5, ad: 'bora', metin: 'yeni mesaj', zaman: Date.now() } });
+	await bekle(20);
+	denetle('yeni mesaj eklendi', d.querySelectorAll('#mesajlar .mesaj').length === 6, String(d.querySelectorAll('#mesajlar .mesaj').length));
+	gelsin({ type: 'yazi', kanal: 'muhabbet', mesaj: { id: 6, ad: 'bora', metin: 'başka kanal', zaman: Date.now() } });
+	await bekle(20);
+	const muhabbetDugme = () => [...d.querySelectorAll('#yazi-kanallari .kanal')].find((b) => b.textContent.includes('muhabbet'));
+	denetle('okunmamış rozeti', !!muhabbetDugme().querySelector('.rozet'));
 	denetle('sekme başlığı rozetli', d.title.startsWith('(1)'), d.title);
 
-	// --- 6) mesaj gönderme
-	d.getElementById('metin').value = 'merhaba dünya';
+	// --- 6) mesaj gönderme (Enter) ve IME
+	const metin = d.getElementById('metin');
+	metin.value = 'merhaba dünya';
 	d.getElementById('yazma').dispatchEvent(new w.Event('submit', { cancelable: true, bubbles: true }));
-	await bekle(30);
-	const yazi = s.oc.gonderilen.filter((m) => m.type === 'yazi').at(-1);
+	await bekle(20);
+	const yazi = son('yazi');
 	denetle('yazi gönderildi', yazi && yazi.metin === 'merhaba dünya' && yazi.kanal === 'genel', JSON.stringify(yazi));
-	denetle('yazma kutusu temizlendi', d.getElementById('metin').value === '');
+	denetle('yazma kutusu temizlendi', metin.value === '');
+	await bekle(300);
+	metin.value = 'kanji';
+	metin.dispatchEvent(new w.KeyboardEvent('keydown', { key: 'Enter', isComposing: true, bubbles: true, cancelable: true }));
+	await bekle(20);
+	denetle('IME ile yazarken Enter göndermez', metin.value === 'kanji' && son('yazi').metin === 'merhaba dünya');
+	metin.dispatchEvent(new w.KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }));
+	await bekle(20);
+	denetle('normal Enter gönderir', son('yazi').metin === 'kanji');
 
 	// --- 7) kanal değiştirme
-	muhabbetDugme.dispatchEvent(new w.MouseEvent('click', { bubbles: true }));
-	await bekle(40);
-	denetle('kanal değişti', d.getElementById('kanal-ad').textContent === '#muhabbet', d.getElementById('kanal-ad').textContent);
-	denetle('yeni kanal için geçmiş istendi', s.oc.gonderilen.filter((m) => m.type === 'gecmis').at(-1).kanal === 'muhabbet');
+	muhabbetDugme().dispatchEvent(new w.MouseEvent('click', { bubbles: true }));
+	await bekle(30);
+	denetle('kanal değişti', d.getElementById('kanal-ad').textContent === 'muhabbet', d.getElementById('kanal-ad').textContent);
+	denetle('yeni kanal için geçmiş istendi', son('gecmis').kanal === 'muhabbet');
 	denetle('rozet temizlendi', !d.title.startsWith('('), d.title);
+	// Yanıt gelmeden başka kanala geçilirse o kanalın geçmişi de istenmeli (eskiden takılıyordu).
+	const gecmisSayisi = s.oc.gonderilen.filter((m) => m.type === 'gecmis').length;
+	[...d.querySelectorAll('#yazi-kanallari .kanal')].find((b) => b.textContent.includes('genel')).click();
+	await bekle(20);
+	denetle('yanıtsız geçmiş isteği yeni kanalı engellemez', s.oc.gonderilen.filter((m) => m.type === 'gecmis').length === gecmisSayisi + 1 && son('gecmis').kanal === 'genel');
+	muhabbetDugme().click();
+	await bekle(20);
 
 	// --- 8) kanal ekleme / silme
 	d.getElementById('yazi-ekle').dispatchEvent(new w.MouseEvent('click', { bubbles: true }));
@@ -317,169 +414,257 @@ const kanallar = [
 	denetle('girdi odaklandı', d.activeElement === d.getElementById('pencere-girdi'));
 	d.getElementById('pencere-girdi').value = 'duyurular';
 	d.getElementById('pencere-form').dispatchEvent(new w.Event('submit', { cancelable: true, bubbles: true }));
-	await bekle(30);
-	const ekleMesaji = s.oc.gonderilen.filter((m) => m.type === 'kanal-ekle').at(-1);
-	denetle('kanal-ekle gönderildi', ekleMesaji && ekleMesaji.tur === 'yazi' && ekleMesaji.ad === 'duyurular', JSON.stringify(ekleMesaji));
-
+	await bekle(20);
+	const ekle = son('kanal-ekle');
+	denetle('kanal-ekle gönderildi', ekle && ekle.tur === 'yazi' && ekle.ad === 'duyurular', JSON.stringify(ekle));
 	d.getElementById('ses-ekle').dispatchEvent(new w.MouseEvent('click', { bubbles: true }));
 	await bekle(20);
 	denetle('sesli kanal penceresi açıldı', /Sesli kanal ekle/.test(d.getElementById('pencere-baslik').textContent));
 	d.dispatchEvent(new w.KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
 	await bekle(20);
 	denetle('Escape pencereyi kapattı', d.getElementById('pencere').hidden === true);
-
 	d.querySelector('#yazi-kanallari .kanal-sil').dispatchEvent(new w.MouseEvent('click', { bubbles: true }));
 	await bekle(20);
 	denetle('silme penceresi açıldı', d.getElementById('pencere').hidden === false);
 	denetle('silme penceresinde girdi yok', d.getElementById('pencere-girdi').hidden === true);
 	denetle('onay düğmesi "Sil"', d.getElementById('pencere-tamam').textContent === 'Sil');
 	d.getElementById('pencere-form').dispatchEvent(new w.Event('submit', { cancelable: true, bubbles: true }));
-	await bekle(30);
-	const silMesaji = s.oc.gonderilen.filter((m) => m.type === 'kanal-sil').at(-1);
-	denetle('kanal-sil gönderildi', silMesaji && silMesaji.kanal === 'genel', JSON.stringify(silMesaji));
+	await bekle(20);
+	denetle('kanal-sil gönderildi', son('kanal-sil') && son('kanal-sil').kanal === 'genel', JSON.stringify(son('kanal-sil')));
 
-	// --- 9) giriş istekleri: kabul / red
-	s.oc.ws.onmessage({ data: JSON.stringify({ type: 'giris-istegi', id: 'i1', ad: 'deniz' }) });
-	await bekle(30);
+	// --- 9) giriş istekleri: kabul / red, kayıtlı ad uyarısı
+	gelsin({ type: 'giris-istegi', id: 'i1', ad: 'deniz', kayitli: true });
+	await bekle(20);
 	const istekKarti = d.querySelector('#istekler .istek');
 	denetle('giriş isteği kartı göründü', !!istekKarti && /deniz/.test(istekKarti.textContent), istekKarti && istekKarti.textContent);
+	denetle('kayıtlı ad için uyarı var', !!istekKarti.querySelector('.istek-uyari') && /anahtarı iptal/.test(istekKarti.textContent));
 	const dugmeler = istekKarti.querySelectorAll('button');
 	denetle('kabul/red düğmeleri var', dugmeler.length === 2, String(dugmeler.length));
 	dugmeler[0].dispatchEvent(new w.MouseEvent('click', { bubbles: true }));
-	await bekle(30);
-	const karar = s.oc.gonderilen.filter((m) => m.type === 'giris-karari').at(-1);
-	denetle('kabul kararı gönderildi', karar && karar.id === 'i1' && karar.kabul === true, JSON.stringify(karar));
+	await bekle(20);
+	denetle('kabul kararı gönderildi', son('giris-karari') && son('giris-karari').id === 'i1' && son('giris-karari').kabul === true);
 	denetle('istek kartı kapandı', d.querySelectorAll('#istekler .istek').length === 0);
-
-	s.oc.ws.onmessage({ data: JSON.stringify({ type: 'giris-istegi', id: 'i2', ad: 'kerem' }) });
-	await bekle(30);
+	gelsin({ type: 'giris-istegi', id: 'i2', ad: 'kerem', kayitli: false });
+	await bekle(20);
 	const kart2 = d.querySelector('#istekler .istek');
+	denetle('kayıtsız ad için uyarı yok', !kart2.querySelector('.istek-uyari'));
 	kart2.querySelectorAll('button')[1].dispatchEvent(new w.MouseEvent('click', { bubbles: true }));
-	await bekle(30);
-	const karar2 = s.oc.gonderilen.filter((m) => m.type === 'giris-karari').at(-1);
-	denetle('red kararı gönderildi', karar2 && karar2.id === 'i2' && karar2.kabul === false, JSON.stringify(karar2));
+	await bekle(20);
+	denetle('red kararı gönderildi', son('giris-karari').id === 'i2' && son('giris-karari').kabul === false);
 
 	// --- 10) üye atmak (onaylı)
-	const atDugme = d.querySelector('#uye-listesi .uye-at');
-	atDugme.dispatchEvent(new w.MouseEvent('click', { bubbles: true }));
+	d.querySelector('#uye-listesi .uye-at').dispatchEvent(new w.MouseEvent('click', { bubbles: true }));
 	await bekle(20);
 	denetle('atma onayı istendi', d.getElementById('pencere').hidden === false && /bora/.test(d.getElementById('pencere-metin').textContent), d.getElementById('pencere-metin').textContent);
 	d.getElementById('pencere-form').dispatchEvent(new w.Event('submit', { cancelable: true, bubbles: true }));
-	await bekle(30);
-	const atMesaji = s.oc.gonderilen.filter((m) => m.type === 'at').at(-1);
-	denetle('at mesajı gönderildi', atMesaji && atMesaji.ad === 'bora', JSON.stringify(atMesaji));
+	await bekle(20);
+	denetle('at mesajı gönderildi', son('at') && son('at').ad === 'bora', JSON.stringify(son('at')));
 
 	// --- 10b) kişi limiti arttır/azalt (beyaz listedekiler)
 	denetle('limit düğmeleri etkin', !d.getElementById('limit-cok').disabled && !d.getElementById('limit-az').disabled);
-	d.getElementById('limit-cok').dispatchEvent(new w.MouseEvent('click', { bubbles: true }));
+	d.getElementById('limit-cok').click();
 	await bekle(20);
-	const limitArti = s.oc.gonderilen.filter((m) => m.type === 'kisi-limiti').at(-1);
-	denetle('limit arttırma mesajı gönderildi', limitArti && limitArti.deger === 11, JSON.stringify(limitArti));
-	// Sunucu yeni limiti duyurur → gösterge güncellenmeli.
-	s.oc.ws.onmessage({ data: JSON.stringify({ type: 'kimler', kimler: [], beyazListe: 2, maxKullanici: 11 }) });
+	denetle('limit arttırma mesajı gönderildi', son('kisi-limiti') && son('kisi-limiti').deger === 11, JSON.stringify(son('kisi-limiti')));
+	gelsin({ type: 'kimler', kimler: [{ ad: 'taha' }], beyazListe: 2, maxKullanici: 11 });
 	await bekle(20);
 	denetle('limit göstergesi güncellendi', /2\/11/.test(d.getElementById('beyaz-liste').textContent), d.getElementById('beyaz-liste').textContent);
-	d.getElementById('limit-az').dispatchEvent(new w.MouseEvent('click', { bubbles: true }));
+	d.getElementById('limit-az').click();
 	await bekle(20);
-	const limitEksi = s.oc.gonderilen.filter((m) => m.type === 'kisi-limiti').at(-1);
-	denetle('limit azaltma mesajı gönderildi', limitEksi && limitEksi.deger === 10, JSON.stringify(limitEksi));
+	denetle('limit azaltma mesajı gönderildi', son('kisi-limiti').deger === 10);
 
 	// --- 11) sesli kanala gir
-	const sesDugme = [...d.querySelectorAll('#ses-kanallari .kanal')].find((b) => b.textContent.includes('Sesli Sohbet'));
-	sesDugme.dispatchEvent(new w.MouseEvent('click', { bubbles: true }));
+	const sesDugme = () => [...d.querySelectorAll('#ses-kanallari .kanal')].find((b) => b.textContent.includes('Sesli Sohbet'));
+	sesDugme().click();
+	sesDugme().click(); // çift tıklama: ikinci mikrofon akışı açılmamalı
 	await bekle(60);
-	denetle('mikrofon istendi', s.oc.mikrofon === 1, String(s.oc.mikrofon));
-	denetle('AGC kapalı istendi', !!(s.oc.micKisit && s.oc.micKisit.autoGainControl === false), JSON.stringify(s.oc.micKisit));
-	denetle('yankı giderme açık istendi', !!(s.oc.micKisit && s.oc.micKisit.echoCancellation === true), JSON.stringify(s.oc.micKisit));
-	denetle('ses-gir gönderildi', s.oc.gonderilen.some((m) => m.type === 'ses-gir' && m.kanal === 'sesli-sohbet'));
-
-	s.oc.ws.onmessage({ data: JSON.stringify({ type: 'ses-girdi', kanal: 'sesli-sohbet', kisiler: ['bora'] }) });
+	denetle('mikrofon bir kez istendi (çift tıklamada sızıntı yok)', s.oc.mikrofon === 1, String(s.oc.mikrofon));
+	denetle('AGC kapalı istendi', s.oc.micKisit && s.oc.micKisit.autoGainControl === false, JSON.stringify(s.oc.micKisit));
+	denetle('yankı ve gürültü giderme açık istendi', s.oc.micKisit && s.oc.micKisit.echoCancellation === true && s.oc.micKisit.noiseSuppression === true);
+	const sesGir = son('ses-gir');
+	denetle('ses-gir gönderildi (sessiz/sağır durumu ile)', sesGir && sesGir.kanal === 'sesli-sohbet' && sesGir.sessiz === false && sesGir.sagir === false, JSON.stringify(sesGir));
+	gelsin({ type: 'ses-girdi', kanal: 'sesli-sohbet', kisiler: ['bora'], ice: ICE, devam: false });
 	await bekle(60);
 	denetle('ses kartı göründü', d.getElementById('ses-karti').hidden === false);
-	denetle('kendi satırı + eş satırı', d.querySelectorAll('#ses-kisiler .ses-kisi').length === 2, String(d.querySelectorAll('#ses-kisiler .ses-kisi').length));
-	denetle('eş satırında ses seviyesi kaydırıcısı', !!d.querySelector('#ses-kisiler input.ses-seviye'));
-	// Kaydırıcı kalıcı: değeri saklanır ve tekrar katılımda geri yüklenir.
+	denetle('ses bağlantı paneli göründü', d.getElementById('ses-baglanti').hidden === false);
+	denetle('kendi kutusu + eş kutusu', d.querySelectorAll('#ses-kisiler .ses-kisi').length === 2, String(d.querySelectorAll('#ses-kisiler .ses-kisi').length));
 	const kaydirici = d.querySelector('#ses-kisiler input.ses-seviye');
+	denetle('eş kutusunda ses seviyesi kaydırıcısı', !!kaydirici);
 	kaydirici.value = '37';
 	kaydirici.dispatchEvent(new w.Event('input', { bubbles: true }));
 	denetle('ses seviyesi saklandı', w.localStorage.getItem('ses-seviye-bora') === '37', String(w.localStorage.getItem('ses-seviye-bora')));
-	denetle('ses seviyesi uygulandı', d.querySelector('#ses-kisiler audio.ses-akis').volume === 0.37, String(d.querySelector('#ses-kisiler audio.ses-akis').volume));
-	// Tek yönlü ses hatası sınıfı: ses kanalı MİKROFON İZİYLE açılmalı. İzsiz açılırsa Firefox
-	// yanıtı "recvonly"ye kilitliyor ve karşı taraf hiç ses almıyor.
-	const ilkPc = s.FakePC.hepsi[s.FakePC.hepsi.length - 1];
+	const sesOgesi = d.querySelector('#ses-akislari audio.ses-akis');
+	denetle('ses seviyesi uygulandı', sesOgesi && sesOgesi.volume === 0.37, String(sesOgesi && sesOgesi.volume));
+	denetle('gelen ses öğesi gizli değil (iOS)', sesOgesi && !sesOgesi.hidden && sesOgesi.getAttribute('playsinline') === '');
+	// Teklif eden biziz ('taha' > 'bora'): ses kanalı mikrofon iziyle açılmalı, teklif oturum kimliği taşımalı.
+	const ilkPc = s.FakePC.hepsi.at(-1);
 	const ilkTr = ilkPc && ilkPc._transceivers[0];
-	denetle('ses kanalı mikrofon iziyle açıldı', !!(ilkTr && ilkTr.sender.track), ilkTr && ilkTr.sender.track ? 'iz var' : 'iz yok');
-	denetle('ses kanalı sendrecv', !!(ilkTr && ilkTr.direction === 'sendrecv'), ilkTr && ilkTr.direction);
-	denetle('mikrofon düğmesi açıldı', d.getElementById('ben-mikrofon').disabled === false);
-	denetle('sessiz durumu bildirildi', s.oc.gonderilen.some((m) => m.type === 'sessiz'));
-
-	// Yanıtlayan taraf (adı büyük olan teklif eder → 'zeynep' > 'taha'): transceiver'ı ÖNCEDEN açmamalı,
-	// teklifteki m-line'ın transceiver'ını sendrecv'e çevirip mikrofonu ona bağlamalı.
-	// (Önceden açılan transceiver m-line ile eşleşmiyordu → yanıt recvonly → tek yönlü ses.)
-	s.oc.ws.onmessage({ data: JSON.stringify({ type: 'ses-kisi-girdi', ad: 'zeynep' }) });
+	denetle('ses kanalı mikrofon iziyle açıldı', !!(ilkTr && ilkTr.sender.track));
+	denetle('ses kanalı sendrecv', ilkTr && ilkTr.direction === 'sendrecv', ilkTr && ilkTr.direction);
+	denetle('TURN sunucuları bağlantıya verildi', ilkPc && ilkPc.ayar.iceServers.length === 2);
+	const teklif = son('sdp');
+	denetle('teklif gönderildi, oturum kimliği var', teklif && teklif.to === 'bora' && teklif.sdp.type === 'offer' && /^[a-z0-9]{12}$/.test(teklif.oturum || ''), JSON.stringify(teklif));
+	// Yanıt: Opus fmtp'si bizim kodlayıcımızı ayarlar (yüksek bit hızı + FEC).
+	gelsin({ type: 'sdp', from: 'bora', sdp: { type: 'answer', sdp: OPUS_TEKLIF }, oturum: teklif.oturum });
 	await bekle(40);
-	const yPc = s.FakePC.hepsi[s.FakePC.hepsi.length - 1];
-	denetle('yanıtlayan tarafta önceden transceiver yok', yPc._transceivers.length === 0, String(yPc._transceivers.length));
-	s.oc.ws.onmessage({ data: JSON.stringify({ type: 'sdp', from: 'zeynep', sdp: { type: 'offer', sdp: 'v=0' } }) });
-	await bekle(120);
-	const yTr = yPc._transceivers.find((t) => t.mid != null);
-	denetle('teklifin m-line transceiver\'ı oluştu', !!yTr);
-	denetle('yanıtlayan ses kanalı sendrecv', !!(yTr && yTr.direction === 'sendrecv'), yTr && yTr.direction);
-	denetle('yanıtlayan mikrofonu bağladı', !!(yTr && yTr.sender.track));
+	const uygulanan = s.FakePC.uzaklar.at(-1);
+	denetle('yanıt uygulandı', ilkPc.remoteDescription && ilkPc.remoteDescription.type === 'answer');
+	denetle('Opus: maxaveragebitrate=96000 + FEC + DTX kapalı', uygulanan && /maxaveragebitrate=96000/.test(uygulanan.sdp) && /useinbandfec=1/.test(uygulanan.sdp) && /usedtx=0/.test(uygulanan.sdp), uygulanan && uygulanan.sdp);
+	denetle('gönderici bit hızı tavanı 96 kbps', ilkTr.parametreler && ilkTr.parametreler.encodings[0].maxBitrate === 96000, JSON.stringify(ilkTr.parametreler));
+	// Teklif yoldayken (ICE yenileme) eski oturuma ait yanıt yok sayılır, doğru oturumunki uygulanır.
+	w.eval("iceYenile(esler.get('bora'))");
+	await bekle(30);
+	denetle('ICE yenileme teklifi gönderildi', ilkPc.signalingState === 'have-local-offer' && son('sdp').oturum === teklif.oturum);
+	const uzakSayisi = s.FakePC.uzaklar.length;
+	gelsin({ type: 'sdp', from: 'bora', sdp: { type: 'answer', sdp: OPUS_TEKLIF }, oturum: 'eskioturum12' });
+	await bekle(30);
+	denetle('eski oturumun yanıtı yok sayıldı', s.FakePC.uzaklar.length === uzakSayisi && ilkPc.signalingState === 'have-local-offer');
+	gelsin({ type: 'sdp', from: 'bora', sdp: { type: 'answer', sdp: OPUS_TEKLIF }, oturum: teklif.oturum });
+	await bekle(30);
+	denetle('doğru oturumun yanıtı uygulandı', s.FakePC.uzaklar.length === uzakSayisi + 1 && ilkPc.signalingState === 'stable');
+
+	// Yanıtlayan taraf ('zeynep' > 'taha'): bağlantıyı önceden açmaz, teklifin oturumuyla kurar.
+	gelsin({ type: 'ses-kisi-girdi', kanal: 'sesli-sohbet', ad: 'zeynep', devam: false });
+	await bekle(30);
+	denetle('yanıtlayan taraf teklif gelmeden bağlantı açmadı', w.eval("!esler.get('zeynep').pc"));
+	gelsin({ type: 'sdp', from: 'zeynep', sdp: { type: 'offer', sdp: OPUS_TEKLIF }, oturum: 'zoturum12345' });
+	await bekle(60);
+	const zPc = s.FakePC.hepsi.at(-1);
+	const zTr = zPc._transceivers.find((t) => t.mid != null);
+	denetle("teklifin m-line transceiver'ı oluştu", !!zTr);
+	denetle('yanıtlayan ses kanalı sendrecv', zTr && zTr.direction === 'sendrecv', zTr && zTr.direction);
+	denetle('yanıtlayan mikrofonu bağladı', !!(zTr && zTr.sender.track));
+	const yanit = son('sdp');
+	denetle('yanıt teklifin oturumuyla gönderildi', yanit && yanit.to === 'zeynep' && yanit.sdp.type === 'answer' && yanit.oturum === 'zoturum12345', JSON.stringify(yanit));
+	// Aynı teklif yeniden gelirse yeniden uygulanmaz, yanıt yinelenir.
+	const uzakSayisi2 = s.FakePC.uzaklar.length;
+	gelsin({ type: 'sdp', from: 'zeynep', sdp: { type: 'offer', sdp: OPUS_TEKLIF }, oturum: 'zoturum12345' });
+	await bekle(40);
+	denetle('yinelenen teklif yeniden uygulanmadı, yanıt yinelendi', s.FakePC.uzaklar.length === uzakSayisi2 && son('sdp') !== yanit && son('sdp').oturum === 'zoturum12345');
+
+	// Sessiz/sağır simgeleri sunucudan gelir.
+	gelsin({ type: 'sessiz', ad: 'zeynep', sessiz: true, sagir: false });
+	await bekle(20);
+	denetle('eşin mikrofon-kapalı simgesi', !!d.querySelector('#ses-kisiler .ses-kisi[data-ad="zeynep"].sessiz .durum-ikon svg'));
 
 	// Teşhis turu: micAyarlar (AGC kapalı gerçekte uygulandı mı) ile gönderilir.
-	await bekle(10500);
+	await bekle(10300);
 	const tani = s.oc.gonderilen.filter((m) => m.type === 'tani');
-	const sonTani = tani.at(-1);
-	denetle('tanı gönderildi', tani.length > 0, String(tani.length));
-	denetle('tanıda mikrofon ayarları var', !!(sonTani && sonTani.veri && sonTani.veri.micAyarlar && sonTani.veri.micAyarlar.agc === false), JSON.stringify(sonTani && sonTani.veri && sonTani.veri.micAyarlar));
-	denetle('yanıt teşhisi gönderildi', s.oc.gonderilen.some((m) => m.type === 'tani' && m.veri.olay === 'yanit'), JSON.stringify(s.oc.gonderilen.filter((m) => m.type === 'tani').map((m) => m.veri.olay)));
+	const sonTani = tani.filter((m) => m.veri && m.veri.esler).at(-1);
+	denetle('tanı gönderildi', !!sonTani, String(tani.length));
+	denetle('tanıda mikrofon ayarları var', !!(sonTani && sonTani.veri.micAyarlar && sonTani.veri.micAyarlar.agc === false));
+	denetle('yanıt teşhisi gönderildi', tani.some((m) => m.veri.olay === 'yanit'));
 
-	// istatistikler: iki ölçüm arası fark gerekir (2 sn aralık) → ~4,5 sn bekle
-	await bekle(4600);
-	const istatistik = d.querySelector('#ses-kisiler .ses-istatistik');
-	denetle('istatistik alanı dolu', istatistik && /P2P/.test(istatistik.textContent), istatistik && istatistik.textContent);
-	denetle('gecikme gösteriliyor', /ms/.test(istatistik.textContent));
-	denetle('paket kaybı gösteriliyor', /kayıp/.test(istatistik.textContent));
-	denetle('bit hızı gösteriliyor', /kbps/.test(istatistik.textContent));
+	// İstatistik: bağlantı "connected" olunca ölçülür (iki ölçüm arası fark gerekir).
+	for (const pc of s.FakePC.hepsi) pc.connectionState = 'connected';
+	await bekle(4500);
+	const ist = d.querySelector('#ses-kisiler .ses-kisi[data-ad="bora"] .ses-istatistik');
+	denetle('istatistik: bağlantı türü ve gecikme', ist && /P2P/.test(ist.textContent) && /ms/.test(ist.textContent), ist && ist.textContent);
+	denetle('istatistik ayrıntısı (kayıp, bit hızları) ipucunda', ist && /kayıp/.test(ist.title) && /kbps/.test(ist.title), ist && ist.title);
+	denetle('ses paneli bağlı', /Ses bağlı/.test(d.getElementById('ses-baglanti-durum').textContent), d.getElementById('ses-baglanti-durum').textContent);
 
-	// --- 12) mikrofonu kapat + çık-gir
-	d.getElementById('ben-mikrofon').dispatchEvent(new w.MouseEvent('click', { bubbles: true }));
+	// --- 12) susturma ve sağırlaştırma
+	d.getElementById('ben-mikrofon').click();
+	await bekle(20);
+	denetle('mikrofon kapatma bildirildi', son('sessiz').sessiz === true && son('sessiz').sagir === false);
+	denetle('mikrofon izi kapandı', s.oc.sonIz.enabled === false);
+	d.getElementById('ben-mikrofon').click();
+	await bekle(20);
+	denetle('mikrofon açma bildirildi', son('sessiz').sessiz === false && s.oc.sonIz.enabled === true);
+	d.getElementById('kart-sagir').click(); // ses kartındaki düğme (telefonda)
+	await bekle(20);
+	denetle('sağırlaştırma: gelen sesler kapalı + bildirildi', [...d.querySelectorAll('#ses-akislari audio')].every((a) => a.muted) && son('sessiz').sagir === true && son('sessiz').sessiz === true);
+	d.getElementById('ben-sagir').click();
+	await bekle(20);
+	denetle('sağırlık kalktı', [...d.querySelectorAll('#ses-akislari audio')].every((a) => !a.muted) && son('sessiz').sagir === false);
+
+	// --- 13) sunucu bağlantısı koptu: ses bağlantıları KAPANMAZ, geri gelince kanala devam edilir
+	const pcSayisi = s.FakePC.hepsi.filter((p) => !p.kapandi).length;
+	const eskiWs = s.oc.ws;
+	eskiWs.close();
 	await bekle(30);
-	denetle('mikrofon kapatma bildirildi', s.oc.gonderilen.filter((m) => m.type === 'sessiz').at(-1).sessiz === true);
-
-	d.getElementById('ben-kapat').dispatchEvent(new w.MouseEvent('click', { bubbles: true }));
+	denetle('kopunca uygulama ekranında kalındı', d.getElementById('giris-ekrani').hidden === true);
+	denetle('kopunca ses bağlantıları kapanmadı', s.FakePC.hepsi.filter((p) => !p.kapandi).length === pcSayisi && w.eval('esler.size') === 2, `${pcSayisi} → ${s.FakePC.hepsi.filter((p) => !p.kapandi).length}`);
+	denetle('bağlantı rozeti göründü', d.getElementById('baglanti-durumu').hidden === false);
+	await bekle(800);
+	denetle('yeniden bağlanıldı', s.oc.ws !== eskiWs);
+	const yeniGiris = son('giris');
+	denetle('yeniden girişte sürdürülecek sesli kanal bildirildi', yeniGiris && yeniGiris.ses === 'sesli-sohbet' && yeniGiris.anahtar === 'f'.repeat(128), JSON.stringify(yeniGiris));
+	// Giriş freni: uygulamadan atılmadan bekleyip yeniden dener.
+	gelsin({ type: 'giris-red', message: 'Çok sık deneme; 1 saniye sonra tekrar dene.', kod: 'fren', bekle: 100 });
+	await bekle(30);
+	denetle('frende uygulama ekranında kalındı', d.getElementById('giris-ekrani').hidden === true && w.eval('esler.size') === 2);
+	await bekle(1500);
+	gelsin({ type: 'hazir', ad: 'taha', kanallar, kimler: [{ ad: 'taha' }], max: 10, maxKullanici: 10, beyazListe: 2, beyazListeAdlari: ['taha', 'bora'], dosyaMb: 25, jeton: 'b'.repeat(32), ice: ICE, surum: 'v1', turnNesli: 'n1' });
 	await bekle(40);
+	const devamGir = son('ses-gir');
+	denetle('geri gelince kanala devam edildi (devam:true)', devamGir && devamGir.devam === true && devamGir.kanal === 'sesli-sohbet', JSON.stringify(devamGir));
+	gelsin({ type: 'ses-girdi', kanal: 'sesli-sohbet', kisiler: ['bora', 'zeynep'], ice: ICE, devam: true });
+	await bekle(40);
+	denetle('devamda bağlantılar yeniden kurulmadı', s.FakePC.hepsi.filter((p) => !p.kapandi).length === pcSayisi);
+
+	// --- 14) çık-gir
+	d.getElementById('ben-kapat').click();
+	await bekle(30);
 	denetle('ses-cik gönderildi', s.oc.gonderilen.some((m) => m.type === 'ses-cik'));
 	denetle('ses kartı kapandı', d.getElementById('ses-karti').hidden === true);
-
-	sesDugme.dispatchEvent(new w.MouseEvent('click', { bubbles: true }));
-	await bekle(80);
-	denetle('yeniden girişte mikrofon tekrar istendi', s.oc.mikrofon === 2, String(s.oc.mikrofon));
-	denetle('yeniden ses-gir gönderildi', s.oc.gonderilen.filter((m) => m.type === 'ses-gir').length === 2);
-	s.oc.ws.onmessage({ data: JSON.stringify({ type: 'ses-girdi', kanal: 'sesli-sohbet', kisiler: ['bora'] }) });
+	denetle('ayrılınca bağlantılar kapandı', s.FakePC.hepsi.every((p) => p.kapandi));
+	denetle('ayrılınca mikrofon bırakıldı', s.oc.sonIz.readyState === 'ended');
+	sesDugme().click();
 	await bekle(60);
+	denetle('yeniden girişte mikrofon tekrar istendi', s.oc.mikrofon === 2, String(s.oc.mikrofon));
+	gelsin({ type: 'ses-girdi', kanal: 'sesli-sohbet', kisiler: ['bora'], ice: ICE, devam: false });
+	await bekle(40);
 	denetle('ses kartı yeniden açıldı', d.getElementById('ses-karti').hidden === false);
 
-	// --- 13) kanal silinirse: aktif kanal ilk yazılı kanala döner, sesli kanaldan çıkılır
-	s.oc.ws.onmessage({ data: JSON.stringify({ type: 'kanallar', kanallar: [{ id: 'muhabbet', ad: 'muhabbet', tur: 'yazi' }] }) });
-	await bekle(60);
+	// --- 15) kanal silinirse: aktif kanal ilk yazılı kanala döner, sesli kanaldan çıkılır
+	gelsin({ type: 'kanallar', kanallar: [{ id: 'muhabbet', ad: 'muhabbet', tur: 'yazi' }] });
+	await bekle(40);
 	denetle('silinen sesli kanaldan çıkıldı', d.getElementById('ses-karti').hidden === true);
 
-	// --- 14) atıldım: anahtar silinir, giriş ekranına dönülür
-	s.oc.ws.onmessage({ data: JSON.stringify({ type: 'atildi', message: 'Sunucudan atıldın; tekrar izin iste.' }) });
-	await bekle(60);
-	denetle('atılınca anahtar silindi', !w.localStorage.getItem('anahtar'), String(w.localStorage.getItem('anahtar')));
+	// --- 16) oturum başka sekmeye geçti
+	sesDugme; // (sesli kanal yok artık)
+	gelsin({ type: 'oturum-devralindi', message: 'Bu hesapla başka bir sekmede ya da cihazda girildi.' });
+	await bekle(30);
+	denetle('devirde giriş ekranı', d.getElementById('giris-ekrani').hidden === false);
+	denetle('"Bu sekmede devam et" düğmesi', d.getElementById('burada-devam').hidden === false && d.getElementById('gir').hidden === true);
+	const wsSayisi = s.oc.wsler.length;
+	await bekle(1200);
+	denetle('devirde kendiliğinden yeniden bağlanılmadı', s.oc.wsler.length === wsSayisi);
+	d.getElementById('burada-devam').click();
+	await bekle(30);
+	denetle('"Bu sekmede devam et" yeniden bağlanır', s.oc.wsler.length === wsSayisi + 1);
+	gelsin({ type: 'hazir', ad: 'taha', kanallar, kimler: [{ ad: 'taha' }], max: 10, maxKullanici: 10, beyazListe: 2, beyazListeAdlari: ['taha'], dosyaMb: 25, jeton: 'c'.repeat(32), ice: ICE, surum: 'v1' });
+	await bekle(30);
+	denetle('devamdan sonra uygulama açık', d.getElementById('uygulama').hidden === false);
+
+	// --- 17) atıldım: anahtar silinir, giriş ekranına dönülür
+	gelsin({ type: 'atildi', message: 'Sunucudan atıldın; tekrar izin iste.' });
+	await bekle(40);
+	denetle('atılınca anahtar silindi', !w.localStorage.getItem('anahtar'));
 	denetle('atılınca giriş ekranı açıldı', d.getElementById('giris-ekrani').hidden === false && d.getElementById('uygulama').hidden === true);
 	denetle('atılma mesajı gösterildi', /atıldın/i.test(d.getElementById('giris-durum').textContent), d.getElementById('giris-durum').textContent);
 
-	// --- 15) hata gösterimi
+	// --- 18) hata gösterimi
 	d.getElementById('giris-ekrani').hidden = true;
 	d.getElementById('uygulama').hidden = false;
-	s.oc.ws.onmessage({ data: JSON.stringify({ type: 'hata', message: 'Çok hızlı yazıyorsun; birkaç saniye bekle.' }) });
+	w.eval('baglan()');
+	await bekle(20);
+	gelsin({ type: 'hata', message: 'Çok hızlı yazıyorsun; birkaç saniye bekle.' });
 	await bekle(20);
 	denetle('hata bildirimi göründü', d.getElementById('durum').textContent.includes('hızlı'), d.getElementById('durum').textContent);
 	denetle('hata kırmızı', d.getElementById('durum').classList.contains('hata'));
+
+	// --- 19) ses ayarları penceresi
+	d.getElementById('ben-ayarlar').click();
+	await bekle(30);
+	denetle('ses ayarları açıldı', d.getElementById('ayarlar').hidden === false);
+	denetle('ayarlar varsayılanları gösteriyor', d.getElementById('ayar-gurultu').checked && d.getElementById('ayar-yanki').checked && !d.getElementById('ayar-kazanc').checked && d.getElementById('ayar-kalite').value === '96');
+	d.getElementById('ayar-kalite').value = '128';
+	d.getElementById('ayar-kalite').dispatchEvent(new w.Event('change', { bubbles: true }));
+	denetle('kalite ayarı kalıcı', JSON.parse(w.localStorage.getItem('ses-ayarlari')).kalite === 128);
+	d.dispatchEvent(new w.KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+	await bekle(20);
+	denetle('Escape ayarları kapattı', d.getElementById('ayarlar').hidden === true);
 
 	console.log(process.exitCode ? 'BAŞARISIZ' : `Arayüz denemeleri geçti (${gecen}).`);
 	process.exit(process.exitCode || 0);
