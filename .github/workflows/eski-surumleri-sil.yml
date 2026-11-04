@@ -1,0 +1,35 @@
+# Eski GitHub sürümlerini (release) ve etiketlerini siler; en yeni N sürüm kalır.
+# Elle çalıştırılır: Actions → eski-surumleri-sil → Run workflow (birak: kaç sürüm kalsın).
+# ghcr.io'daki Docker imajlarına dokunmaz (eski sürüme dönüş "-s vN" imaj etiketini kullanır).
+name: eski-surumleri-sil
+
+on:
+  workflow_dispatch:
+    inputs:
+      birak:
+        description: Kaç sürüm kalsın (en yeniden başlayarak; 0 = hepsini sil)
+        required: true
+        default: '1'
+
+permissions:
+  contents: write # sürüm ve etiket silmek için
+
+jobs:
+  sil:
+    name: Eski sürümleri sil
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Sil
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          BIRAK: ${{ inputs.birak }}
+        run: |
+          case "$BIRAK" in '' | *[!0-9]*) echo "birak bir sayı olmalı: $BIRAK"; exit 1 ;; esac
+          gh release list --limit 1000 --json tagName,createdAt --jq 'sort_by(.createdAt) | reverse | .[].tagName' > surumler.txt
+          echo "Sürümler (en yeniden): $(tr '\n' ' ' < surumler.txt)"
+          tail -n +"$((BIRAK + 1))" surumler.txt | while read -r etiket; do
+            echo "siliniyor: $etiket"
+            gh release delete "$etiket" --yes --cleanup-tag
+          done
+          echo "Kalan sürümler: $(gh release list --limit 1000 --json tagName --jq '.[].tagName' | tr '\n' ' ')"

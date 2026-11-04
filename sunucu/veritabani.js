@@ -1,4 +1,4 @@
-// Ses Kanalı — sohbet veritabanı (SQLite).
+// Diszort — sohbet veritabanı (SQLite).
 //
 // Yalnızca YAZILI kanalların mesajları ve yüklenen dosyaların kayıtları diske yazılır;
 // ses/görüntü hiçbir zaman kaydedilmez (P2P akar). Dosya: <veri>/sohbet.db

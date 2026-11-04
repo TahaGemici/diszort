@@ -1,4 +1,4 @@
-# Ses Kanalı'nın çalışma imajı. GitHub Actions bunu derleyip ghcr.io'ya yükler;
+# Diszort'un çalışma imajı. GitHub Actions bunu derleyip ghcr.io'ya yükler;
 # sunucuda "docker compose" ile çalışır (kurulumu kur.sh yapar). Tek süreç:
 # node sunucu/sunucu.js web sayfasını sunar ve /rtc signaling'ini yönetir,
 # coturn'ü (STUN/TURN) kendisi başlatıp izler.
@@ -20,7 +20,7 @@ COPY web/ /usr/share/chat/web/
 
 # Ayrıcalıksız kullanıcı: dinlenen tüm portlar (8080, 3478, 49152-61000) 1024'ün üstünde,
 # root gerekmez. chmod: depodan gelen dosyalar dar izinli olabilir; kullanıcı okuyabilsin.
-RUN useradd --system --uid 1000 --home /nonexistent --shell /usr/sbin/nologin seskanali \
+RUN useradd --system --uid 1000 --home /nonexistent --shell /usr/sbin/nologin diszort \
 	&& chmod -R u=rwX,go=rX /usr/share/chat \
 	&& node -e "require('ws'); require('sqlite3')" \
 	&& turnserver --version >/dev/null
@@ -34,6 +34,6 @@ VOLUME /veri
 # burada belgeleme amaçlı yazılı.
 EXPOSE 8080/tcp 3478/udp 49152-61000/udp
 
-USER seskanali
+USER diszort
 WORKDIR /usr/share/chat
 CMD ["node", "sunucu/sunucu.js"]

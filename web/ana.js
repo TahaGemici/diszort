@@ -1,4 +1,4 @@
-// Ses Kanalı — tarayıcı tarafı.
+// Diszort — tarayıcı tarafı.
 // Discord'umsu tek sunucu: solda yazılı/sesli kanallar, ortada sohbet, sağda üyeler.
 // Yazılı mesajlar sunucudan geçer ve SQLite'ta saklanır; sesli kanallarda ses P2P akar
 // (mesh WebRTC, doğrudan bağlanamayanlar TURN üzerinden).

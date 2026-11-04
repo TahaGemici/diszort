@@ -1,8 +1,9 @@
-# Ses Kanalı
+# Diszort
 
-Hesapsız, tarayıcıdan girilen Discord'umsu sunucu: **yazılı kanallar** (geçmişi veritabanında tutulur,
-dosya paylaşılabilir) + **sesli kanallar** (ses tarayıcılar arasında doğrudan, P2P akar). Arayüzde
-sunucunun adı **Diszort** (logo: üstü kırmızı çarpıyla çizilmiş Discord yüzü; sekme başlığı ve simge de).
+Arkadaşlar arası, tarayıcıdan girilen Discord'umsu sunucu: **yazılı kanallar** (geçmişi veritabanında
+tutulur, dosya paylaşılabilir) + **sesli kanallar** (ses tarayıcılar arasında doğrudan, P2P akar; NAT
+arkasından bağlanamayanlar için TURN). İçeri yalnızca içeridekilerin onayıyla girilir (beyaz liste).
+Logo: üstü kırmızı çarpıyla çizilmiş Discord yüzü.
 
 - **Giriş (beyaz liste):** Adını yazarsın; içerideki herkese *"X girmek istiyor"* diye sorulur. Biri kabul
   ederse sana **yalnızca sende olan bir anahtar** verilir ve tarayıcında saklanır — sonraki girişlerde soru
@@ -31,8 +32,8 @@ sunucunun adı **Diszort** (logo: üstü kırmızı çarpıyla çizilmiş Discor
   Doğrudan bağlanamayanların (CGNAT, simetrik NAT) sesi TURN üzerinden aktarılır (UDP; UDP'yi engelleyen
   ağlar için TCP 3478 yedeği).
 - **Sesli kanalda:** Konuşanın avatarı yeşil halkayla yanar; kişi başına (yalnızca sende) susturma ve ses
-  seviyesi (kalıcı), bağlantı türü (P2P / TURN), gecikme ve kayıp; kendi mikrofonunu kapatma ve
-  **sağırlaştırma** (gelen sesleri kapat) — kenar çubuğunda ve ses kartında düğme, `Ctrl+Shift+M` /
+  seviyesi (kalıcı), bağlantı türü (P2P yeşil / TURN turuncu), gecikme ve kayıp; kendi mikrofonunu kapatma
+  ve **sağırlaştırma** (gelen sesleri kapat) — kenar çubuğunda ve ses kartında düğme, `Ctrl+Shift+M` /
   `Ctrl+Shift+D`. Susturulmuş/sağır olanlar diğerlerine simgeyle görünür. Mikrofonu olmayan ya da izin
   vermeyen kanala **dinleyici** olarak girer.
 - **Ses ayarları** (sol alttaki kaydırıcı simgesi): mikrofon ve hoparlör seçimi, mikrofon seviyesi
@@ -59,36 +60,33 @@ sudo apt install -y docker.io docker-compose-v2   # Debian 12+ / Ubuntu 24.04+
 Kurmak da güncellemek de tek komut:
 
 ```sh
-curl -fsSL https://github.com/KULLANICI/DEPO/releases/latest/download/kur.sh | sudo sh
+curl -fsSL https://github.com/TahaGemici/diszort/releases/latest/download/kur.sh | sudo sh
 ```
 
-`kur.sh` imajı `ghcr.io/KULLANICI/DEPO`'dan çeker, ilk seferde `/var/lib/chat/.env` oluşturur (sunucunun
-dış IP'si kendiliğinden bulunup yazılır) ve konteyneri açar. `main`'e her push'ta Actions imajı derler,
-`kur.sh` ile uçtan uca dener, `ghcr.io`'ya `v1`, `v2`… ve `latest` etiketleriyle yükler, `kur.sh`'yi
-GitHub sürümü olarak yayınlar.
+`kur.sh` imajı `ghcr.io/tahagemici/diszort`'tan çeker, ilk seferde `/var/lib/chat/.env` oluşturur ve
+konteyneri (`diszort`) açar; sunucunun dış IP'sini bulut meta verisinden kendisi okur. `main`'e her push'ta
+Actions imajı derler, `kur.sh` ile kurup üç deneme takımını çalıştırır, `ghcr.io`'ya `v1`, `v2`… ve `latest`
+etiketleriyle yükler, `kur.sh`'yi GitHub sürümü olarak yayınlar.
 
-**Depo özel ise** yukarıdaki `curl` satırı çalışmaz: sürüm dosyası yalnızca giriş yapmış kullanıcıya iner
-(anonim istek 404). O durumda aynı güncellemeyi SSH ile taze klon yaparak çalıştır:
+**GHCR paketi:** yeni paketler varsayılan olarak **özeldir**. Depo herkese açık olduğu için paketi de açmak en
+kolayı (sunucu giriş yapmadan çeker): GitHub → profilin → **Packages** → `diszort` → Package settings →
+**Change visibility** → Public. Özel kalacaksa sunucuda bir kez giriş yap (token: GitHub → Settings →
+Developer settings → Personal access tokens → yalnızca `read:packages`):
 
 ```sh
-rm -rf /tmp/ses-kanali && git clone --depth 1 git@github.com:KULLANICI/DEPO.git /tmp/ses-kanali \
-  && sed "s|^DEPO=.*|DEPO=KULLANICI/DEPO|" /tmp/ses-kanali/kurulum/kur.sh | sudo sh
+echo <token> | sudo docker login ghcr.io -u TahaGemici --password-stdin
 ```
 
-**İlk kurulumdan sonra bir kez:** GHCR paketi varsayılan olarak **özeldir**. Public yaparsan sunucu giriş
-yapmadan çekebilir: GitHub → profilin → **Packages** → `ses-kanali` → Package settings → **Change visibility**.
-Özel kalacaksa bir kez giriş yap (token: GitHub → Settings → Developer settings → Personal access tokens →
-`read:packages`):
-
-```sh
-echo <token> | sudo docker login ghcr.io -u KULLANICI --password-stdin
-```
+**Eski adla (`ses-kanali`) kurulu sunucu:** aynı güncelleme komutunu çalıştır. `kur.sh` yeni imajı çektikten
+sonra eski `ses-kanali` konteynerini kaldırır ve `diszort`'u açar; `/var/lib/chat` (ayarlar, veritabanı,
+beyaz liste anahtarları, dosyalar) olduğu gibi kalır, tarayıcılardaki anahtarlar da geçerli kalır (alan adı
+aynı). Eski `ses-kanali` paketi (ghcr.io) artık kullanılmaz; istersen Packages'tan silebilirsin.
 
 Ayarları değiştirmek için:
 
 ```sh
 sudo nano /var/lib/chat/.env
-sudo docker restart ses-kanali
+sudo docker restart diszort
 ```
 
 **Güvenlik duvarı:** STUN/TURN için UDP `3478`, TCP `3478` (UDP'yi engelleyen okul/iş/otel ağları için
@@ -118,10 +116,11 @@ sudo systemctl reload caddy
 | İş | Komut |
 |---|---|
 | Güncelle | kurulum komutunun aynısı (`.env` ve veritabanı kalır) |
-| Eski bir sürüme dön | kurulum komutunun sonuna `-s v3` ekle |
-| Günlük | `sudo docker logs -f ses-kanali` |
+| Eski bir sürüme dön | kurulum komutunun sonuna `-s v22` ekle (imaj etiketi; sürüm listesi silinse de imaj kalır) |
+| Eski GitHub sürümlerini sil | Actions → `eski-surumleri-sil` → Run workflow (`birak`: kaç sürüm kalsın) |
+| Günlük | `sudo docker logs -f diszort` |
 | Durdur / başlat | `cd /var/lib/chat && sudo docker compose down` / `up -d` |
-| `.env` değişince | `sudo docker restart ses-kanali` |
+| `.env` değişince | `sudo docker restart diszort` |
 | Sağlık | `curl http://127.0.0.1:8080/saglik` |
 | Veritabanı yedeği | `sudo cp /var/lib/chat/sohbet.db* /yedek/` (WAL dosyalarıyla birlikte) |
 
@@ -162,18 +161,18 @@ Adresi iki sekmede aç. (Tarayıcılar mikrofonu yalnızca HTTPS'te ya da `local
   dosya paylaşımı, sesli kanal signaling'i (oturum/yenile iletimi, kopanın askıda kalıp geri dönmesi ve
   süresi dolunca çıkarılması, doluluk — dolu kanala geçemeyen eski kanalında kalır), kanal ekleme/silme.
   **Not:** denemeler gerçek veritabanına birkaç `(deneme)` mesajı ve küçük bir dosya bırakır.
-- **Arayüz (tarayıcısız)** — `make arayuz` (jsdom), 150 denetim: giriş akışları, mesaj çizimi (gruplama,
+- **Arayüz (tarayıcısız)** — `make arayuz` (jsdom), 155 denetim: giriş akışları, mesaj çizimi (gruplama,
   bahsetme, tıklanabilir bağlantılar, HTML'in çalışmaması), kanal/üye/istek arayüzü, sesli kanal (mikrofon
   kısıtları, teklif/yanıt + oturum kimliği, Opus ayarları, yinelenen teklif), susturma/sağırlaştırma,
   istatistikler, sunucu koparken ses bağlantılarının korunması, giriş freninde uygulamada kalma, oturum
-  devri, atılma, ses ayarları.
+  devri, atılma, ses ayarları, marka (Diszort), relay bağlantının turuncu görünmesi.
 - **Gerçek tarayıcı** — `make tarayici` (Playwright + Chromium, sahte mikrofona konuşmaya benzeyen ses
   verilir; kendi sunucusunu açar), 12 deneme: arayüzden giriş, üç kişilik mesh'te herkesin herkesi
   duyması (gelen sesin **enerjisi** ölçülür, yalnızca bayt değil), ~96 kbps Opus, susturma/sağırlaştırmanın
   sesi gerçekten kesmesi, kişi başı ses seviyesi, çık-gir, mikrofon aygıtı çıkarılınca kendiliğinden yeniden
-  alma, sayfa yenileme, **sunucu yeniden başlarken P2P sesin kesilmemesi** ve herkesin (10 sn frenle)
-  kendiliğinden dönmesi, yalnızca TURN (relay) ile bağlantı ve coturn yeniden başlayınca taze şifreyle
-  ICE yenilemesi (~3 sn), ikinci sekmenin oturumu devralması. Çalışan sunucuya karşı:
+  alma, sayfa yenileme, **sunucu yeniden başlarken P2P sesin kesilmemesi** ve herkesin üretimdeki frenle
+  (10 sn'de 1, kova 1) sırayla kendiliğinden dönmesi, yalnızca TURN (relay) ile bağlantı (turuncu görünür)
+  ve coturn yeniden başlayınca taze şifreyle ICE yenilemesi, ikinci sekmenin oturumu devralması. Çalışan sunucuya karşı:
   `ILK_ANAHTAR=… YENIDEN_BASLAT='komut' node test/tarayici.js http://adres:port`.
   Gerçek tarayıcıyı VPS'te çalıştırmak gerekmez; CI'da çalışır.
 
@@ -292,9 +291,32 @@ Her çiftte teklifi adı alfabetik olarak büyük olan yapar (çakışma olmaz).
 | `web/` | arayüz (`index.html`, `ana.js`, `stil.css`, simgeler) |
 | `.env.example` | ayarlar (sunucuda `/var/lib/chat/.env`) |
 | `test/dene.js` | çalışan sunucuyu uçtan uca dener (31 deneme; giriş frenine uyar) |
-| `test/arayuz.js` | arayüzü tarayıcısız dener (jsdom; 150 denetim) |
+| `test/arayuz.js` | arayüzü tarayıcısız dener (jsdom; 155 denetim) |
 | `test/tarayici.js` | gerçek Chromium'la sesli kanalı dener (Playwright; 12 deneme, sesin enerjisi ölçülür) |
 | `.github/workflows/docker.yml` | push → derle, `kur.sh` ile kur, üç deneme takımını çalıştır, ghcr.io'ya yükle, sürüm çıkar |
+| `.github/workflows/eski-surumleri-sil.yml` | elle: eski GitHub sürümlerini ve etiketlerini siler (en yeni N kalır) |
+
+## Güvenlik ve gizli bilgiler
+
+Depo herkese açıktır; **içinde hiçbir gizli bilgi yoktur ve olmamalıdır.** Gizli olan her şey yalnızca
+sunucuda durur:
+
+| Gizli bilgi | Nerede |
+|---|---|
+| beyaz liste anahtarları (512 bit) | `/var/lib/chat/sohbet.db` (sunucu) ve her kişinin tarayıcısı (`localStorage`) |
+| ilk (yönetici) anahtar | `/var/lib/chat/ilk-anahtar.txt` — okuyup tarayıcına kaydettikten sonra sil |
+| ayarlar | `/var/lib/chat/.env` (anahtar içermez; `ILK_ANAHTAR` üretimde **boş** kalmalı) |
+| TURN sırrı | yalnızca konteynerin içinde (bellek + coturn'ün geçici ayar dosyası, izin 0600); her açılışta yeniden üretilir, günlüğe ve `/var/lib/chat`'e yazılmaz |
+| GHCR/GitHub token'ı | yalnızca sunucuda `docker login` ile (gerekirse); depoya ya da `.env`'e yazma |
+
+- `.env`, `veri/` ve `node_modules/` `.gitignore`'da; geçmişte de hiç commit'lenmedi.
+- CI'daki `ILK_ANAHTAR` (`0123456789abcdef…`) ve testlerdeki anahtarlar **herkesin bildiği test değerleridir**;
+  üretimde asla kullanma. Üretimde ilk anahtar rastgele üretilir.
+- Actions günlükleri herkese açıktır: iş akışlarında `echo $TOKEN` gibi bir şey yazma (`secrets.*` maskelenir).
+- Commit'lerdeki yazar e-postaları herkese görünür; gizlemek istersen GitHub'ın `…@users.noreply.github.com`
+  adresini kullan (Settings → Emails).
+- Önerilir: GitHub → Settings → Code security → **Secret Protection** ve **Push protection**'ı aç (herkese açık
+  depolarda ücretsiz): biri yanlışlıkla token commit'lemeye kalkarsa push reddedilir.
 
 ## Sınırlar
 
@@ -348,5 +370,5 @@ Her çiftte teklifi adı alfabetik olarak büyük olan yapar (çakışma olmaz).
   genel durumu gösterir.
 - **Uzaktan teşhis:** istemci 10 saniyede bir kendi ses durumunu (`yön`, `in/out kbps`, `kayıp`, oturum,
   kurtarma sayısı, mikrofon ayarları, tarayıcı) `tani` mesajıyla gönderir; sunucu **yalnızca günlüğe** yazar
-  (`sudo docker logs ses-kanali | grep tanı`). Veritabanına yazılmaz, kimseye dağıtılmaz; `.env`'de `TANI=0`
+  (`sudo docker logs diszort | grep tanı`). Veritabanına yazılmaz, kimseye dağıtılmaz; `.env`'de `TANI=0`
   ile kapatılır. Teşhis için tarayıcıda `localStorage.setItem('zorla-turn','1')` yalnızca TURN kullanır.

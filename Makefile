@@ -1,4 +1,4 @@
-# Ses Kanalı — derleme
+# Diszort — derleme
 #   make           kendi bilgisayarında node ile çalıştırır (node, npm ve coturn gerekir) -> http://127.0.0.1:8080
 #   make test      çalışan sunucuyu dener (ADRES=http://... ile başka bir adres)
 #   make arayuz    arayüzü tarayıcısız dener (jsdom; DOM, kanal seçimi, sesli kanal satırları)

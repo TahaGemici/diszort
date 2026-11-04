@@ -62,7 +62,7 @@ const sunucuOrtami = {
 
 async function sunucuBaslat() {
 	if (DIS_ADRES) return;
-	if (!veriKlasoru) veriKlasoru = fs.mkdtempSync(path.join(os.tmpdir(), 'ses-kanali-tarayici-'));
+	if (!veriKlasoru) veriKlasoru = fs.mkdtempSync(path.join(os.tmpdir(), 'diszort-tarayici-'));
 	const ip = icIp();
 	sunucuSureci = spawn(process.execPath, [path.join(KOK, 'sunucu/sunucu.js')], {
 		env: {
@@ -88,11 +88,11 @@ async function sunucuBaslat() {
 		if (process.env.SUNUCU_GUNLUK) process.stdout.write('  [sunucu!] ' + d);
 	});
 	for (let i = 0; i < 80; i++) {
-		if (/Ses Kanalı çalışıyor/.test(gunluk)) break;
+		if (/Diszort çalışıyor/.test(gunluk)) break;
 		if (sunucuSureci.exitCode !== null) throw new Error('sunucu açılamadı:\n' + gunluk);
 		await bekle(100);
 	}
-	if (!/Ses Kanalı çalışıyor/.test(gunluk)) throw new Error('sunucu zamanında açılmadı:\n' + gunluk);
+	if (!/Diszort çalışıyor/.test(gunluk)) throw new Error('sunucu zamanında açılmadı:\n' + gunluk);
 	turnVar = !/STUN\/TURN kapalı/.test(gunluk);
 }
 
@@ -325,7 +325,7 @@ async function sidebarKisileri(k, kanal = 'Sesli Sohbet') {
 // ---------------------------------------------------------------- denemeler
 
 (async () => {
-	const wav = path.join(os.tmpdir(), `ses-kanali-konusma-${process.pid}.wav`);
+	const wav = path.join(os.tmpdir(), `diszort-konusma-${process.pid}.wav`);
 	konusmaWav(wav);
 	await sunucuBaslat();
 	tarayici = await chromium.launch({

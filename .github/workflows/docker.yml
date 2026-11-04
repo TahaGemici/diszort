@@ -1,9 +1,9 @@
-# Ses Kanalı: main'e her push'ta Docker imajı derlenir, kur.sh ile uçtan uca denenir (sunucu
+# Diszort: main'e her push'ta Docker imajı derlenir, kur.sh ile uçtan uca denenir (sunucu
 # denemeleri + jsdom arayüz denemesi + gerçek Chromium'la WebRTC/ses denemesi), ghcr.io'ya
 # (v1, v2, ... ve latest) yüklenir ve kur.sh GitHub sürümü olarak yayınlanır.
 #
 # Sunucuda kurmak, başlatmak ve güncellemek (tek komut, son sürümü çeker):
-#   curl -fsSL https://github.com/KULLANICI/DEPO/releases/latest/download/kur.sh | sudo sh
+#   curl -fsSL https://github.com/TahaGemici/diszort/releases/latest/download/kur.sh | sudo sh
 name: docker
 
 on:
@@ -66,7 +66,8 @@ jobs:
         run: node test/arayuz.js
 
       - name: İmajı derle
-        run: docker build --build-arg SURUM="$SURUM" -t "ses-kanali:$SURUM" .
+        # source etiketi: ghcr.io paketi bu depoya bağlansın (depo sayfasında görünsün).
+        run: docker build --build-arg SURUM="$SURUM" --label "org.opencontainers.image.source=https://github.com/$GITHUB_REPOSITORY" -t "diszort:$SURUM" .
 
       - name: kur.sh ile kur (yerel imaj)
         run: |
@@ -74,14 +75,14 @@ jobs:
           # Bu IP 10.x olduğu için coturn'ün iç ağ yasağından yalnızca o muaf tutulur (relay denemesi).
           IP=$(hostname -I | awk '{print $1}')
           echo "TURN adresi: $IP"
-          sudo sh -c "IMAJ=ses-kanali:$SURUM ILK_ANAHTAR=$ILK_ANAHTAR MAX_KULLANICI=$MAX_KULLANICI GIRIS_ARALIK_MS=$GIRIS_ARALIK_MS SES_ASKI_MS=$SES_ASKI_MS TURN_ADRESI=$IP TURN_IZINLI_IP=$IP sh kurulum/kur.sh" | tee kur.log
+          sudo sh -c "IMAJ=diszort:$SURUM ILK_ANAHTAR=$ILK_ANAHTAR MAX_KULLANICI=$MAX_KULLANICI GIRIS_ARALIK_MS=$GIRIS_ARALIK_MS SES_ASKI_MS=$SES_ASKI_MS TURN_ADRESI=$IP TURN_IZINLI_IP=$IP sh kurulum/kur.sh" | tee kur.log
           grep -q 'Ayar dosyası oluşturuldu' kur.log
           grep -q 'Docker konteynerinde çalışıyor' kur.log
 
       - name: Web, signaling, STUN ve TURN
         run: |
           node test/dene.js http://127.0.0.1:8080
-          sudo docker top ses-kanali -o pid,uid,comm | tee ps.log
+          sudo docker top diszort -o pid,uid,comm | tee ps.log
           # Kök olmayan kullanıcı (imaj: uid 1000) ile çalışmalı
           grep -Eq '^ *[0-9]+ +1000 +node$' ps.log
           grep -Eq '^ *[0-9]+ +1000 +turnserver$' ps.log
@@ -89,7 +90,7 @@ jobs:
       - name: Gerçek tarayıcı (Chromium) ile sesli kanal
         env:
           # Sunucu yeniden başlarken herkesin kendiliğinden geri dönmesi de denenir.
-          YENIDEN_BASLAT: sudo docker restart ses-kanali
+          YENIDEN_BASLAT: sudo docker restart diszort
           TARAYICI_ZORUNLU: '1'
         run: node test/tarayici.js http://127.0.0.1:8080
 
@@ -99,7 +100,7 @@ jobs:
           ONCE=$(curl -fsS http://127.0.0.1:8080/saglik | sed -n 's/.*"mesaj":\([0-9]*\).*/\1/p')
           echo "yeniden başlatmadan önce mesaj: ${ONCE:-yok}"
           test "${ONCE:-0}" -gt 0
-          sudo docker restart ses-kanali
+          sudo docker restart diszort
           YENI=
           for i in $(seq 30); do
             sleep 1
@@ -113,21 +114,21 @@ jobs:
           sudo test -d /var/lib/chat/yuklemeler
           # Dikkat: `docker logs | grep -q` pipefail altında 141 (SIGPIPE) verir — grep erken çıkınca
           # docker logs boruyu kırık bulur. Önce dosyaya yaz, sonra grep'le.
-          sudo docker logs ses-kanali > kanali.log 2>&1
-          grep -q '\[veritabanı\]' kanali.log
+          sudo docker logs diszort > diszort.log 2>&1
+          grep -q '\[veritabanı\]' diszort.log
 
       - name: Durdurunca düzgün kapanıyor mu
         run: |
-          sudo docker stop ses-kanali
-          sudo docker logs ses-kanali | tee gunluk.log
+          sudo docker stop diszort
+          sudo docker logs diszort | tee gunluk.log
           grep -q 'Kapanıyor (SIGTERM)' gunluk.log
-          KOD=$(sudo docker inspect -f '{{.State.ExitCode}}' ses-kanali)
+          KOD=$(sudo docker inspect -f '{{.State.ExitCode}}' diszort)
           if [ "$KOD" != 0 ]; then echo "düzgün kapanmadı (çıkış kodu $KOD)"; exit 1; fi
 
       - name: Yeniden kurulumda .env kalır
         run: |
           echo 'MAX_KISI=7' | sudo tee -a /var/lib/chat/.env
-          sudo sh -c "IMAJ=ses-kanali:$SURUM ILK_ANAHTAR=$ILK_ANAHTAR MAX_KULLANICI=$MAX_KULLANICI GIRIS_ARALIK_MS=$GIRIS_ARALIK_MS SES_ASKI_MS=$SES_ASKI_MS sh kurulum/kur.sh" | tee kur2.log
+          sudo sh -c "IMAJ=diszort:$SURUM ILK_ANAHTAR=$ILK_ANAHTAR MAX_KULLANICI=$MAX_KULLANICI GIRIS_ARALIK_MS=$GIRIS_ARALIK_MS SES_ASKI_MS=$SES_ASKI_MS sh kurulum/kur.sh" | tee kur2.log
           if grep -q 'Ayar dosyası oluşturuldu' kur2.log; then echo ".env yeniden oluşturuldu"; exit 1; fi
           sudo grep -q '^MAX_KISI=7' /var/lib/chat/.env
           MAX_KISI=7 node test/dene.js http://127.0.0.1:8080
@@ -135,10 +136,11 @@ jobs:
       - name: ghcr.io'ya yükle
         if: github.ref == 'refs/heads/main'
         run: |
-          IMAJ=ghcr.io/$(printf '%s' "$GITHUB_REPOSITORY" | tr 'A-Z' 'a-z')
+          # İmaj adı depo adından bağımsız: ghcr.io/<sahip>/diszort (kur.sh de aynı adı kullanır).
+          IMAJ=ghcr.io/$(printf '%s' "$GITHUB_REPOSITORY_OWNER" | tr 'A-Z' 'a-z')/diszort
           echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
-          docker tag "ses-kanali:$SURUM" "$IMAJ:$SURUM"
-          docker tag "ses-kanali:$SURUM" "$IMAJ:latest"
+          docker tag "diszort:$SURUM" "$IMAJ:$SURUM"
+          docker tag "diszort:$SURUM" "$IMAJ:latest"
           docker push "$IMAJ:$SURUM"
           docker push "$IMAJ:latest"
 
@@ -150,10 +152,10 @@ jobs:
         run: |
           sed "s|^DEPO=.*|DEPO=$GITHUB_REPOSITORY|" kurulum/kur.sh > kur.sh
           sh -n kur.sh
-          IMAJ=ghcr.io/$(printf '%s' "$GITHUB_REPOSITORY" | tr 'A-Z' 'a-z')
+          IMAJ=ghcr.io/$(printf '%s' "$GITHUB_REPOSITORY_OWNER" | tr 'A-Z' 'a-z')/diszort
           NOTLAR=$(printf 'Kurmak ya da güncellemek için sunucuda:\n\n    curl -fsSL https://github.com/%s/releases/latest/download/kur.sh | sudo sh\n\nBu sürüme dönmek için sonuna `-s %s` ekle. İmaj: %s:%s' "$GITHUB_REPOSITORY" "$SURUM" "$IMAJ" "$SURUM")
           if gh release view "$SURUM" >/dev/null 2>&1; then # aynı çalıştırma yeniden denendiyse
             gh release upload "$SURUM" kur.sh --clobber
           else
-            gh release create "$SURUM" kur.sh --target "$GITHUB_SHA" --title "${GH_REPO#*/} $SURUM" --notes "$NOTLAR"
+            gh release create "$SURUM" kur.sh --target "$GITHUB_SHA" --title "Diszort $SURUM" --notes "$NOTLAR"
           fi

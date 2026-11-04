@@ -1,7 +1,7 @@
 #!/bin/sh
-# Ses Kanalı'nı (chat) Docker konteyneri olarak kurar, başlatır ve günceller. Hepsi aynı komut:
+# Diszort'u Docker konteyneri olarak kurar, başlatır ve günceller. Hepsi aynı komut:
 #
-#   curl -fsSL https://github.com/KULLANICI/DEPO/releases/latest/download/kur.sh | sudo sh
+#   curl -fsSL https://github.com/TahaGemici/diszort/releases/latest/download/kur.sh | sudo sh
 #
 # İmajı ghcr.io'dan çeker (GitHub Actions her push'ta yayınlar), ayarları korur ve konteyneri açar.
 #   ... | sudo sh -s v42                    belirli bir sürüme dön (imaj etiketi)
@@ -15,7 +15,10 @@ set -eu
 # GitHub deposu (kullanici/depo). GitHub sürümü oluşturulurken workflow buraya gerçek adı yazar.
 DEPO=
 
-KONTEYNER=ses-kanali
+KONTEYNER=diszort
+# Önceki adıyla (ses-kanali) kurulmuş konteyner güncellemede kaldırılır; ayarlar ve veriler aynı
+# klasörde ($VERI) kaldığı için hiçbir şey kaybolmaz.
+ESKI_KONTEYNER=ses-kanali
 VERI=/var/lib/chat
 ETIKET=latest
 
@@ -69,7 +72,8 @@ main() {
 	else
 		IMAJ_VERILDI=
 		[ -n "$DEPO" ] || hata "hangi imajı çekeceğimi bilmiyorum; geliştirme için: sudo IMAJ=<imaj>:<etiket> sh $0"
-		IMAJ=ghcr.io/$(printf '%s' "$DEPO" | tr 'A-Z' 'a-z'):$ETIKET
+		# İmaj adı depo adından bağımsız: ghcr.io/<sahip>/diszort
+		IMAJ=ghcr.io/$(printf '%s' "${DEPO%%/*}" | tr 'A-Z' 'a-z')/$KONTEYNER:$ETIKET
 	fi
 	# Güncelleme ipucu: sürüm dosyası (kur.sh) anonim indirilebiliyorsa curl satırı yazılır.
 	# Depo özel ise o dosya 404 verir; o zaman SSH ile taze klon + aynı imajı çeken satır yazılır.
@@ -85,8 +89,8 @@ main() {
 	mkdir -p "$VERI"
 	if [ ! -f "$VERI/.env" ]; then
 		cat >"$VERI/.env" <<'AYARLAR'
-# Ses Kanalı ayarları. kur.sh ilk kurulumda oluşturur; sonra istediğin gibi düzenle.
-# Yalnızca konteyner başlarken okunur; değiştirince:  sudo docker restart ses-kanali
+# Diszort ayarları. kur.sh ilk kurulumda oluşturur; sonra istediğin gibi düzenle.
+# Yalnızca konteyner başlarken okunur; değiştirince:  sudo docker restart diszort
 # Hepsi isteğe bağlı; boş bırakılan varsayılanı kullanır.
 
 # Sunucunun dış (public) IPv4 adresi. BOŞ BIRAK: bulut meta verisinden (GCP/AWS) kendiliğinden
@@ -178,17 +182,24 @@ COMPOSE
 		echo "İmaj yerelde var: $IMAJ"
 	else
 		echo "İmaj çekiliyor: $IMAJ"
-		( cd "$VERI" && docker compose pull ) || hata "imaj çekilemedi.
-Depo özelse bir kez giriş yap (token: GitHub -> Settings -> Developer settings ->
-Personal access tokens -> read:packages):
-    echo <token> | sudo docker login ghcr.io -u KULLANICI --password-stdin
-Paket özelse public yap: GitHub -> profilin -> Packages -> $KONTEYNER -> Package settings -> Change visibility"
+		( cd "$VERI" && docker compose pull ) || hata "imaj çekilemedi ($IMAJ).
+Paket özelse ya public yap: GitHub -> profilin -> Packages -> $KONTEYNER -> Package settings -> Change visibility
+ya da sunucuda bir kez giriş yap (token: GitHub -> Settings -> Developer settings ->
+Personal access tokens -> yalnızca read:packages):
+    echo <token> | sudo docker login ghcr.io -u ${DEPO%%/*} --password-stdin"
 	fi
 
-	# 4) Konteyneri aç
+	# 4) Eski adla (ses-kanali) çalışan konteyner varsa kaldır: aynı portları kullanır. Yeni imaj
+	# yukarıda çekildi; çekilemeseydi buraya gelinmez, eski konteyner çalışmaya devam ederdi.
+	if [ "$ESKI_KONTEYNER" != "$KONTEYNER" ] && docker container inspect "$ESKI_KONTEYNER" >/dev/null 2>&1; then
+		echo "Eski konteyner kaldırılıyor: $ESKI_KONTEYNER (yeni adı $KONTEYNER; ayarlar ve veriler $VERI'de kalır)"
+		docker rm -f "$ESKI_KONTEYNER" >/dev/null || hata "eski konteyner ($ESKI_KONTEYNER) kaldırılamadı."
+	fi
+
+	# 5) Konteyneri aç
 	( cd "$VERI" && docker compose up -d --force-recreate --remove-orphans ) || hata "konteyner açılamadı."
 
-	# 5) Sağlık: sunucu ve coturn ayağa kalkana kadar bekle
+	# 6) Sağlık: sunucu ve coturn ayağa kalkana kadar bekle
 	PORT=$(sed -n 's/^[[:space:]]*PORT[[:space:]]*=[[:space:]]*\([0-9][0-9]*\).*/\1/p' "$VERI/.env" | tail -n 1)
 	PORT=${PORT:-8080}
 	CALISTI=
@@ -210,7 +221,7 @@ Paket özelse public yap: GitHub -> profilin -> Packages -> $KONTEYNER -> Packag
 	SURUM=$(curl -fsS "http://127.0.0.1:$PORT/saglik" | sed -n 's/.*"surum":"\([^"]*\)".*/\1/p')
 
 	echo ""
-	echo "Ses Kanalı ${SURUM:-$ETIKET} Docker konteynerinde çalışıyor; sunucu açılınca kendiliğinden başlar."
+	echo "Diszort ${SURUM:-$ETIKET} Docker konteynerinde çalışıyor; sunucu açılınca kendiliğinden başlar."
 	cat <<EOF
   Günlük     sudo docker logs -f $KONTEYNER
   Ayarlar    sudo nano $VERI/.env   sonra   sudo docker restart $KONTEYNER

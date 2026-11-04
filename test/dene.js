@@ -1,4 +1,4 @@
-// Çalışan bir Ses Kanalı'nı dışarıdan dener: beyaz liste (anahtar, kapıyı çalma, kabul/red, atma,
+// Çalışan bir Diszort sunucusunu dışarıdan dener: beyaz liste (anahtar, kapıyı çalma, kabul/red, atma,
 // giriş freni), web sayfası, sağlık, /api/ice (yalnızca oturumla), yazılı sohbet (gönderme, geçmiş,
 // hız sınırı), dosya paylaşımı (yetki, yükleme, indirme), sesli kanal signaling'i (mesh mesajları,
 // oturum/yenile iletimi, doluluk, aynı ad, kopunca askıda kalma ve geri dönme), STUN ve TURN

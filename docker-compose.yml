@@ -3,10 +3,10 @@
 # Sunucuya kurulumda kur.sh bunu değil, kendi yazdığı /var/lib/chat/docker-compose.yml dosyasını
 # kullanır: imajı burada derlemek yerine ghcr.io'dan çeker, ayarları /var/lib/chat/.env'den alır.
 services:
-  ses-kanali:
+  diszort:
     build: .
-    image: ses-kanali:yerel
-    container_name: ses-kanali
+    image: diszort:yerel
+    container_name: diszort
     # TURN çok sayıda UDP portu kullanır ve gerçek IP'yi duyurması gerekir; köprü ağı olmaz.
     network_mode: host
     restart: unless-stopped

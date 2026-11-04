@@ -1,4 +1,4 @@
-/* Ses Kanalı — koyu tema. Renkler tek yerde; bileşenler bunlardan türer. */
+/* Diszort — koyu tema. Renkler tek yerde; bileşenler bunlardan türer. */
 :root {
 	--zemin: #1e1f22;       /* en koyu: giriş zemini, girdiler */
 	--yan: #2b2d31;         /* kanal ve üye panelleri */

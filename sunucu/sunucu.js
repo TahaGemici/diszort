@@ -1,4 +1,4 @@
-// Ses Kanalı sunucusu — Discord'umsu tek sunucu: yazılı kanallar + sesli kanallar.
+// Diszort sunucusu — Discord'umsu tek sunucu: yazılı kanallar + sesli kanallar.
 //   - web sayfasını sunar (web/),
 //   - /rtc WebSocket'inde yazılı sohbeti iletir ve kaydeder (SQLite), sesli kanallar için
 //     WebRTC signaling yapar (mesh: ses tarayıcılar arasında P2P akar),
@@ -315,7 +315,7 @@ function turnAyarDosyasi() {
 		'fingerprint',
 		'use-auth-secret',
 		`static-auth-secret=${TURN_SIRRI}`,
-		'realm=ses-kanali',
+		'realm=diszort',
 		// Kötüye kullanıma karşı: kullanıcı başına ve toplam aktarım sayısı, aktarım başına bant genişliği.
 		'user-quota=24',
 		'total-quota=240',
@@ -1576,7 +1576,7 @@ async function main() {
 			? `STUN/TURN udp/${TURN_PORT} (aktarım ${RELAY_MIN_PORT}-${RELAY_MAX_PORT}, dış IP ${disIp || 'yok'}, iç IP ${IC_IP || 'yok'})`
 			: 'STUN/TURN kapalı';
 		console.log(
-			`Ses Kanalı çalışıyor: http://${HOST}:${PORT}  sürüm ${SURUM}, sesli kanal başına en fazla ${MAX_KISI} kişi, ` +
+			`Diszort çalışıyor: http://${HOST}:${PORT}  sürüm ${SURUM}, sesli kanal başına en fazla ${MAX_KISI} kişi, ` +
 				`dosya sınırı ${DOSYA_MB} MB, veri ${VERI_KLASORU}, ${turnBilgi}`,
 		);
 	});

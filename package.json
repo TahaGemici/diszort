@@ -1,5 +1,5 @@
 {
-  "name": "ses-kanali",
+  "name": "diszort",
   "private": true,
   "description": "Beyaz listeli, tarayıcıdan girilen Discord'umsu sunucu: yazılı kanallar + P2P sesli kanallar (mesh WebRTC + coturn)",
   "license": "MIT",
