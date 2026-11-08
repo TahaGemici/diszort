@@ -123,9 +123,6 @@ MAX_KULLANICI=10
 # Beyaz liste boşken ilk anahtarı alacak kişinin adı (anahtar: /var/lib/chat/ilk-anahtar.txt).
 YONETICI_ADI=taha
 
-# Yazılı kanallarda paylaşılabilecek en büyük dosya (MB). Dosyalar /var/lib/chat/yuklemeler'de tutulur.
-DOSYA_MB=25
-
 # STUN/TURN portu (UDP + TCP yedeği) ve TURN aktarım portları (UDP). Güvenlik duvarında açık olmalı:
 # UDP 3478, TCP 3478 ve UDP 49152-61000.
 TURN_PORT=3478

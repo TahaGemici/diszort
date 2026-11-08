@@ -10,6 +10,11 @@
 //   - sunucu yeniden başlarken P2P sesin KESİLMEMESİ ve herkesin kendiliğinden geri dönmesi
 //   - yalnızca TURN (relay) ile bağlantı; sunucu (ve coturn) yeniden başlayınca taze şifreyle kurtarma
 //   - aynı anahtarla ikinci sekme: oturum devri
+//   - sorunsuz bağlantıda yanlış "Bağlantı zayıf" uyarısı çıkmaması
+//   - P2P dosya: resim önizlemesi doğrudan paylaşandan; 24 MB dosya ortada bağlantısı koparılsa da
+//     kaldığı yerden eksiksiz gelir (içerik özeti aynı), iki kişi aynı anda indirir
+//   - müzik çalma (telefon karşılığı): dosyadan çalınan müzik kanala stereo, yüksek bit hızıyla gider
+//   - ekran paylaşımı (bilgisayar sesiyle): izleyene görüntü gider, yayını kapatana gitmez
 //
 //   node test/tarayici.js                    kendi sunucusunu (node sunucu/sunucu.js) geçici veriyle açar
 //   node test/tarayici.js http://adres:port  çalışan sunucuya bağlanır (ILK_ANAHTAR gerekir;
@@ -219,6 +224,38 @@ function konusmaWav(dosya, saniye = 12) {
 	fs.writeFileSync(dosya, v);
 }
 
+// Müzik benzeri stereo sinyal (48 kHz, 16 bit): sol ve sağ kanalda farklı akorlar.
+function muzikWav(dosya, saniye = 10) {
+	const HIZ = 48000;
+	const N = HIZ * saniye;
+	const v = Buffer.alloc(44 + N * 4);
+	const sol = [261.63, 329.63, 392.0];
+	const sag = [220.0, 277.18, 329.63];
+	for (let i = 0; i < N; i++) {
+		const t = i / HIZ;
+		const zarf = 0.6 + 0.4 * Math.sin(2 * Math.PI * 0.5 * t);
+		let l = 0;
+		let r = 0;
+		for (const f of sol) l += Math.sin(2 * Math.PI * f * t);
+		for (const f of sag) r += Math.sin(2 * Math.PI * f * t);
+		v.writeInt16LE(Math.round((l / 3) * zarf * 0.4 * 32767), 44 + i * 4);
+		v.writeInt16LE(Math.round((r / 3) * zarf * 0.4 * 32767), 44 + i * 4 + 2);
+	}
+	v.write('RIFF', 0);
+	v.writeUInt32LE(36 + N * 4, 4);
+	v.write('WAVEfmt ', 8);
+	v.writeUInt32LE(16, 16);
+	v.writeUInt16LE(1, 20);
+	v.writeUInt16LE(2, 22);
+	v.writeUInt32LE(HIZ, 24);
+	v.writeUInt32LE(HIZ * 4, 28);
+	v.writeUInt16LE(4, 32);
+	v.writeUInt16LE(16, 34);
+	v.write('data', 36);
+	v.writeUInt32LE(N * 4, 40);
+	fs.writeFileSync(dosya, v);
+}
+
 // ---------------------------------------------------------------- tarayıcı yardımcıları
 
 let tarayici;
@@ -265,24 +302,46 @@ async function sesliyeGir(k, kanal = 'Sesli Sohbet') {
 	await goruneneKadar(k, '#ses-karti');
 }
 
-// Sayfadaki ses durumunu oku (ana.js'in üst düzey değişkenleri sayfa betiğinden görünür).
+// Sayfadaki ses durumunu oku (ana.js'in üst düzey değişkenleri sayfa betiğinden görünür). Her kanal
+// (mikrofon, yayın sesi, görüntü) kendi alıcı/gönderici istatistiğinden okunur: bağlantıda birden
+// çok ses kaydı vardır.
 function durumu(k) {
 	return k.sayfa.evaluate(async () => {
 		const sonuc = { bagliyim, sesKanal, mik: mikrofon ? mikrofon.getAudioTracks()[0].readyState : null, esler: {} };
+		const oku = async (nesne, tur) => {
+			let bulunan = null;
+			let tip = null;
+			if (!nesne) return { kayit: null, tip };
+			const r = await nesne.getStats();
+			r.forEach((s) => {
+				if (s.type === tur) bulunan = s;
+				if (s.type === 'transport' && s.selectedCandidatePairId) {
+					const c = r.get(s.selectedCandidatePairId);
+					const y = c && r.get(c.localCandidateId);
+					const u = c && r.get(c.remoteCandidateId);
+					tip = y && u ? (y.candidateType === 'relay' || u.candidateType === 'relay' ? 'TURN' : 'P2P') : null;
+				}
+			});
+			return { kayit: bulunan, tip };
+		};
 		for (const [ad, es] of esler) {
 			const o = { durum: es.pc ? es.pc.connectionState : 'yok', oturum: es.oturum, caliyor: !!(es.ses && es.ses.srcObject && !es.ses.paused) };
-			if (es.pc) {
-				const r = await es.pc.getStats();
-				r.forEach((s) => {
-					if (s.type === 'inbound-rtp' && s.kind === 'audio') Object.assign(o, { gelenBayt: s.bytesReceived || 0, enerji: s.totalAudioEnergy || 0 });
-					if (s.type === 'outbound-rtp' && s.kind === 'audio') Object.assign(o, { gidenBayt: s.bytesSent || 0 });
-					if (s.type === 'transport' && s.selectedCandidatePairId) {
-						const c = r.get(s.selectedCandidatePairId);
-						const y = c && r.get(c.localCandidateId);
-						const u = c && r.get(c.remoteCandidateId);
-						o.tip = y && u ? (y.candidateType === 'relay' || u.candidateType === 'relay' ? 'TURN' : 'P2P') : null;
-					}
-				});
+			if (es.pc && es.tr) {
+				const gelen = await oku(es.tr.receiver, 'inbound-rtp');
+				const giden = await oku(es.tr.sender, 'outbound-rtp');
+				if (gelen.kayit) Object.assign(o, { gelenBayt: gelen.kayit.bytesReceived || 0, enerji: gelen.kayit.totalAudioEnergy || 0 });
+				if (giden.kayit) o.gidenBayt = giden.kayit.bytesSent || 0;
+				o.tip = gelen.tip || giden.tip;
+				const ys = await oku(es.trSes && es.trSes.receiver, 'inbound-rtp');
+				const ysg = await oku(es.trSes && es.trSes.sender, 'outbound-rtp');
+				const g = await oku(es.trGoruntu && es.trGoruntu.receiver, 'inbound-rtp');
+				const gg = await oku(es.trGoruntu && es.trGoruntu.sender, 'outbound-rtp');
+				o.yayinEnerji = ys.kayit ? ys.kayit.totalAudioEnergy || 0 : 0;
+				o.yayinGelenBayt = ys.kayit ? ys.kayit.bytesReceived || 0 : 0;
+				o.yayinGidenBayt = ysg.kayit ? ysg.kayit.bytesSent || 0 : 0;
+				o.kare = g.kayit ? g.kayit.framesDecoded || 0 : 0;
+				o.kareGenislik = g.kayit ? g.kayit.frameWidth || 0 : 0;
+				o.goruntuGidenBayt = gg.kayit ? gg.kayit.bytesSent || 0 : 0;
 			}
 			sonuc.esler[ad] = o;
 		}
@@ -357,6 +416,8 @@ async function sidebarKisileri(k, kanal = 'Sesli Sohbet') {
 (async () => {
 	const wav = path.join(os.tmpdir(), `diszort-konusma-${process.pid}.wav`);
 	konusmaWav(wav);
+	const muzikDosyasi = path.join(os.tmpdir(), `diszort-muzik-${process.pid}.wav`);
+	muzikWav(muzikDosyasi);
 	await sunucuBaslat();
 	tarayici = await chromium.launch({
 		executablePath: process.env.CHROMIUM_YOLU || undefined,
@@ -365,6 +426,8 @@ async function sidebarKisileri(k, kanal = 'Sesli Sohbet') {
 			'--use-fake-device-for-media-stream',
 			'--use-file-for-fake-audio-capture=' + wav,
 			'--autoplay-policy=no-user-gesture-required',
+			// Ekran paylaşımı: seçim penceresi yerine sahte ekran (ve sahte sistem sesi).
+			'--auto-select-desktop-capture-source=Entire screen',
 		],
 	});
 	console.log(`tarayıcı denemesi: ${ADRES} (${tarayici.version()})`);
@@ -441,7 +504,8 @@ async function sidebarKisileri(k, kanal = 'Sesli Sohbet') {
 			x.fillStyle = g;
 			x.fillRect(0, 0, c.width, c.height);
 			const blob = await new Promise((r) => c.toBlob(r, 'image/png'));
-			dosyaYukle(new File([blob], 'uzun.png', { type: 'image/png' }));
+			// P2P: resim sunucuya yüklenmez; diğerleri önizlemeyi doğrudan zeynep'ten alır.
+			dosyalariPaylas([new File([blob], 'uzun.png', { type: 'image/png' })]);
 		});
 		await mesajGelene(taha, a0 + 1);
 		const resim = taha.sayfa.locator('#mesajlar img.onizleme').last();
@@ -501,6 +565,137 @@ async function sidebarKisileri(k, kanal = 'Sesli Sohbet') {
 		assert.equal(await taha.sayfa.evaluate(() => esler.get('mert').ses.volume), 0.4);
 		assert.equal(await taha.sayfa.evaluate(() => localStorage.getItem('ses-seviye-mert')), '40');
 		await kaydirici.fill('100');
+	});
+
+	await dene('bağlantı kalitesi: sorunsuz bağlantıda "Bağlantı zayıf" denmez, kimse kırmızı görünmez', async () => {
+		for (let i = 0; i < 8; i++) {
+			for (const k of [taha, zeynep, mert]) {
+				const d = await k.sayfa.evaluate(() => ({
+					panel: document.getElementById('ses-baglanti-durum').textContent + ' · ' + document.getElementById('ses-baglanti-kanal').textContent,
+					kotu: [...document.querySelectorAll('#ses-kisiler .ses-istatistik.kotu')].map((e) => e.textContent),
+				}));
+				assert.ok(!/zayıf/.test(d.panel) && !d.kotu.length, `${k.ad}: ${d.panel} ${d.kotu.join(', ')}`);
+			}
+			await bekle(1000);
+		}
+	});
+
+	await dene('P2P dosya: 24 MB, bağlantı ortada koparılsa da kaldığı yerden eksiksiz gelir; iki kişi aynı anda indirir', async () => {
+		const BOYUT = 24 * 1024 * 1024;
+		const { id, ozet } = await zeynep.sayfa.evaluate(async (n) => {
+			const veri = new Uint8Array(n);
+			for (let i = 0; i < n; i += 65536) crypto.getRandomValues(veri.subarray(i, i + 65536));
+			const ozet = [...new Uint8Array(await crypto.subtle.digest('SHA-256', veri))].map((b) => b.toString(16).padStart(2, '0')).join('');
+			dosyalariPaylas([new File([veri], 'buyuk.bin', { type: 'application/octet-stream' })]);
+			return { id: [...paylasimlarim.keys()].at(-1), ozet };
+		}, BOYUT);
+		// taha tarayıcının dosya alanına (OPFS) yazar ve bağlantısı %30'da koparılır; mert belleğe yazar.
+		await taha.sayfa.evaluate((id) => {
+			localStorage.setItem('dosya-yazici', 'opfs');
+			window.kopma = 0;
+			const t = setInterval(() => {
+				const a = indirmeler.get(id);
+				if (a && a.bag && a.alinan > a.boyut * 0.3) {
+					window.kopma = a.alinan;
+					clearInterval(t);
+					bagKapat(a.bag, 'deneme: bağlantı koparıldı');
+				}
+			}, 1);
+		}, id);
+		await mert.sayfa.evaluate(() => localStorage.setItem('dosya-yazici', 'bellek'));
+		const t0 = Date.now();
+		for (const k of [taha, mert]) {
+			const d = k.sayfa.locator(`.p2p-dosya[data-dosya="${id}"] button`, { hasText: 'İndir' });
+			await d.waitFor({ timeout: 15000 });
+			await bekleKosul(`${k.ad}: İndir açıldı (zeynep sunuyor)`, () => d.isEnabled(), 10000);
+			await d.click();
+		}
+		for (const k of [taha, mert]) {
+			await bekleKosul(`${k.ad} dosyayı aldı`, () => k.sayfa.evaluate((id) => alinanlar.has(id), id), 90000, 250);
+			const alinan = await k.sayfa.evaluate(async (id) => {
+				const veri = await alinanlar.get(id).dosya.arrayBuffer();
+				const ozet = [...new Uint8Array(await crypto.subtle.digest('SHA-256', veri))].map((b) => b.toString(16).padStart(2, '0')).join('');
+				return { ozet, boyut: veri.byteLength };
+			}, id);
+			assert.equal(alinan.boyut, BOYUT, `${k.ad}: boyut`);
+			assert.equal(alinan.ozet, ozet, `${k.ad}: içerik özeti farklı`);
+		}
+		const kopma = await taha.sayfa.evaluate(() => window.kopma);
+		assert.ok(kopma > 0 && kopma < BOYUT, "taha'nın bağlantısı aktarım ortasında koparılmalıydı");
+		console.log(`     ${((Date.now() - t0) / 1000).toFixed(1)} sn; taha'nın bağlantısı ${(kopma / 1048576).toFixed(1)} MB'da koparıldı, kaldığı yerden sürdü; ikisi de eksiksiz aldı`);
+		await bekleKosul('aktarım panelleri kapandı', async () => {
+			for (const k of [taha, mert, zeynep]) if (!(await k.sayfa.evaluate(() => document.getElementById('aktarimlar').hidden))) return false;
+			return true;
+		}, 10000);
+		for (const k of [taha, mert]) await k.sayfa.evaluate(() => localStorage.removeItem('dosya-yazici'));
+	});
+
+	await dene('müzik çalma (telefon karşılığı): dosyadan çalınan müzik kanala stereo ve yüksek bit hızıyla gider, mikrofondan ayrı', async () => {
+		await mert.sayfa.setInputFiles('#muzik-dosya', muzikDosyasi);
+		await bekleKosul('mert müzik çalıyor', () => mert.sayfa.evaluate(() => !!yayin.muzik && !yayin.muzik.oge.paused), 10000);
+		await bekleKosul('taha müzik yayınını görüyor', () => taha.sayfa.evaluate(() => /mert/.test((document.querySelector('#yayinlar .yayin-kart.ses') || {}).textContent || '')), 10000);
+		await bekleKosul('taha ← mert müzik akıyor (yayın kanalında)', async () => {
+			const d1 = await durumu(taha);
+			await bekle(1500);
+			const d2 = await durumu(taha);
+			return d2.esler.mert.yayinEnerji - d1.esler.mert.yayinEnerji > SES_VAR / 2;
+		}, 20000, 100);
+		const bolum = await mert.sayfa.evaluate(() => esler.get('taha').pc.remoteDescription.sdp.split('m=audio').slice(1)[1] || '');
+		assert.match(bolum, /stereo=1/, 'yayın sesi stereo anlaşılmalı');
+		const d1 = await durumu(mert);
+		await bekle(3000);
+		const d2 = await durumu(mert);
+		const kbps = ((d2.esler.taha.yayinGidenBayt - d1.esler.taha.yayinGidenBayt) * 8) / 3000;
+		console.log(`     müzik mert → taha ${kbps.toFixed(1)} kbps (stereo Opus, tavan 160)`);
+		assert.ok(kbps > 64, 'müzik bit hızı düşük: ' + kbps.toFixed(1));
+		await duyuyor(taha, 'mert', 'müzik çalarken mikrofon da ayrıca duyulmalı');
+		// taha dinlemeyi kapatır: mert ona yayın sesi göndermez, zeynep'e gönderir.
+		await taha.sayfa.locator('#yayinlar .yayin-kart.ses button', { hasText: 'Kapat' }).click();
+		await bekleKosul("mert taha'ya müzik göndermiyor", () => mert.sayfa.evaluate(() => esler.get('taha').trSes.sender.track === null), 10000);
+		assert.ok(await mert.sayfa.evaluate(() => !!esler.get('zeynep').trSes.sender.track), "zeynep'e müzik gitmeye devam etmeli");
+		await mert.sayfa.locator('#yayinlar .yayin-kart.ben button', { hasText: 'Durdur' }).click();
+		await bekleKosul('müzik durunca herkeste yayın kalktı', async () => {
+			for (const k of [taha, zeynep]) if (await k.sayfa.evaluate(() => !!document.querySelector('#yayinlar .yayin-kart'))) return false;
+			return true;
+		}, 10000);
+		assert.equal(await taha.sayfa.evaluate(() => esler.get('mert').izliyorum), true, 'bir sonraki yayın yine kendiliğinden dinlenmeli');
+	});
+
+	await dene('ekran paylaşımı: izleyene görüntü gider, yayını kapatana gitmez', async () => {
+		await taha.sayfa.click('#yayin-ac');
+		await taha.sayfa.locator('#yayin-menu button', { hasText: 'Ekranını paylaş' }).click();
+		await bekleKosul('taha ekranını paylaşıyor', () => taha.sayfa.evaluate(() => !!yayin.goruntu), 10000);
+		for (const k of [zeynep, mert]) {
+			await bekleKosul(`${k.ad} taha'nın ekranını görüyor`, () =>
+				k.sayfa.evaluate(() => {
+					const v = document.querySelector('#yayinlar .yayin-kart.ekran video');
+					return !!v && v.videoWidth > 0 && !v.paused;
+				}),
+			);
+		}
+		const z1 = await durumu(zeynep);
+		await bekle(1500);
+		const z2 = await durumu(zeynep);
+		assert.ok(z2.esler.taha.kare > z1.esler.taha.kare, 'zeynep kare almalı');
+		console.log(`     ekran ${z2.esler.taha.kareGenislik} px genişlikte; zeynep 1,5 sn'de ${z2.esler.taha.kare - z1.esler.taha.kare} kare aldı`);
+		await mert.sayfa.locator('#yayinlar .yayin-kart.ekran button', { hasText: 'Kapat' }).click();
+		await bekleKosul("taha mert'e görüntü göndermiyor", () => taha.sayfa.evaluate(() => esler.get('mert').trGoruntu.sender.track === null), 10000);
+		await bekle(500);
+		const m1 = await durumu(mert);
+		await bekle(1500);
+		const m2 = await durumu(mert);
+		assert.ok(m2.esler.taha.kare - m1.esler.taha.kare <= 2, 'yayını kapatana kare gelmemeli');
+		const z3 = await durumu(zeynep);
+		await bekle(1500);
+		const z4 = await durumu(zeynep);
+		assert.ok(z4.esler.taha.kare > z3.esler.taha.kare, 'zeynep görmeye devam etmeli');
+		await taha.sayfa.locator('#yayinlar .yayin-kart.ben button', { hasText: 'Durdur' }).click();
+		await bekleKosul('yayın herkeste kalktı', async () => {
+			for (const k of [zeynep, mert]) if (await k.sayfa.evaluate(() => !!document.querySelector('#yayinlar .yayin-kart'))) return false;
+			return true;
+		}, 10000);
+		assert.equal(await taha.sayfa.evaluate(() => [...esler.values()].every((e) => !e.trGoruntu.sender.track && !e.trSes.sender.track)), true);
+		assert.equal(await mert.sayfa.evaluate(() => esler.get('taha').izliyorum), true, 'bir sonraki yayın yine kendiliğinden izlenmeli');
 	});
 
 	await dene('çık-gir: ayrılan çıkar, geri gelen yeniden duyulur', async () => {
@@ -662,6 +857,7 @@ async function sidebarKisileri(k, kanal = 'Sesli Sohbet') {
 	await tarayici.close();
 	await sunucuDurdur();
 	fs.rmSync(wav, { force: true });
+	fs.rmSync(muzikDosyasi, { force: true });
 	if (veriKlasoru) fs.rmSync(veriKlasoru, { recursive: true, force: true });
 	console.log(process.exitCode ? 'BAŞARISIZ' : `Tarayıcı denemeleri geçti (${gecen}${atlanan ? `, ${atlanan} atlandı` : ''}).`);
 	process.exit(process.exitCode || 0);

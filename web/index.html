@@ -35,6 +35,7 @@
 			<span class="sunucu-logo" data-ikon="diszort" aria-hidden="true"></span>
 			<b>Diszort</b>
 			<span id="cevrimici-sayac" class="sayac" title="Çevrimiçi kişi">0</span>
+			<button id="sunucu-ac" class="ikon-dugme sunucu-dugme" type="button" title="Sunucu: veritabanı boyutu, sohbeti temizle" aria-label="Sunucu ayarları" data-ikon="veritabani"></button>
 			<button id="kenar-kapat" class="ikon-dugme mobil" type="button" aria-label="Kanalları kapat" data-ikon="x"></button>
 		</header>
 		<div class="kanal-kaydir">
@@ -97,11 +98,18 @@
 				<span class="ses-kart-denetim">
 					<button id="kart-mikrofon" class="ikon-dugme" type="button" aria-pressed="false" data-ikon="mik"></button>
 					<button id="kart-sagir" class="ikon-dugme" type="button" aria-pressed="false" data-ikon="kulaklik"></button>
+					<span class="yayin-menu-kap">
+						<button id="yayin-ac" class="ikon-dugme" type="button" title="Paylaş: ekran, bilgisayar sesi, müzik" aria-label="Paylaşım menüsü" aria-haspopup="menu" aria-expanded="false" data-ikon="yayin"></button>
+						<div id="yayin-menu" class="yayin-menu" role="menu" hidden></div>
+					</span>
 					<button id="kart-ayril" class="ikon-dugme tehlike" type="button" title="Sesli kanaldan ayrıl" aria-label="Sesli kanaldan ayrıl" data-ikon="ayril"></button>
 					<button id="ses-kucult" class="ikon-dugme" type="button" aria-expanded="true" aria-label="Sesli kanal kartını küçült" title="Küçült / büyüt" data-ikon="asagi"></button>
 				</span>
 			</header>
 			<div id="ses-uyari" class="ses-uyari" hidden></div>
+			<!-- Ekran paylaşımları ve müzik: izlenen yayınlar, kendi yayının (müzik çalar) -->
+			<div id="yayinlar" class="yayinlar" hidden></div>
+			<input id="muzik-dosya" type="file" accept="audio/*,.mp3,.m4a,.aac,.ogg,.oga,.opus,.wav,.flac,.webm" multiple hidden>
 			<div id="ses-kisiler"><div id="ben-ses-satir" class="ses-kisi ben"></div></div>
 		</section>
 
@@ -109,16 +117,12 @@
 
 		<form id="yazma">
 			<div class="yazma-kutu">
-				<button id="dosya-sec" class="ikon-dugme" type="button" title="Dosya ekle" aria-label="Dosya ekle" data-ikon="ekle"></button>
-				<input id="dosya" type="file" hidden>
+				<button id="dosya-sec" class="ikon-dugme" type="button" title="Dosya paylaş (sınırsız, doğrudan gönderilir)" aria-label="Dosya paylaş" data-ikon="ekle"></button>
+				<input id="dosya" type="file" multiple hidden>
 				<textarea id="metin" rows="1" maxlength="2000" placeholder="Mesaj yaz…" aria-label="Mesaj"></textarea>
 				<button id="gonder" class="ikon-dugme gonder" type="submit" title="Gönder" aria-label="Gönder" data-ikon="gonder"></button>
 			</div>
 		</form>
-		<div id="yukleme" class="yukleme" hidden>
-			<div class="yukleme-cubuk"><div id="yukleme-dolgu"></div></div>
-			<span id="yukleme-yazi"></span>
-		</div>
 		<div id="birak" class="birak" hidden><div><span data-ikon="ekle"></span><b>Dosyayı bırak</b><small id="birak-kanal"></small></div></div>
 	</main>
 
@@ -140,8 +144,48 @@
 	<div id="ortu" class="ortu" hidden></div>
 </div>
 
-<!-- İçeri girmek isteyenler: içeridekiler kabul eder ya da reddeder -->
-<div id="istekler" class="istekler" aria-live="polite"></div>
+<!-- Sağ üstteki bildirim sütunu: içeri girmek isteyenler (kabul/red) ve süren dosya aktarımları -->
+<div class="bildirim-sutunu">
+	<div id="istekler" class="istekler" aria-live="polite"></div>
+	<div id="aktarimlar" class="aktarimlar" aria-label="Dosya aktarımları" hidden></div>
+</div>
+
+<!-- Sunucu: veritabanı boyutu ve sohbeti temizleme (beyaz liste, kanallar ve ayarlar kalır) -->
+<div id="sunucu-pencere" class="pencere" hidden>
+	<div class="pencere-kart ayar-kart" role="dialog" aria-modal="true" aria-labelledby="sunucu-baslik">
+		<header class="ayar-ust">
+			<h2 id="sunucu-baslik">Sunucu</h2>
+			<button id="sunucu-kapat" class="ikon-dugme" type="button" aria-label="Kapat" data-ikon="x"></button>
+		</header>
+		<section class="ayar-bolum">
+			<h3>Veritabanı</h3>
+			<dl id="sunucu-bilgi" class="bilgi-listesi">
+				<dt>Boyut</dt><dd id="vt-boyut">…</dd>
+				<dt>Mesaj</dt><dd id="vt-mesaj">…</dd>
+				<dt>Dosya kaydı</dt><dd id="vt-dosya">…</dd>
+				<dt class="vt-eski" hidden>Eski yüklemeler</dt><dd id="vt-yukleme" class="vt-eski" hidden>…</dd>
+				<dt>Diskte boş</dt><dd id="vt-bos">…</dd>
+				<dt>Sürüm</dt><dd id="vt-surum">…</dd>
+			</dl>
+			<p class="ayar-not-ic">Dosyaların kendisi sunucuda tutulmaz; veritabanında yalnızca yazılı mesajlar ve paylaşılan dosyaların adı/boyutu durur.</p>
+		</section>
+		<section class="ayar-bolum">
+			<h3>Sohbeti temizle</h3>
+			<p class="ayar-not-ic">Yalnızca yazılı mesajlar (ve dosya kayıtları) silinir. Beyaz liste, kanallar ve ayarlar olduğu gibi kalır.</p>
+			<label class="alan-adi" for="temizle-kanal">Kanal</label>
+			<select id="temizle-kanal"></select>
+			<label class="alan-adi" for="temizle-gun">Hangi mesajlar</label>
+			<select id="temizle-gun">
+				<option value="0">Hepsi</option>
+				<option value="1">1 günden eski</option>
+				<option value="7">1 haftadan eski</option>
+				<option value="30">1 aydan eski</option>
+				<option value="90">3 aydan eski</option>
+			</select>
+			<button id="temizle" class="tehlike-dugme" type="button">Sohbeti temizle</button>
+		</section>
+	</div>
+</div>
 
 <!-- Kanal ekleme / silme / atma onayı -->
 <div id="pencere" class="pencere" hidden>

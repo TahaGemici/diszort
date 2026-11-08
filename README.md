@@ -1,17 +1,33 @@
 # Diszort
 
 Arkadaş grupları için tarayıcıdan girilen, Discord benzeri küçük bir sohbet sunucusu. Yazılı kanallar
-sunucuda saklanır; sesli kanallarda ses kişiler arasında doğrudan (P2P) akar, doğrudan bağlanamayanlar
-için sunucudaki TURN aktarır. İçeri yalnızca içeridekilerin onayıyla girilir.
+sunucuda saklanır; sesli kanallarda ses, ekran paylaşımı ve müzik kişiler arasında doğrudan (P2P) akar,
+doğrudan bağlanamayanlar için sunucudaki TURN aktarır. Dosyalar da sunucuya yüklenmez, paylaşandan
+doğrudan alınır. İçeri yalnızca içeridekilerin onayıyla girilir.
 
 ## Özellikler
 
 - **Beyaz liste:** Yeni gelen adını yazar; içeridekilerden biri onaylarsa tarayıcısına kişisel bir
   anahtar kaydedilir ve sonraki girişlerde soru sorulmaz. İçeridekiler birbirini atabilir.
-- **Yazılı kanallar:** mesaj geçmişi, dosya paylaşımı (resim/ses/video önizlemeli), bahsetme,
-  tıklanabilir bağlantılar, resim büyüteci.
+- **Yazılı kanallar:** mesaj geçmişi, bahsetme, tıklanabilir bağlantılar, resim büyüteci.
+- **P2P dosya paylaşımı, boyut sınırı yok:** dosya sunucuya yüklenmez; sohbete yalnızca adı ve boyutu
+  düşer, isteyen doğrudan paylaşanın tarayıcısından alır. Paylaşan sayfayı açık tuttukça indirilebilir
+  (sayfayı yenilerse "Yeniden paylaş" ile aynı dosyayı yeniden sunar). Kopan aktarım kaldığı yerden
+  sürer; büyük dosyalar belleğe değil doğrudan diske yazılır. Küçük resimler sohbette önizlenir.
 - **Sesli kanallar:** kanal başına 10 kişiye kadar, yüksek kaliteli Opus (~96 kbps), konuşma göstergesi,
   kişi başı ses seviyesi, susturma ve sağırlaştırma, mikrofon/hoparlör seçimi, gürültü bastırma.
+- **Ekran paylaşımı ve birlikte müzik** (ses kartındaki paylaş düğmesi):
+  - *Ekranını paylaş* (masaüstü): ekran, pencere ya da sekme; istenirse sesiyle.
+  - *Bilgisayar sesini paylaş* (masaüstü): Spotify/YouTube çalan sekmenin ya da (Windows) tüm
+    bilgisayarın sesi kanala stereo ve yüksek kalitede gider.
+  - *Müzik çal (dosyadan)*: telefonun karşılığı. Telefon tarayıcıları (Android, iOS) ekranı da telefonun
+    sesini de yakalayamaz; bunun yerine cihazdaki müzik dosyaları çalınır ve kanala yayınlanır.
+  - Yayını istemeyen kapatır (ona hiç gönderilmez); yayın sesinin seviyesi kişi başına ayarlanır.
+- **Bağlantı göstergesi:** yalnızca ses gerçekten bozulunca (alıcının uydurmak zorunda kaldığı ses) uyarır;
+  tek kişinin bağlantısı kötüyse yalnızca onun kutusunda görünür.
+- **Sunucu penceresi** (sol üstteki veritabanı simgesi): veritabanının boyutu ve mesaj sayısı;
+  *Sohbeti temizle* tüm kanallarda ya da tek kanalda, hepsini ya da belli bir süreden eskileri siler.
+  Yalnızca yazılı mesajlar silinir; beyaz liste, kanallar ve ayarlar kalır.
 - **Kopmalara dayanıklı:** sunucu bağlantısı koparsa ya da telefon siteyi arka plana alırsa ses sürer,
   bağlantı kendiliğinden geri gelir.
 - Kanallar arayüzden eklenip silinir; masaüstünde ve telefonda çalışır.
@@ -46,7 +62,6 @@ dosya sonra silinebilir.
 |---|---|---|
 | `MAX_KULLANICI` | 10 | beyaz listedeki en fazla kişi (arayüzden de değiştirilebilir) |
 | `MAX_KISI` | 10 | sesli kanal başına en fazla kişi |
-| `DOSYA_MB` | 25 | paylaşılabilecek en büyük dosya |
 | `YONETICI_ADI` | taha | ilk anahtarın sahibi |
 | `SITE_ADRESI` | | ilk anahtar bağlantısındaki site adresi |
 | `GIRIS_ARALIK_MS`, `GIRIS_KOVA` | 10000, 1 | giriş freni: sunucu genelinde 10 saniyede 1 deneme |
@@ -62,8 +77,9 @@ Tam liste ve açıklamalar: [`.env.example`](.env.example).
 |---|---|
 | Günlük | `sudo docker logs -f diszort` |
 | Yeniden başlatma | `sudo docker restart diszort` |
-| Sağlık | `curl http://127.0.0.1:8080/saglik` |
-| Yedek | `/var/lib/chat` (ayarlar, `sohbet.db*`, `yuklemeler/`) |
+| Sağlık | `curl http://127.0.0.1:8080/saglik` (veritabanı boyutu dahil) |
+| Yedek | `/var/lib/chat` (ayarlar, `sohbet.db*`; eski sürümün yüklediği dosyalar `yuklemeler/`) |
+| Sohbeti temizle | arayüzde sol üstteki veritabanı simgesi → *Sohbeti temizle* |
 
 ## Geliştirme
 
@@ -88,10 +104,19 @@ açıklanmıştır.
   tarayıcısında durur. TURN sırrı her açılışta yeniden üretilir ve konteynerin dışına yazılmaz.
 - `ILK_ANAHTAR` yalnızca testler içindir, üretimde boş kalmalıdır. CI'daki anahtar herkesin bildiği bir
   test değeridir.
-- Ses hiçbir yere kaydedilmez; yalnızca yazılı mesajlar ve paylaşılan dosyalar saklanır.
+- Ses, görüntü ve dosyaların içeriği sunucuya gelmez ve hiçbir yere kaydedilmez; yalnızca yazılı mesajlar
+  ve paylaşılan dosyaların adı/boyutu saklanır.
 
 ## Sınırlar
 
-- Ses mesh ile taşınır: herkes kanaldaki herkese ayrı ses gönderir, bu yüzden kanal başına ~10 kişi.
-  Daha kalabalık odalar için SFU gerekir.
-- TURN'den geçen ses sunucunun bant genişliğini kullanır (kişi başı ~100 kbps). Yalnızca IPv4.
+- Ses ve yayın mesh ile taşınır: herkes kanaldaki herkese ayrı akış gönderir, bu yüzden kanal başına
+  ~10 kişi. Ekran paylaşan, izleyen her kişiye ayrı görüntü gönderir (kişi başı en fazla 2,5 Mbit/s,
+  toplam ~6 Mbit/s); yayını kapatana gönderilmez. Daha kalabalık odalar için SFU gerekir.
+- Ekran ve bilgisayar sesi paylaşımı tarayıcıya bağlıdır: Chrome/Edge'de en iyisi (Windows'ta tüm
+  bilgisayarın sesi, macOS ve Linux'ta sekme sesi); Firefox ve Safari ses paylaşamaz; telefon
+  tarayıcıları ekranı ve telefonun sesini hiç paylaşamaz (müzik dosyası çalınabilir). İzlemek ve dinlemek
+  her yerde olur. Hoparlörden dinleyenin mikrofonu çalan sesi de alır; kulaklık önerilir.
+- P2P dosya, paylaşanın sayfası açıkken alınabilir. Chrome/Edge (masaüstü) büyük dosyayı doğrudan seçilen
+  yere yazar; diğer tarayıcılar önce tarayıcının dosya alanına (kotası diskin bir kısmı) yazar.
+- TURN'den geçen ses sunucunun bant genişliğini kullanır (kişi başı ~100 kbps); TURN'den geçen dosya
+  aktarımı ~0,5 MB/sn ile sınırlıdır (doğrudan bağlanabilenler sınırsız). Yalnızca IPv4.

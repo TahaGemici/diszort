@@ -196,6 +196,8 @@ button:disabled { cursor: not-allowed; }
 }
 .sunucu-logo .ikon { width: 28px; height: 28px; }
 .sunucu-baslik b { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sunucu-dugme { width: 30px; height: 30px; margin-left: -4px; }
+.sunucu-dugme .ikon { width: 18px; height: 18px; }
 .sayac {
 	margin-left: auto;
 	display: inline-flex;
@@ -324,6 +326,21 @@ button:disabled { cursor: not-allowed; }
 .ses-uyesi.askida { opacity: 0.45; }
 .ses-uyesi .durum-ikon { color: var(--tehlike); display: inline-grid; }
 .ses-uyesi .durum-ikon .ikon { width: 15px; height: 15px; }
+
+/* Yayın rozetleri: ekran paylaşan "CANLI", müzik/bilgisayar sesi paylaşan nota. */
+.canli {
+	flex: none;
+	padding: 0 5px;
+	border-radius: 4px;
+	background: var(--tehlike);
+	color: #fff;
+	font-size: 10px;
+	font-weight: 800;
+	line-height: 16px;
+	letter-spacing: 0.04em;
+}
+.nota { flex: none; display: inline-grid; color: #c9a2ff; }
+.nota .ikon { width: 15px; height: 15px; }
 
 /* ---------------------------------------------------------------- avatarlar */
 
@@ -614,7 +631,7 @@ audio.onizleme { width: min(400px, 100%); }
 #ses-kucult { color: #9fe0b8; }
 #ses-kucult .ikon { transition: transform 0.2s; }
 #ses-karti.kucuk #ses-kucult .ikon { transform: rotate(180deg); }
-#ses-karti.kucuk #ses-kisiler { display: none; }
+#ses-karti.kucuk #ses-kisiler, #ses-karti.kucuk #yayinlar { display: none; }
 .ses-ac {
 	flex: none;
 	padding: 5px 12px;
@@ -681,6 +698,102 @@ audio.onizleme { width: min(400px, 100%); }
 .ses-istatistik.turn { color: var(--turuncu); }
 .ses-istatistik.kotu { color: #ff8a8d; }
 
+.ses-kisi .canli, .ses-kisi .nota { margin-left: 2px; }
+#yayin-ac.secili { color: var(--tehlike); }
+
+/* ---------------------------------------------------------------- yayınlar (ses kartında) */
+
+.yayinlar { display: flex; flex-direction: column; gap: 8px; padding: 0 8px 8px; }
+.yayin-kart {
+	border-radius: 10px;
+	background: rgba(0, 0, 0, 0.28);
+	padding: 8px;
+	min-width: 0;
+	font-size: 13px;
+	color: #c9ead6;
+}
+.yayin-ust { display: flex; align-items: center; gap: 6px; min-width: 0; flex-wrap: wrap; }
+.yayin-ust b { color: var(--parlak); }
+.yayin-aciklama, .yayin-metin { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.yayin-metin b { color: var(--parlak); }
+.yayin-metin i { color: #e8d7ff; }
+.bosluk { flex: 1; }
+.yayin-dugme {
+	flex: none;
+	padding: 4px 10px;
+	border: 0;
+	border-radius: 7px;
+	background: rgba(255, 255, 255, 0.1);
+	color: var(--parlak);
+	font-size: 12px;
+	font-weight: 600;
+}
+.yayin-dugme:hover { background: rgba(255, 255, 255, 0.18); }
+.yayin-dugme.tehlike { background: var(--tehlike); color: #fff; }
+.yayin-dugme.tehlike:hover { background: var(--tehlike-koyu); }
+.yayin-kart .ikon-dugme { width: 28px; height: 28px; color: #c9ead6; }
+.yayin-seviye { width: 84px; height: 18px; margin: 0; accent-color: #b98aff; flex: none; }
+.yayin-sahne {
+	position: relative;
+	margin-top: 8px;
+	border-radius: 8px;
+	overflow: hidden;
+	background: #000;
+	aspect-ratio: 16 / 9;
+	max-height: 46vh;
+	width: 100%;
+	cursor: zoom-in;
+}
+.yayin-sahne:fullscreen { max-height: none; border-radius: 0; cursor: default; }
+.yayin-video { display: block; width: 100%; height: 100%; object-fit: contain; background: #000; }
+.yayin-bekle { position: absolute; inset: 0; display: grid; place-items: center; color: var(--soluk); font-size: 13px; pointer-events: none; }
+.yayin-kart.ses { display: flex; align-items: center; gap: 8px; }
+.yayin-kart.ses .yayin-metin { flex: 1; }
+.yayin-kart.ses.kapali { opacity: 0.7; }
+.yayin-nota { display: grid; place-items: center; color: #c9a2ff; flex: none; }
+.yayin-kart.ben { background: rgba(242, 63, 67, 0.08); box-shadow: inset 0 0 0 1px rgba(242, 63, 67, 0.25); }
+.kucuk-onizleme { margin-top: 8px; width: min(240px, 100%); height: auto; aspect-ratio: 16 / 9; border-radius: 6px; }
+
+/* Müzik çalar (kendi yayınında). */
+.muzik-calar { margin-top: 8px; }
+.muzik-ust { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
+.muzik-baslik { color: var(--parlak); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.muzik-sira, .muzik-zaman { color: var(--soluk); font-size: 11px; white-space: nowrap; flex: none; }
+.muzik-denetim { display: flex; align-items: center; gap: 4px; margin-top: 4px; min-width: 0; }
+.muzik-ilerleme { flex: 1; min-width: 60px; margin: 0 4px; accent-color: #b98aff; }
+.muzik-denetim .yayin-seviye { width: 64px; }
+
+/* Paylaşım menüsü: ses kartının dışına taşabilsin diye ekrana göre konumlanır (JS). */
+.yayin-menu-kap { position: relative; display: inline-flex; }
+.yayin-menu {
+	position: fixed;
+	z-index: 48;
+	padding: 6px;
+	border-radius: 10px;
+	background: #111214;
+	border: 1px solid var(--cizgi);
+	box-shadow: var(--golge);
+	color: var(--yazi);
+	animation: belir 0.12s ease-out;
+}
+.yayin-menu-oge {
+	display: flex;
+	align-items: center;
+	gap: 10px;
+	width: 100%;
+	padding: 8px 10px;
+	border: 0;
+	border-radius: 6px;
+	background: none;
+	color: var(--yazi);
+	font-size: 14px;
+	text-align: left;
+}
+.yayin-menu-oge:hover:not(:disabled) { background: var(--vurgu); color: #fff; }
+.yayin-menu-oge:disabled { opacity: 0.4; }
+.yayin-menu-oge .ikon { width: 18px; height: 18px; }
+.yayin-menu-not { margin: 6px 4px 2px; padding-top: 8px; border-top: 1px solid var(--cizgi); font-size: 12px; color: var(--soluk); line-height: 1.4; }
+
 /* Mikrofon seviye çubuğu (kendi satırın ve ayarlar). */
 .seviye-cubuk, .olcer { height: 6px; border-radius: 3px; background: rgba(255, 255, 255, 0.1); overflow: hidden; }
 .seviye-cubuk > div, .olcer > div { height: 100%; width: 0; background: var(--yesil-acik); border-radius: 3px; transition: width 0.08s linear; }
@@ -741,17 +854,35 @@ audio.onizleme { width: min(400px, 100%); }
 #yazma .gonder { color: var(--vurgu); }
 #yazma .gonder:hover:not(:disabled) { color: #fff; background: var(--vurgu); }
 
-.yukleme {
-	flex: none;
-	display: flex;
-	align-items: center;
-	gap: 10px;
-	padding: 0 18px 12px;
-	font-size: 12px;
-	color: var(--soluk);
+/* İlerleme çubuğu (dosya aktarımı). */
+.ilerleme { height: 4px; border-radius: 2px; background: #43454b; overflow: hidden; margin-top: 5px; }
+.ilerleme > div { height: 100%; width: 0; background: var(--vurgu); transition: width 0.2s linear; }
+
+/* P2P dosya kartı: dosya paylaşanın tarayıcısında; durum (çevrimiçi / indiriliyor / indirildi). */
+.p2p-dosya { display: flex; flex-direction: column; align-items: flex-start; }
+.dosya-kart.p2p { cursor: default; gap: 10px; width: min(460px, 100%); max-width: 100%; }
+.dosya-kart.p2p:hover { border-color: var(--zemin); }
+.dosya-kart.p2p .dosya-bilgi { flex: 1; }
+.dosya-kart.p2p .dosya-bilgi b { color: var(--parlak); }
+.dosya-durum { display: block; }
+.dosya-nokta { display: inline-block; width: 8px; height: 8px; margin-right: 6px; border-radius: 50%; background: var(--sonuk); vertical-align: 0; }
+.dosya-nokta.acik { background: var(--yesil); }
+.dosya-dugmeler { display: flex; gap: 6px; flex: none; }
+.dosya-dugme {
+	padding: 6px 12px;
+	border: 0;
+	border-radius: 7px;
+	background: var(--vurgu);
+	color: #fff;
+	font-size: 13px;
+	font-weight: 600;
+	white-space: nowrap;
 }
-.yukleme-cubuk { flex: 1; height: 4px; border-radius: 2px; background: #43454b; overflow: hidden; }
-#yukleme-dolgu { height: 100%; width: 0; background: var(--vurgu); transition: width 0.15s; }
+.dosya-dugme:hover:not(:disabled) { background: var(--vurgu-koyu); }
+.dosya-dugme:disabled { opacity: 0.4; }
+.dosya-dugme.ikincil { width: auto; margin: 0; background: var(--ust); color: var(--yazi); border: 0; font-weight: 500; }
+.dosya-dugme.ikincil:hover { background: var(--secili); }
+.onizleme-bekle { margin-top: 6px; padding: 10px 12px; border-radius: var(--yuvarlak); background: var(--zemin); color: var(--soluk); font-size: 12px; }
 
 /* Dosya sürüklenirken tüm sohbet alanını kaplayan bırakma yeri. */
 .birak {
@@ -861,9 +992,10 @@ audio.onizleme { width: min(400px, 100%); }
 .limit-dugme:disabled { opacity: 0.35; }
 .limit-dugme:not(:disabled):hover { background: var(--uzerinde); }
 
-/* ---------------------------------------------------------------- giriş istekleri */
+/* ---------------------------------------------------------------- giriş istekleri + aktarımlar */
 
-.istekler {
+/* Sağ üstte bildirim sütunu: kapıyı çalanlar, altında süren dosya aktarımları. */
+.bildirim-sutunu {
 	position: fixed;
 	top: calc(56px + var(--ust-bosluk));
 	right: 12px;
@@ -872,7 +1004,47 @@ audio.onizleme { width: min(400px, 100%); }
 	flex-direction: column;
 	gap: 8px;
 	width: min(360px, calc(100vw - 24px));
+	pointer-events: none;
 }
+.bildirim-sutunu > * { pointer-events: auto; }
+.istekler { display: flex; flex-direction: column; gap: 8px; }
+.istekler:empty { display: none; }
+.aktarimlar {
+	display: flex;
+	flex-direction: column;
+	gap: 2px;
+	padding: 6px;
+	background: #111214;
+	border: 1px solid var(--cizgi);
+	border-radius: 12px;
+	box-shadow: var(--golge);
+	max-height: 40vh;
+	overflow-y: auto;
+	animation: kay 0.25s ease-out;
+}
+.aktarim { display: flex; align-items: center; gap: 8px; padding: 6px; border-radius: 8px; }
+.aktarim-isaret { color: var(--vurgu); display: grid; place-items: center; flex: none; }
+.aktarim.giden .aktarim-isaret { color: var(--yesil-acik); }
+.aktarim-bilgi { flex: 1; min-width: 0; line-height: 1.25; }
+.aktarim-ust { display: flex; align-items: baseline; gap: 6px; min-width: 0; }
+.aktarim-ust b { font-size: 13px; color: var(--parlak); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.aktarim-kisi { font-size: 12px; color: var(--soluk); white-space: nowrap; flex: none; }
+.aktarim-metin { display: block; margin-top: 3px; font-size: 11px; color: var(--soluk); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.aktarim.giden .ilerleme > div { background: var(--yesil-acik); }
+.aktarim-iptal {
+	width: 26px;
+	height: 26px;
+	flex: none;
+	display: grid;
+	place-items: center;
+	border: 0;
+	border-radius: 6px;
+	background: none;
+	color: var(--soluk);
+	padding: 0;
+}
+.aktarim-iptal .ikon { width: 15px; height: 15px; }
+.aktarim-iptal:hover { background: var(--tehlike-koyu); color: #fff; }
 .istek {
 	position: relative;
 	overflow: hidden;
@@ -1002,6 +1174,25 @@ audio.onizleme { width: min(400px, 100%); }
 .anahtar input:checked { background: var(--yesil); }
 .anahtar input:checked::after { transform: translateX(16px); }
 .ayar-not { margin: 0; padding: 12px 20px 18px; font-size: 12px; color: var(--soluk); border-top: 1px solid var(--cizgi); }
+.ayar-not-ic { margin: 0 0 12px; font-size: 12px; color: var(--soluk); line-height: 1.45; }
+
+/* Sunucu penceresi: veritabanı bilgisi ve sohbeti temizleme. */
+.bilgi-listesi { display: grid; grid-template-columns: max-content 1fr; gap: 6px 16px; margin: 0 0 12px; font-size: 14px; }
+.bilgi-listesi dt { color: var(--soluk); }
+.bilgi-listesi dd { margin: 0; color: var(--parlak); font-variant-numeric: tabular-nums; }
+.bilgi-listesi [hidden] { display: none !important; }
+.tehlike-dugme {
+	width: 100%;
+	margin-top: 4px;
+	padding: 10px;
+	border: 0;
+	border-radius: var(--yuvarlak);
+	background: var(--tehlike);
+	color: #fff;
+	font-weight: 600;
+}
+.tehlike-dugme:hover:not(:disabled) { background: var(--tehlike-koyu); }
+.tehlike-dugme:disabled { opacity: 0.5; cursor: progress; }
 
 /* Resim büyüteci: resim kaydırılabilir bir kabın içinde. Sığdırılmış açılır; tam genişlikte
    (.tam) ekrandan uzun resim aşağı kaydırılarak gezilir. */
@@ -1117,7 +1308,11 @@ audio.onizleme { width: min(400px, 100%); }
 	.yazma-kutu textarea { font-size: 16px; } /* iOS: 16px altı odakta yakınlaştırır */
 	#mesaj-alani { padding-top: 10px; }
 	.yeni-mesaj { bottom: 84px; }
-	.istekler { left: 12px; right: 12px; width: auto; }
+	.bildirim-sutunu { left: 12px; right: 12px; width: auto; }
+	.dosya-kart.p2p { flex-wrap: wrap; }
+	.dosya-kart.p2p .dosya-dugmeler { width: 100%; justify-content: flex-end; }
+	.yayin-sahne { max-height: 34vh; }
+	.yayin-seviye { width: 64px; }
 	.ses-kisi { padding: 6px 7px; gap: 8px; }
 	.ses-kisi .orta-avatar { width: 36px; height: 36px; font-size: 15px; }
 	.ses-kisi .ses-seviye { width: 64px; }

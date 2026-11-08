@@ -1,10 +1,13 @@
 // Tarayıcısız arayüz denemesi: gerçek index.html + ana.js, jsdom içinde.
-// WebSocket/getUserMedia/RTCPeerConnection/AudioContext taklit edilir. Giriş (kapıyı çalma +
-// anahtar), kanal seçimi, mesaj çizimi (gruplama, bahsetme, bağlantılar), kanal ekleme/silme,
-// giriş istekleri (kayıtlı ad uyarısı), atma, kişi limiti, sesli kanal (mikrofon kısıtları, teklif/
-// yanıt + oturum kimliği, Opus ayarları, seviye, susturma/sağırlaştırma), bağlantı istatistikleri,
-// sunucu bağlantısı koparken ses bağlantılarının korunması, giriş freninde uygulamada kalma,
-// oturum devri ve atılma doğrulanır. Gerçek WebRTC için: test/tarayici.js.
+// WebSocket/getUserMedia/getDisplayMedia/RTCPeerConnection (veri kanalı dahil)/AudioContext taklit
+// edilir. Giriş (kapıyı çalma + anahtar), kanal seçimi, mesaj çizimi (gruplama, bahsetme,
+// bağlantılar), kanal ekleme/silme, giriş istekleri (kayıtlı ad uyarısı), atma, kişi limiti, P2P dosya
+// (paylaşma, kartlar, indirme ve gönderme protokolü), sesli kanal (mikrofon kısıtları, teklif/yanıt +
+// oturum kimliği, mikrofon/yayın sesi/görüntü kanalları, m-line başına Opus ayarı, seviye,
+// susturma/sağırlaştırma), yayın (ekran, müzik çalar, izle/kapat), bağlantı kalitesi (kısa kayıp
+// ani uyarı vermez, gerçek bozulma verir), sunucu bağlantısı koparken ses bağlantılarının korunması,
+// giriş freninde uygulamada kalma, sunucu penceresi (veritabanı, sohbeti temizle), oturum devri ve
+// atılma doğrulanır. Gerçek WebRTC için: test/tarayici.js.
 //
 //   npm install --no-save jsdom && node test/arayuz.js      (jsdom yoksa deneme atlanır)
 'use strict';
@@ -37,6 +40,12 @@ const denetle = (ad, kosul, ek = '') => {
 };
 
 const OPUS_TEKLIF = 'v=0\r\nm=audio 9 UDP/TLS/RTP/SAVPF 111\r\na=rtpmap:111 opus/48000/2\r\na=fmtp:111 minptime=10;useinbandfec=1\r\n';
+// Yeni sürümün teklifi: mikrofon + yayın sesi + görüntü.
+const UC_KANALLI =
+	'v=0\r\n' +
+	'm=audio 9 UDP/TLS/RTP/SAVPF 111\r\na=mid:0\r\na=rtpmap:111 opus/48000/2\r\na=fmtp:111 minptime=10;useinbandfec=1\r\n' +
+	'm=audio 9 UDP/TLS/RTP/SAVPF 111\r\na=mid:1\r\na=rtpmap:111 opus/48000/2\r\na=fmtp:111 minptime=10;useinbandfec=1\r\n' +
+	'm=video 9 UDP/TLS/RTP/SAVPF 96\r\na=mid:2\r\na=rtpmap:96 VP8/90000\r\n';
 
 // Sayfayı kur: DOM + taklitler + ana.js. Birden çok kez çağrılabilir (hash/depo senaryoları).
 function kur({ url = 'https://chat.deneme/', depo = {}, oturumDepo = {} } = {}) {
@@ -65,11 +74,21 @@ function kur({ url = 'https://chat.deneme/', depo = {}, oturumDepo = {} } = {}) 
 	}
 	window.WebSocket = FakeWS;
 	window.fetch = async () => ({ ok: true, status: 200, json: async () => ({}) });
-	const izYap = () => {
+	// jsdom'da blob adresi yok: sahte adres; indirme bağlantısına tıklama kaydedilir.
+	let urlSayac = 0;
+	window.URL.createObjectURL = () => 'blob:sahte/' + ++urlSayac;
+	window.URL.revokeObjectURL = () => {};
+	durum.indirilen = [];
+	window.HTMLAnchorElement.prototype.click = function () {
+		durum.indirilen.push({ ad: this.download, href: this.href });
+	};
+	const izYap = (kind = 'audio') => {
 		const iz = {
+			id: 'iz-' + Math.random().toString(36).slice(2),
 			enabled: true,
-			kind: 'audio',
+			kind,
 			readyState: 'live',
+			muted: false,
 			dinleyiciler: {},
 			stop() {
 				this.readyState = 'ended';
@@ -77,10 +96,21 @@ function kur({ url = 'https://chat.deneme/', depo = {}, oturumDepo = {} } = {}) 
 			addEventListener(ad, fn) {
 				(this.dinleyiciler[ad] = this.dinleyiciler[ad] || []).push(fn);
 			},
+			bitir() {
+				this.readyState = 'ended';
+				for (const fn of this.dinleyiciler.ended || []) fn();
+			},
 			getSettings: () => ({ echoCancellation: true, noiseSuppression: true, autoGainControl: false, channelCount: 1, sampleRate: 48000 }),
 		};
 		return iz;
 	};
+	durum.izYap = izYap;
+	const akisYap = (izler) => ({
+		getTracks: () => izler,
+		getAudioTracks: () => izler.filter((i) => i.kind === 'audio'),
+		getVideoTracks: () => izler.filter((i) => i.kind === 'video'),
+	});
+	durum.ekranSesiVer = true;
 	Object.defineProperty(window.navigator, 'mediaDevices', {
 		value: {
 			getUserMedia: async (kisitlar) => {
@@ -88,8 +118,17 @@ function kur({ url = 'https://chat.deneme/', depo = {}, oturumDepo = {} } = {}) 
 				durum.micKisit = kisitlar && kisitlar.audio ? { ...kisitlar.audio } : null;
 				const iz = izYap();
 				durum.sonIz = iz;
-				return { getTracks: () => [iz], getAudioTracks: () => [iz] };
+				return akisYap([iz]);
 			},
+			// Masaüstü ekran paylaşımı: görüntü + (seçildiyse) bilgisayar sesi.
+			getDisplayMedia: async (secenek) => {
+				durum.ekranSecenek = secenek;
+				const izler = [izYap('video')];
+				if (durum.ekranSesiVer) izler.push(izYap('audio'));
+				durum.ekranIzleri = izler;
+				return akisYap(izler);
+			},
+			getSupportedConstraints: () => ({ restrictOwnAudio: true, suppressLocalAudioPlayback: true }),
 			enumerateDevices: async () => [],
 			addEventListener() {},
 			ondevicechange: null,
@@ -101,7 +140,10 @@ function kur({ url = 'https://chat.deneme/', depo = {}, oturumDepo = {} } = {}) 
 			this.izler = izler || [];
 		}
 		getAudioTracks() {
-			return this.izler;
+			return this.izler.filter((i) => i.kind !== 'video');
+		}
+		getVideoTracks() {
+			return this.izler.filter((i) => i.kind === 'video');
 		}
 		getTracks() {
 			return this.izler;
@@ -111,6 +153,10 @@ function kur({ url = 'https://chat.deneme/', depo = {}, oturumDepo = {} } = {}) 
 		this._caliyor = true;
 		return Promise.resolve();
 	};
+	window.HTMLMediaElement.prototype.pause = function () {
+		this._caliyor = false;
+	};
+	window.HTMLMediaElement.prototype.load = function () {};
 	Object.defineProperty(window.HTMLMediaElement.prototype, 'paused', {
 		get() {
 			return !this._caliyor;
@@ -128,13 +174,18 @@ function kur({ url = 'https://chat.deneme/', depo = {}, oturumDepo = {} } = {}) 
 			this.remoteDescription = null;
 			this.localDescription = null;
 			this._transceivers = [];
+			this.kanallar = [];
+			// İstatistik sayaçları: her getStats'ta geçen süre kadar artar (kayıp/gizleme oranı ayarlanabilir).
+			this.sayac = { zaman: Date.now(), alinan: 0, kayip: 3, ornek: 0, gizli: 0, bayt: 0, giden: 0 };
+			this.kayipHizi = null; // saniyede kayıp paket (null: FakePC.kayipHizi)
+			this.gizlemeOrani = null; // uydurulan ses oranı (null: FakePC.gizlemeOrani)
 		}
-		_tr(track, yon, mid) {
+		_tr(track, yon, mid, tur = 'audio') {
 			const tr = {
 				mid: mid ?? null,
 				direction: yon,
 				currentDirection: null,
-				receiver: { track: { kind: 'audio' } },
+				receiver: { track: { kind: tur } },
 				sender: {
 					track,
 					async replaceTrack(t) {
@@ -150,9 +201,43 @@ function kur({ url = 'https://chat.deneme/', depo = {}, oturumDepo = {} } = {}) 
 			return tr;
 		}
 		addTransceiver(track, ayar) {
-			const tr = this._tr(typeof track === 'string' ? null : track, (ayar && ayar.direction) || 'sendrecv');
-			setTimeout(() => this.onnegotiationneeded && this.onnegotiationneeded(), 0);
+			const tur = typeof track === 'string' ? track : (track && track.kind) || 'audio';
+			const tr = this._tr(typeof track === 'string' ? null : track, (ayar && ayar.direction) || 'sendrecv', null, tur);
+			if (!this._muzakere) {
+				this._muzakere = true;
+				setTimeout(() => this.onnegotiationneeded && this.onnegotiationneeded(), 0);
+			}
 			return tr;
+		}
+		// Veri kanalı (P2P dosya): deneme açar, mesaj gönderir, kapatır.
+		createDataChannel(label, secenek) {
+			const pc = this;
+			const k = {
+				label,
+				secenek,
+				readyState: 'connecting',
+				bufferedAmount: 0,
+				binaryType: 'blob',
+				gonderilen: [],
+				send(d) {
+					if (this.readyState !== 'open') throw new Error('kanal açık değil');
+					this.gonderilen.push(d);
+				},
+				close() {
+					if (this.readyState === 'closed') return;
+					this.readyState = 'closed';
+					setTimeout(() => this.onclose && this.onclose(), 0);
+				},
+				ac() {
+					this.readyState = 'open';
+					if (this.onopen) this.onopen();
+				},
+				gelsin(d) {
+					if (this.onmessage) this.onmessage({ data: d });
+				},
+			};
+			pc.kanallar.push(k);
+			return k;
 		}
 		getTransceivers() {
 			return this._transceivers;
@@ -181,21 +266,45 @@ function kur({ url = 'https://chat.deneme/', depo = {}, oturumDepo = {} } = {}) 
 			FakePC.uzaklar.push(d);
 			if (d.type === 'offer') {
 				this.signalingState = 'have-remote-offer';
-				// Tarayıcı gibi: teklifteki ses m-line'ı için transceiver oluşur, varsayılan yön recvonly.
-				if (!this._transceivers.length) this._tr(null, 'recvonly', '0');
+				// Tarayıcı gibi: teklifteki her m-line için transceiver oluşur, varsayılan yön recvonly.
+				if (!this._transceivers.length) {
+					const satirlar = String(d.sdp || '').split(/\r?\n/).filter((s) => s.startsWith('m='));
+					satirlar.forEach((s, i) => this._tr(null, 'recvonly', String(i), s.startsWith('m=video') ? 'video' : 'audio'));
+				}
 			} else this.signalingState = 'stable';
 		}
 		async addIceCandidate() {}
 		async getStats() {
-			// Artan sayaçlar: kayıp/bit hızı iki ölçüm arasındaki farktan hesaplanır.
-			const t = Date.now() / 1000;
+			// Artan sayaçlar: kayıp/gizleme/bit hızı iki ölçüm arasındaki farktan hesaplanır.
+			const s = this.sayac;
+			const simdi = Date.now();
+			const dt = (simdi - s.zaman) / 1000;
+			s.zaman = simdi;
+			const kayipHizi = this.kayipHizi ?? FakePC.kayipHizi;
+			const gizleme = this.gizlemeOrani ?? FakePC.gizlemeOrani;
+			s.alinan += Math.round(50 * dt);
+			s.kayip += Math.round(kayipHizi * dt);
+			s.ornek += Math.round(48000 * dt);
+			s.gizli += Math.round(48000 * dt * gizleme);
+			s.bayt += Math.round(12000 * dt);
+			s.giden += Math.round(12000 * dt);
 			const m = new Map();
 			m.set('tr', { type: 'transport', selectedCandidatePairId: 'pair' });
 			m.set('pair', { type: 'candidate-pair', state: 'succeeded', nominated: true, localCandidateId: 'yerel', remoteCandidateId: 'uzak', currentRoundTripTime: 0.031 });
 			m.set('yerel', { id: 'yerel', type: 'local-candidate', candidateType: FakePC.adayTuru });
 			m.set('uzak', { id: 'uzak', type: 'remote-candidate', candidateType: 'srflx' });
-			m.set('gelen', { type: 'inbound-rtp', kind: 'audio', packetsReceived: Math.round(t * 50), packetsLost: 3, bytesReceived: Math.round(t * 12000), jitter: 0.011 });
-			m.set('giden', { type: 'outbound-rtp', kind: 'audio', bytesSent: Math.round(t * 12000) });
+			m.set('gelen', {
+				type: 'inbound-rtp',
+				kind: 'audio',
+				packetsReceived: s.alinan,
+				packetsLost: s.kayip,
+				bytesReceived: s.bayt,
+				jitter: 0.011,
+				totalSamplesReceived: s.ornek,
+				concealedSamples: s.gizli,
+				silentConcealedSamples: 0,
+			});
+			m.set('giden', { type: 'outbound-rtp', kind: 'audio', bytesSent: s.giden });
 			return m;
 		}
 		close() {
@@ -206,11 +315,22 @@ function kur({ url = 'https://chat.deneme/', depo = {}, oturumDepo = {} } = {}) 
 	FakePC.hepsi = [];
 	FakePC.uzaklar = [];
 	FakePC.adayTuru = 'srflx'; // 'relay' → bağlantı TURN üzerinden görünür
+	FakePC.kayipHizi = 0;
+	FakePC.gizlemeOrani = 0;
 	window.RTCPeerConnection = FakePC;
 	window.AudioContext = class {
 		constructor() {
 			this.state = 'running';
 			this.currentTime = 0;
+			this.destination = { connect() {} };
+		}
+		createMediaElementSource() {
+			return { connect() {}, disconnect() {} };
+		}
+		createMediaStreamDestination() {
+			const iz = izYap('audio');
+			durum.muzikIzi = iz;
+			return { stream: akisYap([iz]) };
 		}
 		createAnalyser() {
 			return { fftSize: 1024, getFloatTimeDomainData(v) { v.fill(0.1); } };
@@ -315,7 +435,7 @@ const ICE = { iceServers: [{ urls: ['stun:1.2.3.4:3478'] }, { urls: ['turn:1.2.3
 		maxKullanici: 10,
 		beyazListe: 3,
 		beyazListeAdlari: ['taha', 'bora', 'deniz'],
-		dosyaMb: 25,
+		sunulanDosyalar: [],
 		jeton: 'a'.repeat(32),
 		anahtar: 'f'.repeat(128),
 		ice: ICE,
@@ -472,6 +592,119 @@ const ICE = { iceServers: [{ urls: ['stun:1.2.3.4:3478'] }, { urls: ['turn:1.2.3
 		delete r.naturalHeight;
 	}
 
+	// --- 6d) P2P dosya: sunucuya yüklenmez; sohbete kaydı düşer, dosya paylaşanın tarayıcısından
+	// doğrudan (veri kanalıyla) alınır. Sınır yok; kopunca kaldığı yerden sürer.
+	{
+		const kart = (id) => d.querySelector(`#mesajlar .p2p-dosya[data-dosya="${id}"]`);
+		const metin = (id) => (kart(id) ? kart(id).textContent : '');
+		// Kendi paylaşımım: dosya-paylas gider (dosyanın kendisi değil).
+		w.eval('dosyalariPaylas([new File(["merhaba dünya"], "not.txt", { type: "text/plain" })])');
+		const pay = son('dosya-paylas');
+		denetle('dosya paylaşınca yalnızca kaydı gönderildi', pay && /^[0-9a-f]{24}$/.test(pay.id) && pay.ad === 'not.txt' && pay.boyut === 14 && pay.kanal === 'genel', JSON.stringify(pay));
+		denetle('sunucuya yükleme isteği yok', !s.oc.gonderilen.some((m) => m.type === 'yukle'));
+		gelsin({ type: 'yazi', kanal: 'genel', mesaj: { id: 30, ad: 'taha', metin: '', zaman: Date.now(), dosya: { id: pay.id, ad: 'not.txt', boyut: 14, tur: 'text/plain', p2p: true } } });
+		gelsin({ type: 'dosya-durum', sunulan: [pay.id] });
+		await bekle(60);
+		denetle('kendi P2P dosyam: "senin paylaşımın" ve durdur düğmesi', /senin paylaşımın/.test(metin(pay.id)) && /Paylaşımı durdur/.test(metin(pay.id)), metin(pay.id));
+
+		// Başkasının dosyası: paylaşan çevrimdışıyken indirilemez, çevrimiçi olunca indirilir.
+		const id = 'c'.repeat(24);
+		const icerik = 'P2P içerik: ' + 'x'.repeat(100);
+		const boyut = new w.TextEncoder().encode(icerik).length;
+		gelsin({ type: 'yazi', kanal: 'genel', mesaj: { id: 31, ad: 'bora', metin: '', zaman: Date.now(), dosya: { id, ad: 'rapor.txt', boyut, tur: 'text/plain', p2p: true } } });
+		await bekle(30);
+		const indirDugmesi = () => [...kart(id).querySelectorAll('button')].find((b) => b.textContent === 'İndir');
+		denetle('paylaşan sunmuyorken İndir kapalı', indirDugmesi() && indirDugmesi().disabled && /şu an sunmuyor/.test(metin(id)), metin(id));
+		gelsin({ type: 'dosya-durum', sunulan: [pay.id, id] });
+		await bekle(30);
+		denetle('paylaşan çevrimiçi: İndir açık', indirDugmesi() && !indirDugmesi().disabled && /çevrimiçi/.test(metin(id)), metin(id));
+		w.localStorage.setItem('dosya-yazici', 'bellek');
+		const pcOnce = s.FakePC.hepsi.length;
+		indirDugmesi().click();
+		await bekle(40);
+		const teklif = son('dosya-sinyal');
+		denetle('indirince paylaşana doğrudan bağlantı teklifi gider', teklif && teklif.to === 'bora' && teklif.veri.tur === 'teklif' && typeof teklif.veri.bag === 'string', JSON.stringify(teklif));
+		const pc = s.FakePC.hepsi[pcOnce];
+		const kanal = pc && pc.kanallar[0];
+		denetle('dosya için veri kanalı açıldı (sıralı, güvenilir)', !!kanal && kanal.secenek && kanal.secenek.ordered === true);
+		denetle('aktarım panelde ve kartta görünür', !d.getElementById('aktarimlar').hidden && /rapor\.txt/.test(d.getElementById('aktarimlar').textContent) && !!kart(id).querySelector('.ilerleme'));
+		gelsin({ type: 'dosya-sinyal', from: 'bora', veri: { tur: 'yanit', bag: teklif.veri.bag, sdp: { type: 'answer', sdp: 'v=0' } } });
+		await bekle(20);
+		denetle('yanıt bağlantıya uygulandı', pc.remoteDescription && pc.remoteDescription.type === 'answer');
+		kanal.ac();
+		const istek = JSON.parse(kanal.gonderilen[0] || '{}');
+		denetle('kanal açılınca dosya istendi (baştan)', istek.istek === id && istek.baslangic === 0, JSON.stringify(istek));
+		// Gönderen: önce yarısı, sonra kopma → kaldığı yerden yeniden istenir.
+		const bayt = new w.TextEncoder().encode(icerik);
+		kanal.gelsin(JSON.stringify({ tamam: true, boyut, baslangic: 0 }));
+		kanal.gelsin(bayt.slice(0, 50).buffer);
+		await bekle(20);
+		kanal.close();
+		await bekle(1300);
+		const kanal2 = pc.kanallar[1];
+		denetle('kopan aktarım aynı bağlantıda yeni kanalla sürüyor', !!kanal2);
+		kanal2.ac();
+		const istek2 = JSON.parse(kanal2.gonderilen[0] || '{}');
+		denetle('kaldığı yerden istendi (50. bayttan)', istek2.istek === id && istek2.baslangic === 50, JSON.stringify(istek2));
+		kanal2.gelsin(JSON.stringify({ tamam: true, boyut, baslangic: 50 }));
+		kanal2.gelsin(bayt.slice(50).buffer);
+		await bekle(20);
+		const onay = kanal2.gonderilen.map((x) => (typeof x === 'string' ? JSON.parse(x) : {})).find((x) => x.onay != null);
+		denetle('yazılan bildirildi (onay)', onay && onay.onay === boyut, JSON.stringify(onay));
+		kanal2.gelsin(JSON.stringify({ bitti: true }));
+		await bekle(60);
+		const alinan = w.eval(`alinanlar.get('${id}')`);
+		const yazilan = alinan && alinan.dosya ? await alinan.dosya.text() : '';
+		denetle('dosya eksiksiz alındı (iki parça birleşti)', yazilan === icerik, yazilan.length + '/' + icerik.length);
+		denetle('indirilen dosya kaydedildi (İndirilenler)', s.oc.indirilen.some((x) => x.ad === 'rapor.txt'), JSON.stringify(s.oc.indirilen));
+		denetle('kartta "indirildi"', /indirildi/.test(metin(id)), metin(id));
+		denetle('bitince aktarım paneli kapandı', d.getElementById('aktarimlar').hidden);
+
+		// Gönderen taraf: biri benim dosyamı istiyor.
+		const bagId = 'gelenbag1234';
+		gelsin({ type: 'dosya-sinyal', from: 'bora', veri: { tur: 'teklif', bag: bagId, sdp: { type: 'offer', sdp: 'v=0' } } });
+		await bekle(40);
+		const yanit = son('dosya-sinyal');
+		denetle('dosya bağlantı teklifine yanıt verildi', yanit && yanit.to === 'bora' && yanit.veri.tur === 'yanit' && yanit.veri.bag === bagId, JSON.stringify(yanit));
+		const gpc = s.FakePC.hepsi.at(-1);
+		const gk = {
+			readyState: 'open',
+			bufferedAmount: 0,
+			gonderilen: [],
+			send(x) {
+				this.gonderilen.push(x);
+			},
+			close() {
+				this.readyState = 'closed';
+				if (this.onclose) this.onclose();
+			},
+		};
+		gpc.ondatachannel({ channel: gk });
+		gk.onmessage({ data: JSON.stringify({ istek: pay.id, baslangic: 3 }) });
+		await bekle(60);
+		const ilk = JSON.parse(gk.gonderilen[0]);
+		const veri = gk.gonderilen.filter((x) => typeof x !== 'string');
+		const gidenBayt = veri.reduce((t, x) => t + x.byteLength, 0);
+		denetle('istenen dosya kaldığı yerden gönderildi', ilk.tamam && ilk.boyut === 14 && gidenBayt === 11 && JSON.parse(gk.gonderilen.at(-1)).bitti === true, `${JSON.stringify(ilk)} ${gidenBayt}`);
+		denetle('gönderim panelde', /not\.txt/.test(d.getElementById('aktarimlar').textContent));
+		gk.onmessage({ data: JSON.stringify({ onay: 14 }) });
+		await bekle(20);
+		denetle('alan onaylayınca gönderim bitti', d.getElementById('aktarimlar').hidden && /gönderildi/.test(d.getElementById('durum').textContent), d.getElementById('durum').textContent);
+		// Sunmadığım dosya istenirse "yok" denir.
+		const gk2 = { ...gk, gonderilen: [], readyState: 'open' };
+		gpc.ondatachannel({ channel: gk2 });
+		gk2.onmessage({ data: JSON.stringify({ istek: 'd'.repeat(24), baslangic: 0 }) });
+		denetle('sunulmayan dosya için "yok"', JSON.parse(gk2.gonderilen[0]).hata === 'yok');
+		// Paylaşımı durdur: sunucuya kalan liste bildirilir.
+		[...kart(pay.id).querySelectorAll('button')].find((b) => b.textContent === 'Paylaşımı durdur').click();
+		await bekle(20);
+		denetle('paylaşım durdurulunca sunulanlar güncellendi', son('dosya-sun') && son('dosya-sun').idler.length === 0 && /artık sunulmuyor/.test(metin(pay.id)), metin(pay.id));
+		w.localStorage.removeItem('dosya-yazici');
+		// Dosya bağlantılarını kapat (aşağıdaki ses denetimleri yalnızca ses bağlantılarını saysın).
+		w.eval('for (const b of [...dosyaBaglari.values()]) bagKapat(b, "")');
+		denetle('dosya bağlantıları kapanınca karşıya bildirildi', son('dosya-sinyal').veri.tur === 'kapat');
+	}
+
 	// --- 7) kanal değiştirme
 	muhabbetDugme().dispatchEvent(new w.MouseEvent('click', { bubbles: true }));
 	await bekle(30);
@@ -580,15 +813,24 @@ const ICE = { iceServers: [{ urls: ['stun:1.2.3.4:3478'] }, { urls: ['turn:1.2.3
 	const ilkTr = ilkPc && ilkPc._transceivers[0];
 	denetle('ses kanalı mikrofon iziyle açıldı', !!(ilkTr && ilkTr.sender.track));
 	denetle('ses kanalı sendrecv', ilkTr && ilkTr.direction === 'sendrecv', ilkTr && ilkTr.direction);
+	// Yayın için iki kanal daha önceden açılır: yayın sesi (ikinci ses) ve görüntü; yayın yokken boş.
+	const turler = ilkPc ? ilkPc._transceivers.map((t) => t.receiver.track.kind).join(',') : '';
+	denetle('mikrofon + yayın sesi + görüntü kanalları açıldı', turler === 'audio,audio,video', turler);
+	denetle('yayın yokken yayın kanalları boş, sendrecv', ilkPc._transceivers.slice(1).every((t) => t.sender.track === null && t.direction === 'sendrecv'));
 	denetle('TURN sunucuları bağlantıya verildi', ilkPc && ilkPc.ayar.iceServers.length === 2);
 	const teklif = son('sdp');
 	denetle('teklif gönderildi, oturum kimliği var', teklif && teklif.to === 'bora' && teklif.sdp.type === 'offer' && /^[a-z0-9]{12}$/.test(teklif.oturum || ''), JSON.stringify(teklif));
-	// Yanıt: Opus fmtp'si bizim kodlayıcımızı ayarlar (yüksek bit hızı + FEC).
-	gelsin({ type: 'sdp', from: 'bora', sdp: { type: 'answer', sdp: OPUS_TEKLIF }, oturum: teklif.oturum });
+	// Yanıt: Opus fmtp'si bizim kodlayıcımızı ayarlar (yüksek bit hızı + FEC). Her ses m-line'ı ayrı:
+	// mikrofon mono konuşma, yayın sesi stereo müzik kalitesi.
+	gelsin({ type: 'sdp', from: 'bora', sdp: { type: 'answer', sdp: UC_KANALLI }, oturum: teklif.oturum });
 	await bekle(40);
 	const uygulanan = s.FakePC.uzaklar.at(-1);
 	denetle('yanıt uygulandı', ilkPc.remoteDescription && ilkPc.remoteDescription.type === 'answer');
 	denetle('Opus: maxaveragebitrate=96000 + FEC + DTX kapalı', uygulanan && /maxaveragebitrate=96000/.test(uygulanan.sdp) && /useinbandfec=1/.test(uygulanan.sdp) && /usedtx=0/.test(uygulanan.sdp), uygulanan && uygulanan.sdp);
+	const bolumler = uygulanan.sdp.split('m=').slice(1);
+	denetle('mikrofon m-line: mono', /stereo=0/.test(bolumler[0]) && !/sprop-stereo/.test(bolumler[0]), bolumler[0]);
+	denetle('yayın sesi m-line: stereo, 160 kbps', /stereo=1/.test(bolumler[1]) && /sprop-stereo=1/.test(bolumler[1]) && /maxaveragebitrate=160000/.test(bolumler[1]), bolumler[1]);
+	denetle('görüntü m-line değişmedi', !/fmtp/.test(bolumler[2]), bolumler[2]);
 	denetle('gönderici bit hızı tavanı 96 kbps', ilkTr.parametreler && ilkTr.parametreler.encodings[0].maxBitrate === 96000, JSON.stringify(ilkTr.parametreler));
 	// Teklif yoldayken (ICE yenileme) eski oturuma ait yanıt yok sayılır, doğru oturumunki uygulanır.
 	w.eval("iceYenile(esler.get('bora'))");
@@ -606,18 +848,20 @@ const ICE = { iceServers: [{ urls: ['stun:1.2.3.4:3478'] }, { urls: ['turn:1.2.3
 	gelsin({ type: 'ses-kisi-girdi', kanal: 'sesli-sohbet', ad: 'zeynep', devam: false });
 	await bekle(30);
 	denetle('yanıtlayan taraf teklif gelmeden bağlantı açmadı', w.eval("!esler.get('zeynep').pc"));
-	gelsin({ type: 'sdp', from: 'zeynep', sdp: { type: 'offer', sdp: OPUS_TEKLIF }, oturum: 'zoturum12345' });
+	gelsin({ type: 'sdp', from: 'zeynep', sdp: { type: 'offer', sdp: UC_KANALLI }, oturum: 'zoturum12345' });
 	await bekle(60);
 	const zPc = s.FakePC.hepsi.at(-1);
 	const zTr = zPc._transceivers.find((t) => t.mid != null);
 	denetle("teklifin m-line transceiver'ı oluştu", !!zTr);
 	denetle('yanıtlayan ses kanalı sendrecv', zTr && zTr.direction === 'sendrecv', zTr && zTr.direction);
 	denetle('yanıtlayan mikrofonu bağladı', !!(zTr && zTr.sender.track));
+	denetle('yanıtlayan yayın kanallarını eşledi (sendrecv, boş)', zPc._transceivers.length === 3 && zPc._transceivers.every((t) => t.direction === 'sendrecv') && !zPc._transceivers[1].sender.track && !zPc._transceivers[2].sender.track);
+	denetle('yanıtlayan kanalları doğru sırayla tanıdı', w.eval("(() => { const e = esler.get('zeynep'); const t = e.pc._transceivers; return e.tr === t[0] && e.trSes === t[1] && e.trGoruntu === t[2]; })()"));
 	const yanit = son('sdp');
 	denetle('yanıt teklifin oturumuyla gönderildi', yanit && yanit.to === 'zeynep' && yanit.sdp.type === 'answer' && yanit.oturum === 'zoturum12345', JSON.stringify(yanit));
 	// Aynı teklif yeniden gelirse yeniden uygulanmaz, yanıt yinelenir.
 	const uzakSayisi2 = s.FakePC.uzaklar.length;
-	gelsin({ type: 'sdp', from: 'zeynep', sdp: { type: 'offer', sdp: OPUS_TEKLIF }, oturum: 'zoturum12345' });
+	gelsin({ type: 'sdp', from: 'zeynep', sdp: { type: 'offer', sdp: UC_KANALLI }, oturum: 'zoturum12345' });
 	await bekle(40);
 	denetle('yinelenen teklif yeniden uygulanmadı, yanıt yinelendi', s.FakePC.uzaklar.length === uzakSayisi2 && son('sdp') !== yanit && son('sdp').oturum === 'zoturum12345');
 
@@ -647,6 +891,33 @@ const ICE = { iceServers: [{ urls: ['stun:1.2.3.4:3478'] }, { urls: ['turn:1.2.3
 	s.FakePC.adayTuru = 'srflx';
 	denetle('ses paneli bağlı', /Ses bağlı/.test(d.getElementById('ses-baglanti-durum').textContent), d.getElementById('ses-baglanti-durum').textContent);
 
+	// --- 11b) bağlantı kalitesi: kısa bir kayıp patlaması (FEC/gizleme sesi kurtarır, ses bozulmaz)
+	// "Bağlantı zayıf" demez (eskiden tek 2 sn'lik ölçümde %5 kayıp kırmızı uyarı veriyordu). Gerçekten
+	// bozulan (uydurulan ses ~%30) tek kişi yalnızca kendi kutusunda kırmızı; herkesten gelen bozuksa panel kırmızı.
+	{
+		const panel = () => d.getElementById('ses-baglanti-durum').textContent;
+		const alt = () => d.getElementById('ses-baglanti-kanal').textContent;
+		const kutu = (ad) => d.querySelector(`#ses-kisiler .ses-kisi[data-ad="${ad}"] .ses-istatistik`);
+		// Uzun beklemelerde sunucu "sessiz" kalmasın (yoksa canlılık yoklaması devreye girer).
+		const nabiz = setInterval(() => gelsin({ type: 'pong' }), 2000);
+		s.FakePC.kayipHizi = 12; // ~%20 kayıp (tek ölçümde), ses kurtarılıyor (gizleme yok)
+		await bekle(2300);
+		s.FakePC.kayipHizi = 0;
+		denetle('kısa kayıp patlaması "Bağlantı zayıf" demez (ses bozulmadı)', /Ses bağlı/.test(panel()) && !d.getElementById('ses-baglanti').classList.contains('kotu'), panel());
+		denetle('kısa kayıpta kişi kutusu kırmızı değil', !kutu('bora').classList.contains('kotu'), kutu('bora').className + ' ' + kutu('bora').textContent);
+		ilkPc.gizlemeOrani = 0.3; // bora'dan gelen ses gerçekten kesik
+		await bekle(4700);
+		denetle('gerçekten bozulan kişinin kutusu kırmızı', kutu('bora').classList.contains('kotu'), kutu('bora').className + ' ' + kutu('bora').textContent);
+		denetle('tek kişinin sorunu paneli kırmızı yapmaz, alt satırda belirtilir', /Ses bağlı/.test(panel()) && /bora: bağlantısı zayıf/.test(alt()), panel() + ' | ' + alt());
+		denetle('kutuda ipucu: uydurulan ses oranı', /ses uyduruldu/.test(kutu('bora').title), kutu('bora').title);
+		zPc.gizlemeOrani = 0.3; // herkesten gelen bozuk: sorun bizde
+		await bekle(4700);
+		denetle('herkesten gelen ses bozuksa "Bağlantı zayıf"', /Bağlantı zayıf/.test(panel()) && d.getElementById('ses-baglanti').classList.contains('kotu'), panel());
+		ilkPc.gizlemeOrani = null;
+		zPc.gizlemeOrani = null;
+		clearInterval(nabiz);
+	}
+
 	// --- 12) susturma ve sağırlaştırma
 	d.getElementById('ben-mikrofon').click();
 	await bekle(20);
@@ -661,6 +932,69 @@ const ICE = { iceServers: [{ urls: ['stun:1.2.3.4:3478'] }, { urls: ['turn:1.2.3
 	d.getElementById('ben-sagir').click();
 	await bekle(20);
 	denetle('sağırlık kalktı', [...d.querySelectorAll('#ses-akislari audio')].every((a) => !a.muted) && son('sessiz').sagir === false);
+
+	// --- 12b) yayın: ekran paylaşımı (bilgisayar sesiyle), müzik çalar, izle/kapat. Yayın izleri
+	// önceden açık kanallara takılır (yeniden anlaşma yok); kapatan kişiye gönderilmez.
+	{
+		const menu = () => d.getElementById('yayin-menu');
+		const menuOgesi = (metin) => [...menu().querySelectorAll('button')].find((b) => b.textContent.includes(metin));
+		d.getElementById('yayin-ac').click();
+		await bekle(20);
+		denetle('paylaşım menüsü açıldı (ekran, bilgisayar sesi, müzik)', !menu().hidden && !!menuOgesi('Ekranını paylaş') && !!menuOgesi('Bilgisayar sesini paylaş') && !!menuOgesi('Müzik çal'));
+		menuOgesi('Ekranını paylaş').click();
+		await bekle(40);
+		const y1 = son('yayin');
+		denetle('ekran paylaşımı başladı (ekran + ses), menü kapandı', y1 && y1.ekran === true && y1.ses === true && menu().hidden, JSON.stringify(y1));
+		const sec = s.oc.ekranSecenek || {};
+		denetle('ekran yakalama: sistem sesi istendi, işleme kapalı, sekmenin kendi sesi hariç', sec.systemAudio === 'include' && sec.audio && sec.audio.echoCancellation === false && sec.audio.restrictOwnAudio === true, JSON.stringify(sec));
+		const [gIz, sIz] = s.oc.ekranIzleri;
+		denetle('görüntü ve ses eşlerin yayın kanallarına takıldı', ilkPc._transceivers[2].sender.track === gIz && ilkPc._transceivers[1].sender.track === sIz && zPc._transceivers[2].sender.track === gIz);
+		denetle('mikrofon kanalı değişmedi', ilkPc._transceivers[0].sender.track === s.oc.sonIz);
+		denetle('kendi yayın kartı görünür', !d.getElementById('yayinlar').hidden && /Ekranını ve sesini paylaşıyorsun/.test(d.getElementById('yayinlar').textContent), d.getElementById('yayinlar').textContent);
+		const vk = ilkPc._transceivers[2].parametreler;
+		denetle('ekran için bit hızı tavanı ve 30 kare', !!vk && vk.encodings[0].maxBitrate > 0 && vk.encodings[0].maxFramerate === 30, JSON.stringify(vk));
+		// bora yayını kapatır: ona görüntü ve yayın sesi gitmez, zeynep'e gitmeye devam eder.
+		gelsin({ type: 'izle', from: 'bora', izle: false });
+		await bekle(30);
+		denetle('yayını kapatana gönderilmez, diğerine sürer', ilkPc._transceivers[2].sender.track === null && ilkPc._transceivers[1].sender.track === null && zPc._transceivers[2].sender.track === gIz);
+		gelsin({ type: 'izle', from: 'bora', izle: true });
+		await bekle(30);
+		denetle('yeniden izleyince yine gönderilir', ilkPc._transceivers[2].sender.track === gIz);
+		// Müzik: bilgisayar sesinin yerine geçer (aynı anda tek yayın sesi), ekran sürer.
+		w.eval('muzikEkle([new File(["x"], "Güzel Şarkı.mp3", { type: "audio/mpeg" }), new File(["y"], "ikinci.ogg", { type: "audio/ogg" })])');
+		await bekle(40);
+		const y2 = son('yayin');
+		denetle('müzik çalınca parça adı bildirildi, ekran sürüyor', y2 && y2.ekran === true && y2.ses === true && y2.baslik === 'Güzel Şarkı', JSON.stringify(y2));
+		denetle('bilgisayar sesi durdu, müzik izi takıldı', sIz.readyState === 'ended' && ilkPc._transceivers[1].sender.track === s.oc.muzikIzi);
+		denetle('müzik çalar: parça adı ve sıra', /Güzel Şarkı/.test(d.getElementById('yayinlar').textContent) && /1\/2/.test(d.getElementById('yayinlar').textContent), d.getElementById('yayinlar').textContent);
+		w.eval('muzikSonraki()');
+		await bekle(20);
+		denetle('sonraki parçaya geçildi, ad güncellendi', son('yayin').baslik === 'ikinci', JSON.stringify(son('yayin')));
+		// Tarayıcının "paylaşımı durdur" çubuğu: görüntü biter, müzik sürer.
+		gIz.bitir();
+		await bekle(20);
+		denetle('ekran paylaşımı bitince yalnızca müzik kalır', son('yayin').ekran === false && son('yayin').ses === true && ilkPc._transceivers[2].sender.track === null);
+		// Başkasının yayını: zeynep ekranını (ve sesini) paylaşıyor → kutucuk; Kapat → ona izle:false.
+		const kanalDurumu = (z) => kanallar.map((k) => (k.id === 'sesli-sohbet' ? { ...k, kisiler: [{ ad: 'taha' }, { ad: 'bora' }, { ad: 'zeynep', ...z }] } : k));
+		gelsin({ type: 'kanallar', kanallar: kanalDurumu({ ekran: true, yayinSes: true }) });
+		await bekle(30);
+		const zKart = () => d.querySelector('#yayinlar .yayin-kart.ekran');
+		denetle('izlenen ekran kutucuğu ve CANLI rozeti', !!zKart() && /zeynep/.test(zKart().textContent) && !!d.querySelector('#ses-kanallari .ses-uyesi[data-ad="zeynep"] .canli'));
+		denetle('ekran paylaşımı başlayınca haber verildi', /zeynep ekranını paylaşıyor/.test(d.getElementById('durum').textContent), d.getElementById('durum').textContent);
+		[...zKart().querySelectorAll('button')].find((b) => b.textContent === 'Kapat').click();
+		await bekle(20);
+		denetle('yayını kapatınca yayıncıya izle:false gider', son('izle') && son('izle').to === 'zeynep' && son('izle').izle === false);
+		denetle('kapatılan yayının görüntüsü gizlendi, "İzle" düğmesi var', zKart().querySelector('.yayin-sahne').hidden && [...zKart().querySelectorAll('button')].some((b) => b.textContent === 'İzle'));
+		gelsin({ type: 'kanallar', kanallar: kanalDurumu({}) });
+		await bekle(20);
+		denetle('yayın bitince kutucuk kalktı, sonraki yayın yine izlenir', !zKart() && w.eval("esler.get('zeynep').izliyorum") === true);
+		d.getElementById('yayin-ac').click();
+		await bekle(20);
+		menuOgesi('Tüm paylaşımı durdur').click();
+		await bekle(20);
+		denetle('paylaşım durunca bildirildi, kanallar boşaldı', son('yayin').ekran === false && son('yayin').ses === false && ilkPc._transceivers[1].sender.track === null && s.oc.muzikIzi.readyState === 'ended');
+		denetle('yayın alanı gizlendi', d.getElementById('yayinlar').hidden);
+	}
 
 	// --- 13) sunucu bağlantısı koptu: ses bağlantıları KAPANMAZ, geri gelince kanala devam edilir
 	const pcSayisi = s.FakePC.hepsi.filter((p) => !p.kapandi).length;
@@ -679,7 +1013,7 @@ const ICE = { iceServers: [{ urls: ['stun:1.2.3.4:3478'] }, { urls: ['turn:1.2.3
 	await bekle(30);
 	denetle('frende uygulama ekranında kalındı', d.getElementById('giris-ekrani').hidden === true && w.eval('esler.size') === 2);
 	await bekle(1500);
-	gelsin({ type: 'hazir', ad: 'taha', kanallar, kimler: [{ ad: 'taha' }], max: 10, maxKullanici: 10, beyazListe: 2, beyazListeAdlari: ['taha', 'bora'], dosyaMb: 25, jeton: 'b'.repeat(32), ice: ICE, surum: 'v1', turnNesli: 'n1' });
+	gelsin({ type: 'hazir', ad: 'taha', kanallar, kimler: [{ ad: 'taha' }], max: 10, maxKullanici: 10, beyazListe: 2, beyazListeAdlari: ['taha', 'bora'], sunulanDosyalar: [], jeton: 'b'.repeat(32), ice: ICE, surum: 'v1', turnNesli: 'n1' });
 	await bekle(40);
 	const devamGir = son('ses-gir');
 	denetle('geri gelince kanala devam edildi (devam:true)', devamGir && devamGir.devam === true && devamGir.kanal === 'sesli-sohbet', JSON.stringify(devamGir));
@@ -691,6 +1025,9 @@ const ICE = { iceServers: [{ urls: ['stun:1.2.3.4:3478'] }, { urls: ['turn:1.2.3
 	// bağlantı korunur; gelmezse (TCP sessizce kopmuş, tarayıcı fark etmemiş) hemen yeniden bağlanılır
 	// ve sesli kanala devam edilir; P2P ses bağlantıları kapanmaz.
 	{
+		// Önceki adımların uzun beklemelerinden kalmış olabilecek yoklamayı temizle (senaryo yalıtılsın).
+		gelsin({ type: 'pong' });
+		w.eval('clearTimeout(canlilikZamanlayici); canlilikZamanlayici = null');
 		const once = s.oc.wsler.length;
 		const pingler = () => s.oc.gonderilen.filter((m) => m.type === 'ping').length;
 		const p0 = pingler();
@@ -705,7 +1042,7 @@ const ICE = { iceServers: [{ urls: ['stun:1.2.3.4:3478'] }, { urls: ['turn:1.2.3
 		denetle('yanıtsız bağlantı ölü sayılır, hemen yeniden bağlanılır', s.oc.wsler.length === once + 1, `${once} → ${s.oc.wsler.length}`);
 		denetle('ölü bağlantıda ses bağlantıları kapanmadı', s.FakePC.hepsi.filter((p) => !p.kapandi).length === pcSayisi && w.eval('esler.size') === 2);
 		denetle('yeniden girişte sesli kanal sürdürülür', son('giris') && son('giris').ses === 'sesli-sohbet', JSON.stringify(son('giris')));
-		gelsin({ type: 'hazir', ad: 'taha', kanallar, kimler: [{ ad: 'taha' }], max: 10, maxKullanici: 10, beyazListe: 2, beyazListeAdlari: ['taha', 'bora'], dosyaMb: 25, jeton: 'e'.repeat(32), ice: ICE, surum: 'v1', turnNesli: 'n1' });
+		gelsin({ type: 'hazir', ad: 'taha', kanallar, kimler: [{ ad: 'taha' }], max: 10, maxKullanici: 10, beyazListe: 2, beyazListeAdlari: ['taha', 'bora'], sunulanDosyalar: [], jeton: 'e'.repeat(32), ice: ICE, surum: 'v1', turnNesli: 'n1' });
 		await bekle(40);
 		denetle('ölü bağlantıdan sonra kanala devam edildi (devam:true)', son('ses-gir') && son('ses-gir').devam === true);
 		gelsin({ type: 'ses-girdi', kanal: 'sesli-sohbet', kisiler: ['bora', 'zeynep'], ice: ICE, devam: true });
@@ -738,6 +1075,36 @@ const ICE = { iceServers: [{ urls: ['stun:1.2.3.4:3478'] }, { urls: ['turn:1.2.3
 	await bekle(40);
 	denetle('ses kartı yeniden açıldı', d.getElementById('ses-karti').hidden === false);
 
+	// --- 14b) sunucu penceresi: veritabanı boyutu ve sohbeti temizle (beyaz liste dokunulmaz)
+	{
+		d.getElementById('sunucu-ac').click();
+		await bekle(20);
+		denetle('sunucu penceresi açıldı, bilgi istendi', !d.getElementById('sunucu-pencere').hidden && !!son('sunucu-bilgi'));
+		gelsin({ type: 'sunucu-bilgi', veritabani: 5 * 1048576 + 300000, mesaj: 1234, dosya: 12, yuklemeler: 0, yuklemeAdet: 0, bosAlan: 8 * 1024 ** 3, surum: 'v9' });
+		await bekle(20);
+		denetle('veritabanı boyutu ve mesaj sayısı gösterildi', d.getElementById('vt-boyut').textContent === '5,3 MB' && d.getElementById('vt-mesaj').textContent === '1.234' && d.getElementById('vt-bos').textContent === '8 GB', `${d.getElementById('vt-boyut').textContent} ${d.getElementById('vt-mesaj').textContent} ${d.getElementById('vt-bos').textContent}`);
+		denetle('eski yükleme yokken satırı gizli', d.getElementById('vt-yukleme').hidden);
+		const secenekler = [...d.getElementById('temizle-kanal').options].map((o) => o.value).join(',');
+		denetle('temizlik için kanal seçenekleri (tümü + yazılı kanallar)', secenekler === ',genel,muhabbet', secenekler);
+		d.getElementById('temizle-kanal').value = 'genel';
+		d.getElementById('temizle-gun').value = '30';
+		d.getElementById('temizle').click();
+		await bekle(20);
+		const onayMetni = d.getElementById('pencere-metin').textContent;
+		denetle('temizlik onay ister, kapsamı ve kalanları söyler', !d.getElementById('pencere').hidden && /#genel kanalındaki 1 aydan eski mesajlar/.test(onayMetni) && /Beyaz liste, kanallar ve ayarlar değişmez/.test(onayMetni), onayMetni);
+		d.getElementById('pencere-form').dispatchEvent(new w.Event('submit', { cancelable: true, bubbles: true }));
+		await bekle(20);
+		denetle('onaylayınca sohbet-temizle gönderildi', son('sohbet-temizle') && son('sohbet-temizle').kanal === 'genel' && son('sohbet-temizle').gun === 30, JSON.stringify(son('sohbet-temizle')));
+		const gecmisOnce = s.oc.gonderilen.filter((m) => m.type === 'gecmis').length;
+		gelsin({ type: 'sohbet-temizlendi', kanal: '', gun: 0, ad: 'bora', silinen: 1234 });
+		await bekle(20);
+		denetle('temizlenince açık kanalın geçmişi yeniden istendi', s.oc.gonderilen.filter((m) => m.type === 'gecmis').length === gecmisOnce + 1 && d.querySelectorAll('#mesajlar .mesaj').length === 0);
+		denetle('temizlik herkese bildirildi', /bora sohbeti temizledi/.test(d.getElementById('durum').textContent), d.getElementById('durum').textContent);
+		d.dispatchEvent(new w.KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+		await bekle(20);
+		denetle('Escape sunucu penceresini kapattı', d.getElementById('sunucu-pencere').hidden);
+	}
+
 	// --- 15) kanal silinirse: aktif kanal ilk yazılı kanala döner, sesli kanaldan çıkılır
 	gelsin({ type: 'kanallar', kanallar: [{ id: 'muhabbet', ad: 'muhabbet', tur: 'yazi' }] });
 	await bekle(40);
@@ -755,7 +1122,7 @@ const ICE = { iceServers: [{ urls: ['stun:1.2.3.4:3478'] }, { urls: ['turn:1.2.3
 	d.getElementById('burada-devam').click();
 	await bekle(30);
 	denetle('"Bu sekmede devam et" yeniden bağlanır', s.oc.wsler.length === wsSayisi + 1);
-	gelsin({ type: 'hazir', ad: 'taha', kanallar, kimler: [{ ad: 'taha' }], max: 10, maxKullanici: 10, beyazListe: 2, beyazListeAdlari: ['taha'], dosyaMb: 25, jeton: 'c'.repeat(32), ice: ICE, surum: 'v1' });
+	gelsin({ type: 'hazir', ad: 'taha', kanallar, kimler: [{ ad: 'taha' }], max: 10, maxKullanici: 10, beyazListe: 2, beyazListeAdlari: ['taha'], sunulanDosyalar: [], jeton: 'c'.repeat(32), ice: ICE, surum: 'v1' });
 	await bekle(30);
 	denetle('devamdan sonra uygulama açık', d.getElementById('uygulama').hidden === false);
 
@@ -791,7 +1158,7 @@ const ICE = { iceServers: [{ urls: ['stun:1.2.3.4:3478'] }, { urls: ['turn:1.2.3
 	// --- 20) sesli kanaldayken sayfa arka planda tarayıcı tarafından kapatıldıysa (bellek), geri
 	// dönülünce sesli kanala kendiliğinden girilir; eski (10 dakikadan eski) not yok sayılır.
 	{
-		const yeniHazir = { type: 'hazir', ad: 'taha', kanallar, kimler: [{ ad: 'taha' }], max: 10, maxKullanici: 10, beyazListe: 1, beyazListeAdlari: ['taha'], dosyaMb: 25, jeton: 'd'.repeat(32), ice: ICE, surum: 'v1' };
+		const yeniHazir = { type: 'hazir', ad: 'taha', kanallar, kimler: [{ ad: 'taha' }], max: 10, maxKullanici: 10, beyazListe: 1, beyazListeAdlari: ['taha'], sunulanDosyalar: [], jeton: 'd'.repeat(32), ice: ICE, surum: 'v1' };
 		const notla = (dk) => ({ 'ses-devam': JSON.stringify({ kanal: 'sesli-sohbet', zaman: Date.now() - dk * 60000 }) });
 		const t = kur({ depo: { anahtar: 'f'.repeat(128), ad: 'taha' }, oturumDepo: notla(1) });
 		await bekle(40);

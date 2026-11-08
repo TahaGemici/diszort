@@ -1,7 +1,8 @@
 // Diszort — tarayıcı tarafı.
 // Discord'umsu tek sunucu: solda yazılı/sesli kanallar, ortada sohbet, sağda üyeler.
-// Yazılı mesajlar sunucudan geçer ve SQLite'ta saklanır; sesli kanallarda ses P2P akar
-// (mesh WebRTC, doğrudan bağlanamayanlar TURN üzerinden).
+// Yazılı mesajlar sunucudan geçer ve SQLite'ta saklanır; sesli kanallarda ses, ekran paylaşımı ve
+// müzik P2P akar (mesh WebRTC, doğrudan bağlanamayanlar TURN üzerinden). Dosyalar da P2P'dir:
+// sunucuya yüklenmez, paylaşanın tarayıcısından doğrudan alınır.
 //
 // Sunucuyla bağlantı koparsa (ağ değişti, sunucu güncellendi) ses bağlantıları KAPATILMAZ: ses
 // sunucudan geçmediği için konuşma sürer; geri bağlanınca kanala "devam" denir ve yalnızca bozulan
@@ -45,6 +46,15 @@ function rastgeleKimlik(n = 12) {
 	let s = '';
 	for (const b of dizi) s += harf[b % harf.length];
 	return s;
+}
+function rastgeleHex(n = 24) {
+	const dizi = new Uint8Array(Math.ceil(n / 2));
+	try {
+		crypto.getRandomValues(dizi);
+	} catch {
+		for (let i = 0; i < dizi.length; i++) dizi[i] = Math.floor(Math.random() * 256);
+	}
+	return [...dizi].map((b) => b.toString(16).padStart(2, '0')).join('').slice(0, n);
 }
 // play() bazı ortamlarda söz döndürmez ya da hemen hata atar; hep söz döndür.
 function oynat(ses) {
@@ -94,6 +104,18 @@ const SIMGELER = {
 	buyut: '<circle cx="10.5" cy="10.5" r="6.5"/><path d="m15.5 15.5 5 5M10.5 7.5v6M7.5 10.5h6"/>',
 	kucult: '<circle cx="10.5" cy="10.5" r="6.5"/><path d="m15.5 15.5 5 5M7.5 10.5h6"/>',
 	disari: '<path d="M14 4h6v6M20 4l-8.5 8.5"/><path d="M18 13.5v5a1.5 1.5 0 0 1-1.5 1.5h-11A1.5 1.5 0 0 1 4 18.5v-11A1.5 1.5 0 0 1 5.5 6h5"/>',
+	ekran: '<rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/>',
+	yayin: '<rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/><path d="M12 13V7.5M9.5 10 12 7.5l2.5 2.5"/>',
+	muzik: '<path d="M9 18V5.5l11-2V16"/><circle cx="6.5" cy="18" r="2.5"/><circle cx="17.5" cy="16" r="2.5"/>',
+	oynat: '<path d="M7.5 5v14l11-7z"/>',
+	duraklat: '<path d="M8.5 5.5v13M15.5 5.5v13"/>',
+	sonraki: '<path d="M6 5.5v13l9-6.5z"/><path d="M18 5.5v13"/>',
+	dur: '<rect x="6" y="6" width="12" height="12" rx="1.5"/>',
+	'tam-ekran': '<path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/>',
+	goz: '<path d="M2.5 12S6 5.5 12 5.5 21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12z"/><circle cx="12" cy="12" r="3"/>',
+	veritabani:
+		'<ellipse cx="12" cy="5.5" rx="7.5" ry="2.5"/><path d="M4.5 5.5v13c0 1.4 3.4 2.5 7.5 2.5s7.5-1.1 7.5-2.5v-13"/><path d="M4.5 12c0 1.4 3.4 2.5 7.5 2.5s7.5-1.1 7.5-2.5"/>',
+	yukari: '<path d="M12 20V9M7 13.5l5-5 5 5M5 4h14"/>',
 };
 const SVG_NS = 'http://www.w3.org/2000/svg';
 function ikon(ad, sinif) {
@@ -153,6 +175,7 @@ const AYAR_VARSAYILAN = {
 	sesler: true, // giriş/çıkış sesleri
 	mikKapali: false, // kendini susturdun (kanala girerken de geçerli)
 	sagir: false, // gelen sesleri kapattın
+	muzikYerel: 100, // çaldığın müziği kendi hoparlöründe duyma seviyesi (%; başkalarına gideni etkilemez)
 };
 const ayar = { ...AYAR_VARSAYILAN };
 try {
@@ -162,6 +185,7 @@ try {
 	}
 } catch {}
 ayar.mikSeviye = Math.min(200, Math.max(0, Math.round(ayar.mikSeviye / 5) * 5));
+ayar.muzikYerel = Math.min(100, Math.max(0, Math.round(ayar.muzikYerel)));
 if (![48, 96, 128].includes(ayar.kalite)) ayar.kalite = AYAR_VARSAYILAN.kalite;
 const ayarKaydet = () => depoYaz('ses-ayarlari', JSON.stringify(ayar));
 
@@ -188,7 +212,7 @@ let girisAdi = ''; // girişte gönderilen ad (anahtarla girerken boş: ad anaht
 let benimAdim = '';
 let anahtar = '';
 let jeton = '';
-let sunucu = { max: 10, dosyaMb: 25 };
+let sunucu = { max: 10 };
 let beyazListe = 0;
 let beyazListeAdlari = [];
 let maxKullanici = 10;
@@ -389,6 +413,8 @@ function oturumuBitir(metin) {
 	istekleriTemizle();
 	pencereKapat();
 	ayarlarKapat();
+	sunucuPenceresiKapat();
+	yayinMenuKapat();
 	ekran('giris');
 	girisBekliyor(false);
 	girisDurum(metin, true);
@@ -477,12 +503,31 @@ function mesaj(m) {
 		case 'yenile':
 			yenileGeldi(m.from, m.oturum);
 			break;
+		case 'izle':
+			izleGeldi(m.from, !!m.izle);
+			break;
+		case 'dosya-durum':
+			sunulanlarGeldi(m.sunulan);
+			break;
+		case 'dosya-sun':
+			sunduklarimOnaylandi(m.idler);
+			break;
+		case 'dosya-sinyal':
+			dosyaSinyaliGeldi(m.from, m.veri);
+			break;
+		case 'sunucu-bilgi':
+			sunucuBilgisiGeldi(m);
+			break;
+		case 'sohbet-temizlendi':
+			sohbetTemizlendi(m);
+			break;
 		case 'ice-sunuculari':
 			iceAyarla(m.ice);
 			break;
 		case 'hata':
 			durum(m.message, true);
 			if (m.kod === 'ses-dolu' || m.kod === 'ses-kanal-yok') sesGirisiBasarisiz();
+			if ($('temizle').disabled) gonder({ type: 'sunucu-bilgi' }); // temizlik reddedildiyse düğme geri gelsin
 			break;
 	}
 }
@@ -547,8 +592,11 @@ function oturumHazir(m) {
 	beyazListe = m.beyazListe != null ? m.beyazListe : beyazListe;
 	beyazListeAdlari = m.beyazListeAdlari || [];
 	maxKullanici = m.maxKullanici || maxKullanici;
-	sunucu = { max: m.max || 10, dosyaMb: m.dosyaMb || 25 };
+	sunucu = { max: m.max || 10 };
 	kimlerListesi = m.kimler || [];
+	// Bu sekmenin sunduğu dosyaları (yeniden) bildir; kimin neyi sunduğu listesi hazir'de gelir.
+	sunulanlar = new Set(Array.isArray(m.sunulanDosyalar) ? m.sunulanDosyalar : []);
+	if (paylasimlarim.size) gonder({ type: 'dosya-sun', idler: [...paylasimlarim.keys()] });
 	girisBekliyor(false);
 	girisDurum('');
 	$('gir').hidden = false;
@@ -574,10 +622,11 @@ function oturumHazir(m) {
 			// TURN'den geçen bağlantılar işaretlenir; karşı taraf kanalda görünür görünmez yenilenir
 			// (o daha dönmeden gönderilen teklif sunucuda düşerdi).
 			if (turnYenilendi) for (const es of esler.values()) if (es.sonTip === 'TURN' && es.pc) es.turnYenile = true;
-			gonder({ type: 'ses-gir', kanal: sesKanal, devam: true, sessiz: mikSessizMi(), sagir: ayar.sagir });
+			gonder({ type: 'ses-gir', kanal: sesKanal, devam: true, sessiz: mikSessizMi(), sagir: ayar.sagir, ...yayinBayraklari() });
 		}
 	}
 	sesPaneliCiz();
+	dosyaKartlariniGuncelle();
 }
 
 function girisReddi(m) {
@@ -682,11 +731,15 @@ const kanalAdi = (id) => kanalBilgi(id)?.ad || id;
 
 function kanallarGeldi(liste) {
 	kanallar = liste;
+	const onceki = new Map(sesDurumlari);
 	sesDurumlari.clear();
 	for (const k of kanallar) {
 		if (k.tur !== 'ses') continue;
-		for (const p of k.kisiler || []) sesDurumlari.set(p.ad, { sessiz: !!p.sessiz, sagir: !!p.sagir, askida: !!p.askida, kanal: k.id });
+		for (const p of k.kisiler || []) {
+			sesDurumlari.set(p.ad, { sessiz: !!p.sessiz, sagir: !!p.sagir, askida: !!p.askida, kanal: k.id, ekran: !!p.ekran, yayinSes: !!p.yayinSes, yayinBaslik: p.yayinBaslik || '' });
+		}
 	}
+	yayinDurumlariDegisti(onceki);
 	// Baktığım kanal silindiyse ilk yazılı kanala geç; sesli kanalım silindiyse çık.
 	if (aktifKanal && !kanalBilgi(aktifKanal)) {
 		aktifKanal = '';
@@ -700,6 +753,7 @@ function kanallarGeldi(liste) {
 	for (const es of esler.values()) esDurumIkonlariCiz(es);
 	kanalListesiCiz();
 	sesKartiOzetCiz();
+	yayinlarCiz();
 }
 
 function ilkKanal() {
@@ -787,6 +841,8 @@ function sesUyesiSatiri(p, kanal) {
 	satir.dataset.ad = p.ad;
 	satir.append(avatarYap(p.ad, 'avatar mini-avatar'), el('span', 'ad', p.ad + (ben ? ' (sen)' : '')));
 	if (p.askida) satir.title = 'Bağlantısı koptu; geri dönmesi bekleniyor';
+	const rozet = yayinRozeti(p);
+	if (rozet) satir.append(rozet);
 	if (p.sessiz || p.sagir) satir.append(durumIkonlari(p.sessiz, p.sagir));
 	return satir;
 }
@@ -989,7 +1045,7 @@ function kanalSec(id, odakla = true) {
 	$('kanal-ad').textContent = k.ad;
 	$('metin').placeholder = `#${k.ad} kanalına mesaj gönder`;
 	$('metin').disabled = false;
-	$('birak-kanal').textContent = `#${k.ad} kanalına yüklenir`;
+	$('birak-kanal').textContent = `#${k.ad} kanalında paylaşılır (sunucuya yüklenmez)`;
 	mesajVerisi = [];
 	$('mesajlar').replaceChildren();
 	$('daha-eski').hidden = true;
@@ -1079,9 +1135,19 @@ function zamanYaz(z) {
 }
 
 function boyutYaz(n) {
+	n = Number(n) || 0;
+	const ondalik = (x) => x.toLocaleString('tr-TR', { maximumFractionDigits: 1 });
 	if (n < 1024) return n + ' B';
 	if (n < 1024 * 1024) return Math.round(n / 1024) + ' KB';
-	return (n / 1024 / 1024).toFixed(1) + ' MB';
+	if (n < 1024 ** 3) return ondalik(n / 1024 ** 2) + ' MB';
+	return ondalik(n / 1024 ** 3) + ' GB';
+}
+function sureYaz(sn) {
+	sn = Math.max(0, Math.round(Number(sn) || 0));
+	const s = Math.floor(sn / 3600);
+	const d = Math.floor((sn % 3600) / 60);
+	const k = String(sn % 60).padStart(2, '0');
+	return s ? `${s}:${String(d).padStart(2, '0')}:${k}` : `${d}:${k}`;
 }
 
 // Bağlantılar tıklanabilir, @adın vurgulanır. Metin hep textContent ile eklenir (HTML çalışmaz).
@@ -1119,7 +1185,9 @@ const SES_TURLERI = ['mp3', 'ogg', 'oga', 'm4a', 'wav'];
 const VIDEO_TURLERI = ['mp4', 'webm'];
 const dosyaUzanti = (ad) => (String(ad).split('.').pop() || '').toLowerCase();
 
-function dosyaElemani(dosya) {
+// Mesajdaki dosya: P2P (paylaşanın tarayıcısında) ya da eski sürümün sunucuya yüklediği dosya.
+function dosyaElemani(dosya, sahip) {
+	if (dosya.p2p) return p2pDosyaElemani(dosya, sahip);
 	const url = '/dosya/' + dosya.id;
 	const uz = dosyaUzanti(dosya.ad);
 	if (ONIZLEME.includes(uz)) {
@@ -1197,7 +1265,7 @@ function mesajElemani(m, onceki) {
 		metinCiz(metin, m.metin);
 		govde.append(metin);
 	}
-	if (m.dosya) govde.append(dosyaElemani(m.dosya));
+	if (m.dosya) govde.append(dosyaElemani(m.dosya, m.ad));
 	d.append(govde);
 	return d;
 }
@@ -1385,9 +1453,9 @@ setInterval(yaziyorCiz, 1000);
 
 $('dosya-sec').addEventListener('click', () => $('dosya').click());
 $('dosya').addEventListener('change', () => {
-	const dosya = $('dosya').files && $('dosya').files[0];
+	const liste = [...(($('dosya').files) || [])];
 	$('dosya').value = '';
-	if (dosya) dosyaYukle(dosya);
+	dosyalariPaylas(liste);
 });
 
 // Sürükle-bırak: tüm sohbet alanını kaplayan bırakma yeri (alt öğelerde titremesin diye sayaçlı).
@@ -1411,60 +1479,968 @@ $('ana').addEventListener('dragleave', () => {
 $('ana').addEventListener('drop', (e) => {
 	surukleSayac = 0;
 	$('birak').hidden = true;
-	const dosya = e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0];
-	if (!dosya) return;
+	const liste = [...((e.dataTransfer && e.dataTransfer.files) || [])];
+	if (!liste.length) return;
 	e.preventDefault();
-	dosyaYukle(dosya);
+	dosyalariPaylas(liste);
 });
 $('metin').addEventListener('paste', (e) => {
-	const dosya = [...((e.clipboardData && e.clipboardData.files) || [])][0];
-	if (!dosya) return;
+	const liste = [...((e.clipboardData && e.clipboardData.files) || [])];
+	if (!liste.length) return;
 	e.preventDefault();
-	dosyaYukle(dosya);
+	dosyalariPaylas(liste);
 });
 
-function yuklemeGoster(ad) {
-	$('yukleme').hidden = false;
-	$('yukleme-yazi').textContent = ad + ' yükleniyor…';
-	$('yukleme-dolgu').style.width = '0%';
-}
-function yuklemeGizle() {
-	$('yukleme').hidden = true;
-	$('yukleme-dolgu').style.width = '0%';
+// ---------------------------------------------------------------- P2P dosya paylaşımı
+//
+// Dosyalar sunucuya yüklenmez. Paylaşan seçtiği dosyayı tarayıcısında tutar; sohbete yalnızca adı,
+// boyutu ve türü yazılır. İsteyen, paylaşanla doğrudan bir WebRTC bağlantısı kurar (sunucu yalnızca
+// tanıştırır; doğrudan bağlanamayanlar TURN üzerinden) ve dosya bir veri kanalından parça parça akar.
+// Boyut sınırı yoktur: büyük dosyalar belleğe değil diske yazılır (Chrome/Edge'de "Farklı kaydet"
+// ile doğrudan seçilen yere; diğer tarayıcılarda tarayıcının dosya alanına, sonra İndirilenler'e).
+// Paylaşan sayfayı açık tuttukça dosya alınabilir ("Yeniden paylaş" ile sayfa yenilendikten sonra
+// geri açılabilir). Kopan aktarım kaldığı yerden sürer.
+//
+// Veri kanalı protokolü (alan açar): alan → {istek: id, baslangic}; gönderen → {tamam, boyut} ya da
+// {hata: 'yok' | 'iptal'}, sonra ikili parçalar ve {bitti}. Alan diske yazdıkça {onay: bayt} der;
+// gönderen, alanın yazdığından en fazla PENCERE kadar ileri gider (yavaş disk belleği şişirmesin).
+
+const PARCA = 64 * 1024; // veri kanalı mesajı
+const OKUMA = 1024 * 1024; // diskten bir seferde okunan
+const TAMPON_UST = 4 * 1024 * 1024; // gönderim tamponu bunu geçince beklenir
+const PENCERE = 32 * 1024 * 1024; // alanın diske yazdığından en fazla bu kadar ileri
+const ONAY_ARALIGI = 4 * 1024 * 1024; // alan her bu kadar yazınca bildirir
+const ONIZLEME_SINIRI = 8 * 1024 * 1024; // bu boyuta kadar resimler kendiliğinden alınıp gösterilir
+const BELLEK_SINIRI = 128 * 1024 * 1024; // bundan büyük dosyalar diske akıtılır
+const BELLEK_BIRLESTIR = 16 * 1024 * 1024; // bellekte biriktirirken parçalar bu boyutta birleştirilir
+
+const paylasimlarim = new Map(); // id -> File (bu sekmenin sunduğu dosyalar)
+let sunulanlar = new Set(); // şu an çevrimiçi biri tarafından sunulan dosya id'leri (sunucudan)
+const dosyaBilgileri = new Map(); // id -> { id, ad, boyut, tur, sahip } (görülen dosya mesajları)
+const alinanlar = new Map(); // id -> { dosya, url, disk } (bu oturumda indirilenler)
+const indirmeler = new Map(); // id -> gelen aktarım
+const gonderimler = new Set(); // giden aktarımlar
+const yerelUrller = new Map(); // id -> blob URL (kendi paylaştığım dosyanın önizlemesi)
+const onizlemeHatalari = new Set(); // kendiliğinden alınamayan önizlemeler (yeniden denenmez)
+const dosyaBaglari = new Map(); // bağlantı id -> P2P dosya bağlantısı
+
+function dosyalariPaylas(liste) {
+	liste = (liste || []).filter(Boolean);
+	if (!liste.length) return;
+	if (!aktifKanal || !bagliyim) return durum('Dosya paylaşmak için önce sunucuya bağlan.', true);
+	let adet = 0;
+	for (const dosya of liste.slice(0, 20)) {
+		if (!dosya.size) {
+			durum(`${dosya.name || 'dosya'}: boş dosya paylaşılamaz.`, true);
+			continue;
+		}
+		const id = rastgeleHex(24);
+		paylasimlarim.set(id, dosya);
+		gonder({ type: 'dosya-paylas', kanal: aktifKanal, id, ad: dosya.name || 'dosya', boyut: dosya.size, tur: dosya.type || '' });
+		adet++;
+	}
+	if (liste.length > 20) durum('Bir seferde en fazla 20 dosya paylaşılır.', true);
+	else if (adet) durum((adet > 1 ? `${adet} dosya paylaşıldı` : 'Dosya paylaşıldı') + '; sayfan açık kaldıkça indirilebilir.');
 }
 
-function dosyaYukle(dosya) {
-	if (!dosya) return;
-	if (!aktifKanal || !bagliyim || !jeton) return durum('Dosya için önce sunucuya bağlan.', true);
-	const sinir = sunucu.dosyaMb * 1024 * 1024;
-	if (dosya.size > sinir) return durum(`Dosya çok büyük (en fazla ${sunucu.dosyaMb} MB).`, true);
+function sunulanlarGeldi(liste) {
+	const yeni = new Set(Array.isArray(liste) ? liste : []);
+	// Paylaşanı geri gelen dosyanın önizlemesi (önceden alınamadıysa) yeniden denenebilir.
+	for (const id of yeni) if (!sunulanlar.has(id)) onizlemeHatalari.delete(id);
+	sunulanlar = yeni;
+	dosyaKartlariniGuncelle();
+}
 
-	const xhr = new XMLHttpRequest();
-	xhr.open('POST', '/api/yukle?kanal=' + encodeURIComponent(aktifKanal));
-	xhr.setRequestHeader('Authorization', 'Bearer ' + jeton);
-	xhr.setRequestHeader('X-Dosya-Adi', encodeURIComponent(dosya.name || 'dosya'));
-	xhr.setRequestHeader('Content-Type', dosya.type || 'application/octet-stream');
-	xhr.upload.onprogress = (e) => {
-		if (!e.lengthComputable) return;
-		const yuzde = Math.round((e.loaded / e.total) * 100);
-		$('yukleme-dolgu').style.width = yuzde + '%';
-		$('yukleme-yazi').textContent = `${dosya.name} · %${yuzde}`;
+// Sunucu yalnızca hâlâ sohbette duran ve benim paylaştığım dosyaları kabul eder; gerisini bırak.
+function sunduklarimOnaylandi(idler) {
+	const gecerli = new Set(Array.isArray(idler) ? idler : []);
+	for (const id of [...paylasimlarim.keys()]) if (!gecerli.has(id)) paylasimiBirak(id, false);
+	dosyaKartlariniGuncelle();
+}
+
+function paylasimiBirak(id, bildir = true) {
+	if (!paylasimlarim.delete(id)) return;
+	const url = yerelUrller.get(id);
+	if (url) URL.revokeObjectURL(url);
+	yerelUrller.delete(id);
+	for (const akt of [...gonderimler]) if (akt.id === id) gonderimiIptalEt(akt);
+	if (bildir) gonder({ type: 'dosya-sun', idler: [...paylasimlarim.keys()] });
+	dosyaKartlariniGuncelle(id);
+}
+
+// Sayfa yenilendikten sonra (dosya bellekten gitti) aynı dosyayı yeniden seçip sunmaya devam et.
+function yenidenPaylas(id) {
+	const bilgi = dosyaBilgileri.get(id);
+	if (!bilgi) return;
+	const girdi = el('input');
+	girdi.type = 'file';
+	girdi.addEventListener('change', () => {
+		const dosya = girdi.files && girdi.files[0];
+		if (!dosya) return;
+		if (dosya.size !== bilgi.boyut) return durum(`Bu aynı dosya değil (boyut ${boyutYaz(dosya.size)}, beklenen ${boyutYaz(bilgi.boyut)}).`, true);
+		paylasimlarim.set(id, dosya);
+		gonder({ type: 'dosya-sun', idler: [...paylasimlarim.keys()] });
+		durum(`${bilgi.ad} yeniden paylaşılıyor.`);
+		dosyaKartlariniGuncelle(id);
+	});
+	girdi.click();
+}
+
+function yerelUrl(id, dosya) {
+	let url = yerelUrller.get(id);
+	if (!url) {
+		url = URL.createObjectURL(dosya);
+		yerelUrller.set(id, url);
+	}
+	return url;
+}
+
+// --- bağlantılar: indiren taraf kurar ve teklif eder (her yönün kendi bağlantısı vardır, çakışma
+// olmaz). Aynı kişiden indirilen dosyalar aynı bağlantıyı kullanır, her dosya ayrı bir veri
+// kanalıdır. Boşta kalan bağlantı kapanır.
+
+const dosyaSinyali = (ad, veri) => gonder({ type: 'dosya-sinyal', to: ad, veri });
+
+function bagOlustur(id, ad, alici) {
+	let pc;
+	try {
+		pc = new RTCPeerConnection(pcAyari());
+	} catch (h) {
+		console.warn('dosya bağlantısı kurulamadı', h);
+		return null;
+	}
+	const bag = { id, ad, alici, pc, adaylar: [], kanallar: new Set(), aktarimlar: new Set(), kapandi: false, turn: false, sonKullanim: Date.now() };
+	dosyaBaglari.set(id, bag);
+	pc.onicecandidate = (e) => {
+		if (e.candidate && !bag.kapandi) dosyaSinyali(ad, { tur: 'aday', bag: id, aday: e.candidate });
 	};
-	xhr.onload = () => {
-		yuklemeGizle();
-		if (xhr.status === 200) return;
-		let metin = 'Yükleme başarısız.';
+	pc.onconnectionstatechange = () => {
+		if (bag.kapandi) return;
+		const d = pc.connectionState;
+		if (d === 'connected') bagTuruOlc(bag);
+		else if (d === 'failed' || d === 'closed') bagKapat(bag, 'Bağlantı koptu');
+	};
+	return bag;
+}
+
+function aliciBagi(ad) {
+	for (const b of dosyaBaglari.values()) {
+		if (b.alici && b.ad === ad && !b.kapandi && !['failed', 'closed', 'disconnected'].includes(b.pc.connectionState)) return b;
+	}
+	const bag = bagOlustur(rastgeleKimlik(16), ad, true);
+	if (!bag) return null;
+	// Teklif, ilk veri kanalı açıldıktan sonra (SCTP satırı teklife girsin diye) gönderilir.
+	setTimeout(async () => {
 		try {
-			metin = JSON.parse(xhr.responseText).hata || metin;
+			const teklif = await bag.pc.createOffer();
+			if (bag.kapandi) return;
+			await bag.pc.setLocalDescription(teklif);
+			dosyaSinyali(ad, { tur: 'teklif', bag: bag.id, sdp: bag.pc.localDescription });
+		} catch (h) {
+			bagKapat(bag, 'Bağlantı kurulamadı');
+		}
+	}, 0);
+	return bag;
+}
+
+function bagKapat(bag, neden, karsiKapatti = false) {
+	if (bag.kapandi) return;
+	bag.kapandi = true;
+	dosyaBaglari.delete(bag.id);
+	if (!karsiKapatti && bagliyim) dosyaSinyali(bag.ad, { tur: 'kapat', bag: bag.id });
+	for (const akt of [...bag.aktarimlar]) {
+		if (akt.yon === 'gelen') aktarimKoptu(akt, neden || 'Bağlantı koptu');
+		else gonderimBitti(akt, neden || 'bağlantı koptu');
+	}
+	for (const k of bag.kanallar) {
+		try {
+			k.close();
 		} catch {}
-		durum(metin, true);
+	}
+	try {
+		bag.pc.close();
+	} catch {}
+}
+
+// Bağlantı TURN üzerinden mi? (Aktarımda "yavaş olabilir" bilgisi için.)
+async function bagTuruOlc(bag) {
+	try {
+		const rapor = await bag.pc.getStats();
+		rapor.forEach((r) => {
+			if (r.type === 'transport' && r.selectedCandidatePairId) {
+				const c = rapor.get(r.selectedCandidatePairId);
+				const y = c && rapor.get(c.localCandidateId);
+				const u = c && rapor.get(c.remoteCandidateId);
+				bag.turn = !!((y && y.candidateType === 'relay') || (u && u.candidateType === 'relay'));
+			}
+		});
+	} catch {}
+}
+
+// Boşta kalan bağlantıları kapat (indiren 1, gönderen 3 dakika sonra).
+setInterval(() => {
+	const simdi = Date.now();
+	for (const bag of [...dosyaBaglari.values()]) {
+		if (bag.aktarimlar.size) {
+			bag.sonKullanim = simdi;
+			continue;
+		}
+		if (simdi - bag.sonKullanim > (bag.alici ? 60000 : 180000)) bagKapat(bag, '');
+	}
+}, 15000);
+
+function dosyaSinyaliGeldi(ad, veri) {
+	if (!ad || !veri || typeof veri !== 'object') return;
+	const bag = typeof veri.bag === 'string' ? dosyaBaglari.get(veri.bag) : null;
+	if (bag && bag.ad !== ad) return; // başkasının bağlantısına karışılamaz
+	switch (veri.tur) {
+		case 'teklif':
+			dosyaTeklifiGeldi(ad, veri, bag);
+			break;
+		case 'yanit':
+			if (bag && bag.alici && veri.sdp && bag.pc.signalingState === 'have-local-offer') {
+				bag.pc
+					.setRemoteDescription(veri.sdp)
+					.then(() => adaylariEkle(bag))
+					.catch(() => bagKapat(bag, 'Bağlantı kurulamadı'));
+			}
+			break;
+		case 'aday':
+			if (!bag || !veri.aday) return;
+			if (bag.pc.remoteDescription) bag.pc.addIceCandidate(veri.aday).catch(() => {});
+			else if (bag.adaylar.length < 100) bag.adaylar.push(veri.aday);
+			break;
+		case 'kapat':
+			if (bag) bagKapat(bag, 'Karşı taraf bağlantıyı kapattı', true);
+			break;
+		case 'ulasilamadi':
+			// Hedef çevrimiçi değil: o kişiyle kurulan tüm dosya bağlantıları düşer.
+			for (const b of [...dosyaBaglari.values()]) if (b.ad === ad) bagKapat(b, `${ad} çevrimdışı`, true);
+			break;
+	}
+}
+
+async function adaylariEkle(bag) {
+	for (const a of bag.adaylar.splice(0)) await bag.pc.addIceCandidate(a).catch(() => {});
+}
+
+// Gönderen taraf: biri dosyalarımdan birini istemek için bağlanıyor.
+async function dosyaTeklifiGeldi(ad, veri, bag) {
+	if (typeof veri.bag !== 'string' || !/^[a-z0-9]{8,40}$/.test(veri.bag) || !veri.sdp) return;
+	if (bag && bag.alici) return;
+	if (!paylasimlarim.size) return dosyaSinyali(ad, { tur: 'kapat', bag: veri.bag });
+	if (!bag) {
+		bag = bagOlustur(veri.bag, ad, false);
+		if (!bag) return dosyaSinyali(ad, { tur: 'kapat', bag: veri.bag });
+		bag.pc.ondatachannel = (e) => gidenKanal(bag, e.channel);
+	}
+	try {
+		await bag.pc.setRemoteDescription(veri.sdp);
+		await adaylariEkle(bag);
+		const yanit = await bag.pc.createAnswer();
+		await bag.pc.setLocalDescription(yanit);
+		dosyaSinyali(ad, { tur: 'yanit', bag: bag.id, sdp: bag.pc.localDescription });
+	} catch (h) {
+		console.warn('dosya teklifi', h);
+		bagKapat(bag, '');
+	}
+}
+
+// --- gönderen: istenen dosyayı parça parça gönder
+
+function gidenKanal(bag, kanal) {
+	kanal.binaryType = 'arraybuffer';
+	bag.kanallar.add(kanal);
+	bag.sonKullanim = Date.now();
+	let akt = null;
+	kanal.onmessage = (e) => {
+		if (typeof e.data !== 'string') return;
+		let m;
+		try {
+			m = JSON.parse(e.data);
+		} catch {
+			return;
+		}
+		if (m.istek != null && !akt) {
+			const id = String(m.istek);
+			const dosya = paylasimlarim.get(id);
+			if (!dosya) {
+				kanalaYaz(kanal, { hata: 'yok' });
+				setTimeout(() => kanal.close(), 300);
+				return;
+			}
+			const baslangic = Math.max(0, Math.min(dosya.size, Math.floor(Number(m.baslangic) || 0)));
+			const bilgi = dosyaBilgileri.get(id);
+			akt = { yon: 'giden', id, ad: (bilgi && bilgi.ad) || dosya.name, dosya, kisi: bag.ad, kanal, bag, gonderilen: baslangic, onaylanan: baslangic, boyut: dosya.size, bitti: false, uyandir: null };
+			hizBaslat(akt, baslangic);
+			gonderimler.add(akt);
+			bag.aktarimlar.add(akt);
+			aktarimlariCiz();
+			kapanisUyarisi();
+			gonderimDongusu(akt);
+		} else if (m.onay != null && akt) {
+			akt.onaylanan = Math.max(akt.onaylanan, Number(m.onay) || 0);
+			if (akt.uyandir) akt.uyandir();
+			ilerlemeGuncelle(akt, Math.max(akt.ilerleme || 0, akt.onaylanan));
+			if (akt.onaylanan >= akt.boyut) gonderimBitti(akt, '');
+		}
 	};
-	xhr.onerror = () => {
-		yuklemeGizle();
-		durum('Yükleme başarısız (ağ hatası).', true);
+	kanal.onclose = () => {
+		bag.kanallar.delete(kanal);
+		if (akt && !akt.bitti) gonderimBitti(akt, akt.onaylanan >= akt.boyut ? '' : 'yarıda kaldı');
 	};
-	yuklemeGoster(dosya.name);
-	xhr.send(dosya);
+}
+
+function kanalaYaz(kanal, nesne) {
+	try {
+		if (kanal.readyState === 'open') kanal.send(JSON.stringify(nesne));
+	} catch {}
+}
+
+async function gonderimDongusu(akt) {
+	const { kanal, dosya } = akt;
+	const sctp = akt.bag.pc.sctp;
+	const parcaBoyu = Math.max(16 * 1024, Math.min(PARCA, (sctp && sctp.maxMessageSize) || PARCA));
+	kanal.bufferedAmountLowThreshold = TAMPON_UST / 4;
+	const bekle = () =>
+		new Promise((coz) => {
+			const zaman = setTimeout(() => akt.uyandir && akt.uyandir(), 1000);
+			akt.uyandir = () => {
+				clearTimeout(zaman);
+				akt.uyandir = null;
+				coz();
+			};
+			kanal.onbufferedamountlow = () => akt.uyandir && akt.uyandir();
+		});
+	try {
+		kanalaYaz(kanal, { tamam: true, boyut: dosya.size, baslangic: akt.gonderilen });
+		while (akt.gonderilen < dosya.size) {
+			if (akt.bitti || kanal.readyState !== 'open') return;
+			// Tampon doluysa ya da alan diske yazmakta geride kaldıysa bekle.
+			if (kanal.bufferedAmount > TAMPON_UST || akt.gonderilen - akt.onaylanan > PENCERE) {
+				await bekle();
+				continue;
+			}
+			const son = Math.min(dosya.size, akt.gonderilen + OKUMA);
+			const blok = await dosya.slice(akt.gonderilen, son).arrayBuffer();
+			if (akt.bitti || kanal.readyState !== 'open') return;
+			for (let i = 0; i < blok.byteLength; i += parcaBoyu) kanal.send(blok.slice(i, Math.min(blok.byteLength, i + parcaBoyu)));
+			akt.gonderilen = son;
+			// Görünen ilerleme: ağa çıkan (tampondaki hariç); bitiş alanın onayıyla belli olur.
+			ilerlemeGuncelle(akt, Math.max(akt.onaylanan, akt.gonderilen - kanal.bufferedAmount));
+		}
+		kanalaYaz(kanal, { bitti: true });
+	} catch (h) {
+		console.warn('dosya gönderilemedi', h);
+		kanalaYaz(kanal, { hata: 'okunamadi' });
+		gonderimBitti(akt, 'dosya okunamadı');
+		setTimeout(() => kanal.close(), 300);
+	}
+}
+
+function gonderimBitti(akt, hata) {
+	if (akt.bitti) return;
+	akt.bitti = true;
+	akt.hata = hata;
+	gonderimler.delete(akt);
+	akt.bag.aktarimlar.delete(akt);
+	akt.bag.sonKullanim = Date.now();
+	if (akt.uyandir) akt.uyandir();
+	if (!hata) durum(`${akt.ad} → ${akt.kisi} gönderildi.`);
+	aktarimlariCiz();
+	kapanisUyarisi();
+}
+
+function gonderimiIptalEt(akt) {
+	kanalaYaz(akt.kanal, { hata: 'iptal' });
+	gonderimBitti(akt, 'iptal edildi');
+	setTimeout(() => {
+		try {
+			akt.kanal.close();
+		} catch {}
+	}, 300);
+}
+
+// --- indiren: yazıcı (dosyanın gideceği yer) seç, kanal aç, gelen parçaları sırayla yaz
+
+const opfsVar = () =>
+	!!(navigator.storage && typeof navigator.storage.getDirectory === 'function' && typeof FileSystemFileHandle !== 'undefined' && 'createWritable' in FileSystemFileHandle.prototype);
+
+// Yazıcı: (1) Chrome/Edge masaüstü, büyük dosya: "Farklı kaydet" ile seçilen dosyaya doğrudan
+// (sınırsız); (2) diğer tarayıcılar, büyük dosya: tarayıcının dosya alanı (OPFS), bitince
+// İndirilenler'e kaydedilir; (3) küçük dosyalar ve önizlemeler: bellek. Deneme için localStorage
+// 'dosya-yazici' = 'bellek' | 'opfs'.
+async function yaziciAc(akt) {
+	const zorla = depoOku('dosya-yazici', '');
+	const buyuk = akt.bilgi.boyut > BELLEK_SINIRI;
+	if (!zorla && buyuk && !akt.onizleme && typeof window.showSaveFilePicker === 'function') {
+		let tutamac = null;
+		try {
+			tutamac = await window.showSaveFilePicker({ suggestedName: akt.bilgi.ad });
+		} catch (h) {
+			if (h && h.name === 'AbortError') throw h; // kullanıcı vazgeçti
+		}
+		if (tutamac) {
+			const yazilabilir = await tutamac.createWritable();
+			return {
+				tur: 'disk',
+				yaz: (p) => yazilabilir.write(p),
+				bitir: async () => {
+					await yazilabilir.close();
+					try {
+						return await tutamac.getFile();
+					} catch {
+						return null;
+					}
+				},
+				iptal: () => yazilabilir.abort(),
+			};
+		}
+	}
+	if (zorla !== 'bellek' && (zorla === 'opfs' || (buyuk && !akt.onizleme)) && opfsVar()) {
+		try {
+			return await opfsYazici(akt);
+		} catch (h) {
+			console.warn('tarayıcının dosya alanı kullanılamadı', h);
+		}
+	}
+	if (buyuk && !akt.onizleme) durum('Bu tarayıcı dosyayı diske akıtamıyor; bellekte toplanacak (çok büyük dosyada Chrome/Edge kullan).', true);
+	return bellekYazici(akt);
+}
+
+async function opfsYazici(akt) {
+	try {
+		const t = await navigator.storage.estimate();
+		if (t && t.quota && t.quota - (t.usage || 0) < akt.bilgi.boyut + 64 * 1024 * 1024) throw new Error('tarayıcının dosya alanında yer yok');
+	} catch (h) {
+		if (/yer yok/.test(String(h && h.message))) throw h;
+	}
+	const kok = await navigator.storage.getDirectory();
+	const klasor = await kok.getDirectoryHandle('indirilenler', { create: true });
+	const ad = akt.bilgi.id + '-' + rastgeleKimlik(6);
+	const tutamac = await klasor.getFileHandle(ad, { create: true });
+	const yazilabilir = await tutamac.createWritable();
+	return {
+		tur: 'opfs',
+		yaz: (p) => yazilabilir.write(p),
+		bitir: async () => {
+			await yazilabilir.close();
+			return tutamac.getFile();
+		},
+		iptal: async () => {
+			try {
+				await yazilabilir.abort();
+			} catch {}
+			try {
+				await klasor.removeEntry(ad);
+			} catch {}
+		},
+	};
+}
+
+function bellekYazici(akt) {
+	let parcalar = [];
+	let bekleyen = [];
+	let bekleyenBoyut = 0;
+	return {
+		tur: 'bellek',
+		yaz: (p) => {
+			bekleyen.push(p);
+			bekleyenBoyut += p.byteLength;
+			// Küçük parçaları ara ara birleştir (çok sayıda ArrayBuffer belleği şişirmesin).
+			if (bekleyenBoyut >= BELLEK_BIRLESTIR) {
+				parcalar.push(new Blob(bekleyen));
+				bekleyen = [];
+				bekleyenBoyut = 0;
+			}
+		},
+		bitir: () => {
+			if (bekleyen.length) parcalar.push(new Blob(bekleyen));
+			return new Blob(parcalar, { type: akt.bilgi.tur || '' });
+		},
+		iptal: async () => {
+			parcalar = [];
+			bekleyen = [];
+		},
+	};
+}
+
+// Önceki oturumlardan tarayıcının dosya alanında kalan geçici indirmeleri sil.
+async function eskiIndirmeleriSil() {
+	if (!opfsVar()) return;
+	try {
+		const kok = await navigator.storage.getDirectory();
+		await kok.removeEntry('indirilenler', { recursive: true });
+	} catch {}
+}
+
+async function dosyaIndir(id, { onizleme = false } = {}) {
+	const bilgi = dosyaBilgileri.get(id);
+	if (!bilgi) return;
+	const suren = indirmeler.get(id);
+	if (suren) {
+		// Önizlemesi alınmakta olan dosyaya "İndir" basıldı: aynı aktarım indirmeye dönüşür.
+		if (!onizleme && suren.onizleme) {
+			suren.onizleme = false;
+			dosyaKartlariniGuncelle(id);
+			aktarimlariCiz();
+			kapanisUyarisi();
+		}
+		return;
+	}
+	if (!bagliyim) return onizleme || durum('Sunucuya bağlı değilsin.', true);
+	if (!sunulanlar.has(id)) {
+		if (!onizleme) durum(`${bilgi.sahip} şu an bu dosyayı sunmuyor (sayfası kapalı).`, true);
+		return;
+	}
+	const akt = { yon: 'gelen', id, bilgi, ad: bilgi.ad, kisi: bilgi.sahip, boyut: bilgi.boyut, onizleme, alinan: 0, yazilan: 0, onaylanan: 0, deneme: 0, bekleme: 0, durum: 'baglaniyor', bitti: false, yazici: null, yazma: Promise.resolve(), kanal: null, bag: null };
+	indirmeler.set(id, akt);
+	hizBaslat(akt, 0);
+	// "Farklı kaydet" penceresi tıklamanın içinde açılmalı: önce yazıcı, sonra bağlantı.
+	const yaziciSozu = yaziciAc(akt);
+	dosyaKartlariniGuncelle(id);
+	aktarimlariCiz();
+	try {
+		akt.yazici = await yaziciSozu;
+	} catch (h) {
+		indirmeler.delete(id);
+		if (!(h && h.name === 'AbortError')) durum('Dosya kaydedilemiyor: ' + ((h && h.message) || h), true);
+		dosyaKartlariniGuncelle(id);
+		aktarimlariCiz();
+		return;
+	}
+	if (akt.bitti) {
+		akt.yazici.iptal().catch(() => {});
+		return;
+	}
+	kapanisUyarisi();
+	indirmeKanaliAc(akt);
+}
+
+function indirmeKanaliAc(akt) {
+	const bag = aliciBagi(akt.kisi);
+	if (!bag) return indirmeBitti(akt, 'Bağlantı kurulamadı.');
+	let kanal;
+	try {
+		kanal = bag.pc.createDataChannel('dosya', { ordered: true });
+	} catch (h) {
+		return indirmeBitti(akt, 'Bağlantı kurulamadı.');
+	}
+	akt.bag = bag;
+	akt.kanal = kanal;
+	akt.durum = 'baglaniyor';
+	bag.aktarimlar.add(akt);
+	bag.kanallar.add(kanal);
+	bag.sonKullanim = Date.now();
+	kanal.binaryType = 'arraybuffer';
+	kanal.onopen = () => {
+		clearTimeout(akt.acilisZamani);
+		kanalaYaz(kanal, { istek: akt.id, baslangic: akt.alinan });
+	};
+	kanal.onmessage = (e) => indirmeMesaji(akt, kanal, e.data);
+	kanal.onclose = () => {
+		bag.kanallar.delete(kanal);
+		if (akt.kanal === kanal) aktarimKoptu(akt, 'Bağlantı koptu');
+	};
+	clearTimeout(akt.acilisZamani);
+	akt.acilisZamani = setTimeout(() => {
+		if (akt.kanal !== kanal || kanal.readyState === 'open') return;
+		// Bağlantı hiç kurulamadıysa takılı kalmıştır: kapat, yeniden denemede yenisi kurulur.
+		if (bag.pc.connectionState !== 'connected') bagKapat(bag, `${akt.kisi} ile bağlantı kurulamadı`);
+		else aktarimKoptu(akt, `${akt.kisi} yanıt vermedi`);
+	}, 25000);
+	ilerlemeGuncelle(akt, akt.alinan, true);
+}
+
+function indirmeMesaji(akt, kanal, veri) {
+	if (akt.kanal !== kanal || akt.bitti) return;
+	if (typeof veri === 'string') {
+		let m;
+		try {
+			m = JSON.parse(veri);
+		} catch {
+			return;
+		}
+		if (m.hata) {
+			const neden = m.hata === 'yok' ? `${akt.kisi} artık bu dosyayı sunmuyor.` : m.hata === 'iptal' ? `${akt.kisi} gönderimi durdurdu.` : 'Paylaşan dosyayı okuyamadı.';
+			return indirmeBitti(akt, neden);
+		}
+		if (m.tamam) {
+			if (Number(m.boyut) !== akt.boyut) return indirmeBitti(akt, 'Dosya değişmiş (boyutu farklı).');
+			akt.durum = 'aliniyor';
+			ilerlemeGuncelle(akt, akt.alinan, true);
+		} else if (m.bitti) {
+			akt.sonGeldi = true;
+			akt.yazma.then(() => indirmeyiTamamla(akt));
+		}
+		return;
+	}
+	const parca = veri;
+	if (!parca || typeof parca.byteLength !== 'number') return;
+	if (akt.alinan + parca.byteLength > akt.boyut) return indirmeBitti(akt, 'Beklenenden fazla veri geldi.');
+	akt.alinan += parca.byteLength;
+	akt.yazma = akt.yazma
+		.then(async () => {
+			if (akt.bitti) return;
+			await akt.yazici.yaz(parca);
+			akt.yazilan += parca.byteLength;
+			if (akt.yazilan - akt.onaylanan >= ONAY_ARALIGI || akt.yazilan === akt.boyut) {
+				akt.onaylanan = akt.yazilan;
+				if (akt.kanal) kanalaYaz(akt.kanal, { onay: akt.yazilan });
+			}
+		})
+		.catch((h) => indirmeBitti(akt, 'Diske yazılamadı: ' + ((h && h.message) || h)));
+	ilerlemeGuncelle(akt, akt.alinan);
+}
+
+// Kanal ya da bağlantı koptu: paylaşan hâlâ sunuyorsa kaldığı yerden yeniden iste.
+function aktarimKoptu(akt, neden) {
+	if (akt.bitti) return;
+	clearTimeout(akt.acilisZamani);
+	const kanal = akt.kanal;
+	akt.kanal = null;
+	if (kanal) {
+		try {
+			kanal.close();
+		} catch {}
+	}
+	if (akt.bag) akt.bag.aktarimlar.delete(akt);
+	akt.bag = null;
+	if (akt.sonGeldi) return; // son parça geldi, yazılıp kapanıyor
+	if (akt.onizleme || ++akt.deneme > 6) return indirmeBitti(akt, neden);
+	akt.durum = 'bekliyor';
+	akt.sonHata = neden;
+	ilerlemeGuncelle(akt, akt.alinan, true);
+	clearTimeout(akt.yenidenZaman);
+	akt.yenidenZaman = setTimeout(() => yenidenIste(akt), Math.min(10000, 1000 * akt.deneme));
+}
+
+function yenidenIste(akt) {
+	if (akt.bitti) return;
+	if (!bagliyim || !sunulanlar.has(akt.id)) {
+		// Paylaşan (ya da biz) sunucuya dönene kadar bekle (en fazla ~2 dakika).
+		if (++akt.bekleme > 40) return indirmeBitti(akt, `${akt.kisi} geri gelmedi; aktarım durdu.`);
+		akt.yenidenZaman = setTimeout(() => yenidenIste(akt), 3000);
+		return;
+	}
+	indirmeKanaliAc(akt);
+}
+
+async function indirmeyiTamamla(akt) {
+	if (akt.bitti) return;
+	if (akt.yazilan !== akt.boyut) return indirmeBitti(akt, 'Dosya eksik geldi.');
+	let dosya = null;
+	try {
+		dosya = await akt.yazici.bitir();
+	} catch (h) {
+		return indirmeBitti(akt, 'Dosya kaydedilemedi.');
+	}
+	akt.bitti = true;
+	clearTimeout(akt.acilisZamani);
+	clearTimeout(akt.yenidenZaman);
+	if (akt.kanal) {
+		const k = akt.kanal;
+		akt.kanal = null;
+		setTimeout(() => k.close(), 200); // son onay gitsin
+	}
+	if (akt.bag) akt.bag.aktarimlar.delete(akt);
+	indirmeler.delete(akt.id);
+	// Önizleme/kaydetme için türü doğru bir Blob (veriyi kopyalamaz, aynı dosyayı gösterir).
+	const blob = dosya ? (dosya.type === (akt.bilgi.tur || '') ? dosya : new Blob([dosya], { type: akt.bilgi.tur || '' })) : null;
+	alinanlar.set(akt.id, { dosya: blob, url: blob ? URL.createObjectURL(blob) : '', disk: akt.yazici.tur === 'disk', onizleme: akt.onizleme });
+	if (!akt.onizleme) {
+		if (akt.yazici.tur !== 'disk') dosyayiKaydet(akt.id);
+		durum(`${akt.ad} indirildi${akt.yazici.tur === 'disk' ? ' ve kaydedildi' : ''}.`);
+	}
+	dosyaKartlariniGuncelle(akt.id);
+	aktarimlariCiz();
+	kapanisUyarisi();
+}
+
+function indirmeBitti(akt, hata) {
+	if (akt.bitti) return;
+	akt.bitti = true;
+	clearTimeout(akt.acilisZamani);
+	clearTimeout(akt.yenidenZaman);
+	if (akt.kanal) {
+		try {
+			akt.kanal.close();
+		} catch {}
+	}
+	akt.kanal = null;
+	if (akt.bag) akt.bag.aktarimlar.delete(akt);
+	if (akt.yazici) akt.yazici.iptal().catch(() => {});
+	indirmeler.delete(akt.id);
+	if (akt.onizleme) onizlemeHatalari.add(akt.id);
+	else if (hata) durum(`${akt.ad}: ${hata}`, true);
+	dosyaKartlariniGuncelle(akt.id);
+	aktarimlariCiz();
+	kapanisUyarisi();
+}
+
+function dosyayiKaydet(id) {
+	const a = alinanlar.get(id);
+	const bilgi = dosyaBilgileri.get(id);
+	if (!a || !a.url || !bilgi) return;
+	const bag = el('a');
+	bag.href = a.url;
+	bag.download = bilgi.ad;
+	bag.rel = 'noopener';
+	document.body.append(bag);
+	bag.click();
+	bag.remove();
+}
+
+// Küçük resimler kendiliğinden (en fazla ikisi aynı anda) alınıp sohbette gösterilir.
+const onizlemeKuyrugu = [];
+let onizlemeSuruyor = 0;
+function onizlemeIste(id) {
+	if (onizlemeKuyrugu.includes(id) || indirmeler.has(id) || alinanlar.has(id)) return;
+	onizlemeKuyrugu.push(id);
+	setTimeout(onizlemeSirasi, 0);
+}
+function onizlemeSirasi() {
+	while (onizlemeSuruyor < 2 && onizlemeKuyrugu.length) {
+		const id = onizlemeKuyrugu.shift();
+		if (indirmeler.has(id) || alinanlar.has(id) || !sunulanlar.has(id)) continue;
+		onizlemeSuruyor++;
+		dosyaIndir(id, { onizleme: true }).finally(() => {
+			const bekle = () => {
+				if (indirmeler.has(id)) return setTimeout(bekle, 300);
+				onizlemeSuruyor--;
+				onizlemeSirasi();
+			};
+			bekle();
+		});
+	}
+}
+
+// --- ilerleme, hız, aktarım paneli
+
+function hizBaslat(akt, bayt) {
+	akt.hizOlcum = { zaman: Date.now(), bayt };
+	akt.hiz = 0;
+	akt.ilerleme = bayt;
+}
+
+function ilerlemeGuncelle(akt, bayt, hemen = false) {
+	akt.ilerleme = bayt;
+	const simdi = Date.now();
+	const o = akt.hizOlcum;
+	if (o && simdi - o.zaman >= 1000) {
+		const anlik = ((bayt - o.bayt) * 1000) / (simdi - o.zaman);
+		akt.hiz = akt.hiz ? akt.hiz * 0.6 + anlik * 0.4 : anlik;
+		akt.hizOlcum = { zaman: simdi, bayt };
+	}
+	if (!hemen && simdi - (akt.cizimZamani || 0) < 250) return;
+	akt.cizimZamani = simdi;
+	if (akt.yon === 'gelen') kartIlerlemesi(akt);
+	aktarimSatiriGuncelle(akt);
+}
+
+function aktarimMetni(akt) {
+	const yuzde = akt.boyut ? Math.floor((akt.ilerleme / akt.boyut) * 100) : 0;
+	if (akt.durum === 'baglaniyor' && akt.yon === 'gelen') return akt.alinan ? `%${yuzde} · yeniden bağlanıyor…` : 'bağlanıyor…';
+	if (akt.durum === 'bekliyor') return `%${yuzde} · ${akt.sonHata || 'koptu'}; bekleniyor…`;
+	const parcalar = [`%${yuzde}`, `${boyutYaz(akt.ilerleme)} / ${boyutYaz(akt.boyut)}`];
+	if (akt.hiz > 0) {
+		parcalar.push(boyutYaz(akt.hiz) + '/sn');
+		const kalan = (akt.boyut - akt.ilerleme) / akt.hiz;
+		if (kalan > 5) parcalar.push(`~${sureYaz(kalan)} kaldı`);
+	}
+	const bag = akt.bag;
+	if (bag && bag.turn) parcalar.push('TURN');
+	return parcalar.join(' · ');
+}
+
+const aktarimSatirlari = new Map(); // aktarım -> satır öğeleri
+function aktarimlariCiz() {
+	const kap = $('aktarimlar');
+	if (!kap) return;
+	const liste = [...indirmeler.values()].filter((a) => !a.onizleme).concat([...gonderimler]);
+	for (const [akt, s] of aktarimSatirlari) {
+		if (!liste.includes(akt)) {
+			s.kok.remove();
+			aktarimSatirlari.delete(akt);
+		}
+	}
+	for (const akt of liste) {
+		if (aktarimSatirlari.has(akt)) continue;
+		const kok = el('div', 'aktarim ' + akt.yon);
+		const isaret = el('span', 'aktarim-isaret');
+		isaret.append(ikon(akt.yon === 'gelen' ? 'indir' : 'yukari'));
+		const bilgi = el('div', 'aktarim-bilgi');
+		const ust = el('div', 'aktarim-ust');
+		ust.append(el('b', null, akt.ad), el('span', 'aktarim-kisi', akt.yon === 'gelen' ? `← ${akt.kisi}` : `→ ${akt.kisi}`));
+		const metin = el('small', 'aktarim-metin');
+		const cubuk = el('div', 'ilerleme');
+		const dolgu = el('div');
+		cubuk.append(dolgu);
+		bilgi.append(ust, cubuk, metin);
+		const iptal = el('button', 'aktarim-iptal');
+		iptal.type = 'button';
+		iptal.title = 'Aktarımı durdur';
+		iptal.setAttribute('aria-label', akt.ad + ' aktarımını durdur');
+		iptal.append(ikon('x'));
+		iptal.onclick = () => (akt.yon === 'gelen' ? indirmeBitti(akt, '') : gonderimiIptalEt(akt));
+		kok.append(isaret, bilgi, iptal);
+		kap.append(kok);
+		aktarimSatirlari.set(akt, { kok, metin, dolgu });
+	}
+	kap.hidden = !liste.length;
+	for (const akt of liste) aktarimSatiriGuncelle(akt);
+}
+function aktarimSatiriGuncelle(akt) {
+	const s = aktarimSatirlari.get(akt);
+	if (!s) return;
+	s.metin.textContent = aktarimMetni(akt);
+	s.dolgu.style.width = (akt.boyut ? Math.min(100, (akt.ilerleme / akt.boyut) * 100) : 0).toFixed(1) + '%';
+}
+
+// Gönderim ya da indirme sürerken sayfa kapatılmak istenirse uyar.
+let kapanisDinleyici = null;
+function kapanisUyarisi() {
+	const suruyor = gonderimler.size > 0 || [...indirmeler.values()].some((a) => !a.onizleme);
+	if (suruyor && !kapanisDinleyici) {
+		kapanisDinleyici = (e) => {
+			e.preventDefault();
+			e.returnValue = '';
+		};
+		window.addEventListener('beforeunload', kapanisDinleyici);
+	} else if (!suruyor && kapanisDinleyici) {
+		window.removeEventListener('beforeunload', kapanisDinleyici);
+		kapanisDinleyici = null;
+	}
+}
+
+// --- sohbetteki P2P dosya kartı
+
+function p2pDosyaElemani(dosya, sahip) {
+	dosyaBilgileri.set(dosya.id, { id: dosya.id, ad: dosya.ad || 'dosya', boyut: Number(dosya.boyut) || 0, tur: dosya.tur || '', sahip });
+	const kap = el('div', 'p2p-dosya');
+	kap.dataset.dosya = dosya.id;
+	p2pDosyaCiz(kap);
+	return kap;
+}
+
+// id verilirse yalnızca o dosyanın kartları, verilmezse tüm P2P kartlar yeniden çizilir (durumu
+// değişmeyen kart dokunulmadan kalır: önizleme titremesin).
+function dosyaKartlariniGuncelle(id) {
+	const kok = $('mesajlar');
+	if (!kok) return;
+	const secici = id ? `.p2p-dosya[data-dosya="${id}"]` : '.p2p-dosya';
+	for (const kap of kok.querySelectorAll(secici)) p2pDosyaCiz(kap);
+}
+
+function p2pDosyaCiz(kap) {
+	const id = kap.dataset.dosya;
+	const b = dosyaBilgileri.get(id);
+	if (!b) return;
+	const benim = b.sahip === benimAdim;
+	const yerel = benim ? paylasimlarim.get(id) : null;
+	const alinan = alinanlar.get(id);
+	const akt = indirmeler.get(id);
+	const sunuluyor = sunulanlar.has(id);
+	const uz = dosyaUzanti(b.ad);
+	const resim = ONIZLEME.includes(uz);
+	const medya = resim || SES_TURLERI.includes(uz) || VIDEO_TURLERI.includes(uz);
+	let url = alinan && alinan.url ? alinan.url : '';
+	if (!url && yerel && medya) url = yerelUrl(id, yerel);
+	if (!url && resim && !benim && sunuluyor && !akt && b.boyut <= ONIZLEME_SINIRI && !onizlemeHatalari.has(id)) onizlemeIste(id);
+	const gorunenAkt = akt && !akt.onizleme ? akt : null;
+	const anahtar = [benim ? 1 : 0, yerel ? 1 : 0, url ? 1 : 0, alinan ? 1 : 0, gorunenAkt ? 1 : 0, akt && akt.onizleme ? 1 : 0, sunuluyor ? 1 : 0].join('');
+	if (kap.dataset.anahtar === anahtar) return;
+	kap.dataset.anahtar = anahtar;
+	kap.replaceChildren();
+
+	if (url) {
+		if (resim) {
+			const a = el('a');
+			a.href = url;
+			a.target = '_blank';
+			a.rel = 'noopener';
+			const img = el('img', 'onizleme');
+			img.src = url;
+			img.alt = b.ad;
+			img.addEventListener('load', () => {
+				if (dibeYapisik) dibeKaydir();
+			});
+			a.addEventListener('click', (e) => {
+				if (e.ctrlKey || e.metaKey || e.shiftKey || e.button === 1) return;
+				e.preventDefault();
+				buyutecAc(url, b.ad);
+			});
+			a.append(img);
+			kap.append(a);
+		} else if (SES_TURLERI.includes(uz)) {
+			const a = el('audio', 'onizleme');
+			a.controls = true;
+			a.preload = 'metadata';
+			a.src = url;
+			kap.append(a);
+		} else if (VIDEO_TURLERI.includes(uz)) {
+			const v = el('video', 'onizleme');
+			v.controls = true;
+			v.preload = 'metadata';
+			v.playsInline = true;
+			v.src = url;
+			kap.append(v);
+		}
+	} else if (resim && akt && akt.onizleme) {
+		kap.append(el('div', 'onizleme-bekle', 'Önizleme alınıyor…'));
+	}
+
+	const kart = el('div', 'dosya-kart p2p');
+	const sol = el('span', 'dosya-ikon');
+	sol.append(ikon('dosya'));
+	const bilgi = el('span', 'dosya-bilgi');
+	bilgi.append(el('b', null, b.ad));
+	const alt = el('small', 'dosya-durum');
+	const dugmeler = el('span', 'dosya-dugmeler');
+	const dugme = (metin, fn, sinif = '') => {
+		const d = el('button', 'dosya-dugme' + (sinif ? ' ' + sinif : ''), metin);
+		d.type = 'button';
+		d.onclick = fn;
+		dugmeler.append(d);
+		return d;
+	};
+	const nokta = (acik) => el('span', 'dosya-nokta' + (acik ? ' acik' : ''));
+	if (gorunenAkt) {
+		alt.append(document.createTextNode(boyutYaz(b.boyut) + ' · '), el('span', 'dosya-ilerleme-metin', aktarimMetni(gorunenAkt)));
+		const cubuk = el('div', 'ilerleme');
+		cubuk.append(el('div'));
+		bilgi.append(alt, cubuk);
+		dugme('İptal', () => indirmeBitti(gorunenAkt, ''), 'ikincil');
+	} else if (benim) {
+		alt.append(nokta(!!yerel), document.createTextNode(boyutYaz(b.boyut) + (yerel ? ' · senin paylaşımın; sayfan açıkken indirilebilir' : ' · bu sekmede artık sunulmuyor')));
+		bilgi.append(alt);
+		if (yerel) dugme('Paylaşımı durdur', () => paylasimiBirak(id), 'ikincil');
+		else dugme('Yeniden paylaş', () => yenidenPaylas(id));
+	} else if (alinan) {
+		alt.append(document.createTextNode(boyutYaz(b.boyut) + (alinan.disk ? ' · indirildi, kaydedildi' : alinan.onizleme ? ' · paylaşandan doğrudan alındı' : ' · indirildi')));
+		bilgi.append(alt);
+		if (alinan.url && !alinan.disk) dugme('Kaydet', () => dosyayiKaydet(id));
+	} else {
+		alt.append(nokta(sunuluyor), document.createTextNode(boyutYaz(b.boyut) + (sunuluyor ? ` · ${b.sahip} çevrimiçi, doğrudan alınır` : ` · ${b.sahip} şu an sunmuyor`)));
+		bilgi.append(alt);
+		const d = dugme('İndir', () => dosyaIndir(id));
+		d.disabled = !sunuluyor || !bagliyim;
+		if (!sunuluyor) d.title = 'Paylaşan sayfasını açınca indirilebilir';
+	}
+	kart.append(sol, bilgi, dugmeler);
+	kap.append(kart);
+	if (gorunenAkt) kartIlerlemesi(gorunenAkt);
+}
+
+function kartIlerlemesi(akt) {
+	const kok = $('mesajlar');
+	if (!kok || akt.onizleme) return;
+	for (const kap of kok.querySelectorAll(`.p2p-dosya[data-dosya="${akt.id}"]`)) {
+		const metin = kap.querySelector('.dosya-ilerleme-metin');
+		if (metin) metin.textContent = aktarimMetni(akt);
+		const dolgu = kap.querySelector('.ilerleme > div');
+		if (dolgu) dolgu.style.width = (akt.boyut ? Math.min(100, (akt.ilerleme / akt.boyut) * 100) : 0).toFixed(1) + '%';
+	}
 }
 
 // --- resim büyüteci
@@ -1771,7 +2747,7 @@ async function sesAc(kanal) {
 		return;
 	}
 	iceTazeMi();
-	gonder({ type: 'ses-gir', kanal, sessiz: mikSessizMi(), sagir: ayar.sagir });
+	gonder({ type: 'ses-gir', kanal, sessiz: mikSessizMi(), sagir: ayar.sagir, ...yayinBayraklari() });
 	// Yanıt gelmezse (bağlantı koptu) kilit açılsın.
 	setTimeout(() => {
 		if (sesGiriliyor && sesHedef === kanal) {
@@ -1820,6 +2796,7 @@ function sesKatil(m) {
 	istatistikBaslat();
 	kurtarmaBaslat();
 	bitHizlariniAyarla();
+	yayinlarCiz();
 	if (yeniGiris) {
 		durum(`${kanalAdi(kanal)} kanalına girdin.` + (mikHatasi ? ` (${mikHatasi}; yalnızca dinliyorsun)` : ''));
 		sesCal('giris');
@@ -1836,6 +2813,7 @@ function sesKapat(bildir = true) {
 	konusanlar.clear();
 	if (vardi) sesCal('cikis');
 	mikrofonuBirak();
+	yayinDurdur(false); // ekran/müzik paylaşımı kanaldan çıkınca biter
 	sesArayuzuKapat();
 	sesGozcuDurdur();
 	taniDurdur();
@@ -1923,9 +2901,20 @@ function esYap(ad) {
 		konusuyor: false,
 		ses: null,
 		olcer: null,
+		// Yayın: tr = mikrofon kanalı, trSes = yayın sesi (müzik/bilgisayar sesi), trGoruntu = ekran.
+		trSes: null,
+		trGoruntu: null,
+		izliyor: true, // o, benim yayınımı izliyor (kapatırsa ona yayın gönderilmez)
+		izliyorum: true, // ben onun yayınını izliyorum
+		yayinSeviye: 100, // onun yayın sesinin (müzik) seviyesi, yalnızca bende
+		yayinSesOgesi: null,
+		goruntuOgesi: null,
+		uzakGoruntu: null,
 	};
 	const kayitliSeviye = Number(depoOku('ses-seviye-' + ad, '100'));
 	if (Number.isFinite(kayitliSeviye) && kayitliSeviye >= 0 && kayitliSeviye <= 100) es.seviye = kayitliSeviye;
+	const yayinSeviye = Number(depoOku('yayin-seviye-' + ad, '100'));
+	if (Number.isFinite(yayinSeviye) && yayinSeviye >= 0 && yayinSeviye <= 100) es.yayinSeviye = yayinSeviye;
 	es.susturuldu = depoOku('ses-sustur-' + ad, '') === '1';
 	// Gelen sesin <audio>'su: görünmez ama çizilir (iOS display:none'u çalmıyor).
 	const ses = el('audio', 'ses-akis');
@@ -1988,11 +2977,15 @@ function pcKapat(es) {
 			pc.close();
 		} catch {}
 	}
-	es.tr = null;
+	es.tr = es.trSes = es.trGoruntu = null;
 	if (es.olcer) es.olcer.dur();
 	es.olcer = null;
 	if (es.ses) es.ses.srcObject = null;
+	if (es.yayinSesOgesi) es.yayinSesOgesi.srcObject = null;
+	if (es.goruntuOgesi) es.goruntuOgesi.srcObject = null;
+	es.uzakGoruntu = null;
 	es.olcum = es.gidenOlcum = null;
+	es.pencere = [];
 }
 
 function esKapat(ad) {
@@ -2000,15 +2993,20 @@ function esKapat(ad) {
 	if (!es) return;
 	pcKapat(es);
 	if (es.ses) es.ses.remove();
+	if (es.yayinSesOgesi) es.yayinSesOgesi.remove();
+	if (es.goruntuOgesi) es.goruntuOgesi.remove();
 	if (es.kutu) es.kutu.remove();
 	esler.delete(ad);
 	konusmaGuncelle(ad, false);
 	sesAcDugmesiGuncelle();
+	yayinlarCiz();
 }
 
-// Eşe yeni bir RTCPeerConnection kur. Teklif eden yeni bir oturum kimliği üretir ve ses kanalını
-// açar (mikrofon izi varsa onunla); yanıtlayan, teklifteki oturum kimliğini alır ve kanalı teklifin
-// kendisi oluşturur (önceden açılan kanal teklifin m-line'ıyla eşleşmiyor → tek yönlü ses).
+// Eşe yeni bir RTCPeerConnection kur. Teklif eden yeni bir oturum kimliği üretir ve kanalları açar:
+// sırasıyla mikrofon (izi varsa onunla), yayın sesi ve görüntü (ekran paylaşımı / müzik için;
+// paylaşım yokken boş durur, başlayınca yalnızca iz takılır, yeniden anlaşma gerekmez). Yanıtlayan,
+// teklifteki oturum kimliğini alır ve kanalları teklifin kendisi oluşturur (önceden açılan kanal
+// teklifin m-line'ıyla eşleşmiyor → tek yönlü ses).
 function pcKur(es, oturum) {
 	pcKapat(es);
 	let pc;
@@ -2024,11 +3022,16 @@ function pcKur(es, oturum) {
 	es.olusturma = Date.now();
 	es.sorunBasi = Date.now();
 	es.uzakAkis = null;
+	es.pencere = [];
 	pc.onicecandidate = (e) => {
 		if (es.pc === pc && e.candidate) gonder({ type: 'ice', to: es.ad, ice: e.candidate, oturum: es.oturum });
 	};
 	pc.ontrack = (e) => {
-		if (es.pc === pc) uzakSesBagla(es, e.track);
+		if (es.pc !== pc) return;
+		const tur = izTuru(pc, e.transceiver, e.track);
+		if (tur === 'goruntu') uzakGoruntuBagla(es, e.track);
+		else if (tur === 'yayinSes') uzakYayinSesiBagla(es, e.track);
+		else uzakSesBagla(es, e.track);
 	};
 	pc.onconnectionstatechange = () => {
 		if (es.pc === pc) esDurumDegisti(es);
@@ -2043,11 +3046,28 @@ function pcKur(es, oturum) {
 		};
 		try {
 			es.tr = pc.addTransceiver(gidenIz || 'audio', { direction: 'sendrecv' });
+			const sesIz = es.izliyor ? yayinSesIzi() : null;
+			const goruntuIz = es.izliyor ? yayin.goruntu : null;
+			es.trSes = pc.addTransceiver(sesIz || 'audio', { direction: 'sendrecv' });
+			es.trGoruntu = pc.addTransceiver(goruntuIz || 'video', { direction: 'sendrecv' });
 		} catch (h) {
 			console.warn('ses kanalı açılamadı', h);
 		}
 	}
 	esIstatistikYaz(es, 'bağlanıyor…', '');
+}
+
+// Eş bağlantısındaki kanallar sırasıyla: 1. ses = mikrofon, 2. ses = yayın sesi, görüntü = ekran.
+// (Teklif edende ekleme sırası, yanıtlayanda teklifteki m-line sırası; ikisi aynıdır.)
+function kanallariBul(pc) {
+	const trler = pc.getTransceivers().filter((t) => t.receiver && t.receiver.track);
+	const sesler = trler.filter((t) => t.receiver.track.kind === 'audio');
+	return { mik: sesler[0] || null, ses: sesler[1] || null, goruntu: trler.find((t) => t.receiver.track.kind === 'video') || null };
+}
+function izTuru(pc, tr, iz) {
+	if (iz && iz.kind === 'video') return 'goruntu';
+	if (!tr) return 'mik';
+	return kanallariBul(pc).ses === tr ? 'yayinSes' : 'mik';
 }
 
 function pcAyari() {
@@ -2120,16 +3140,26 @@ async function sdpIsle(es, sdp, oturum) {
 		await es.pc.setRemoteDescription({ type: 'offer', sdp: opusAyarla(sdp.sdp) });
 		es.sonTeklif = sdp.sdp;
 		await adaylariUygula(es);
-		// Teklifin ses m-line'ına bağlanan kanal: yönü sendrecv yap ve gönderilecek izi bağla.
-		// ÖNEMLİ: izi bağlamadan yanıt üretilirse Firefox "recvonly" yanıt verip sesi tek yöne düşürüyor.
-		const tr = es.pc.getTransceivers().find((t) => t.receiver && t.receiver.track && t.receiver.track.kind === 'audio');
+		// Teklifin m-line'larına bağlanan kanallar: yönü sendrecv yap ve gönderilecek izleri bağla
+		// (mikrofon; yayın sürüyorsa ve o izliyorsa yayın sesi ve ekran). Eski sürüm istemcinin teklifinde
+		// yalnızca mikrofon kanalı vardır. ÖNEMLİ: izi bağlamadan yanıt üretilirse Firefox "recvonly"
+		// yanıt verip sesi tek yöne düşürüyor.
+		const k = kanallariBul(es.pc);
+		const tr = k.mik;
+		const bagla = async (t, iz) => {
+			try {
+				t.direction = 'sendrecv';
+			} catch {}
+			if (t.sender.track !== iz) await t.sender.replaceTrack(iz || null).catch(() => {});
+		};
 		if (tr) {
 			es.tr = tr;
-			try {
-				tr.direction = 'sendrecv';
-			} catch {}
-			if (tr.sender.track !== gidenIz) await tr.sender.replaceTrack(gidenIz || null).catch(() => {});
+			await bagla(tr, gidenIz);
 		}
+		es.trSes = k.ses;
+		es.trGoruntu = k.goruntu;
+		if (k.ses) await bagla(k.ses, es.izliyor ? yayinSesIzi() : null);
+		if (k.goruntu) await bagla(k.goruntu, es.izliyor ? yayin.goruntu : null);
 		const yanit = await es.pc.createAnswer();
 		await es.pc.setLocalDescription(yanit);
 		gonder({ type: 'sdp', to: es.ad, sdp: es.pc.localDescription, oturum: es.oturum });
@@ -2264,11 +3294,14 @@ function esDurumDegisti(es) {
 	if (d === 'connected') {
 		es.sorunBasi = 0;
 		es.kurtarma = 0;
+		es.baglandiZaman = Date.now();
 		bitHiziAyarla(es);
 		calmayiDene(es);
+		// Yayınını kapattığım kişiye (bağlantı yeniden kurulduysa) bunu yinele.
+		if (!es.izliyorum) gonder({ type: 'izle', to: es.ad, izle: false });
 	} else if (!es.sorunBasi) es.sorunBasi = Date.now();
 	if (d === 'failed') esIstatistikYaz(es, 'bağlantı koptu · yeniden deneniyor', 'kotu');
-	if (d === 'disconnected') esIstatistikYaz(es, 'bağlantı zayıf…', 'orta');
+	if (d === 'disconnected') esIstatistikYaz(es, 'bağlantı kesiliyor…', 'orta');
 	if (d === 'failed') kurtarmaTuru();
 	sesPaneliCiz();
 }
@@ -2347,63 +3380,91 @@ function gonderimHizi() {
 	return Math.round(Math.min(ayar.kalite, Math.max(40, 640 / n)));
 }
 
+// Yayın bit hızları (kbps), yayını izleyen kişi sayısına göre (mesh: her izleyiciye ayrı akış).
+// Müzik/bilgisayar sesi stereo ~160 kbps; ekran en fazla 2,5 Mbit/s, toplam ~6 Mbit/s'yi geçmez.
+const izleyiciSayisi = () => Math.max(1, [...esler.values()].filter((e) => !e.bekleniyor && e.izliyor).length);
+const yayinSesHizi = () => Math.round(Math.min(160, Math.max(64, 1280 / izleyiciSayisi())));
+const goruntuHizi = () => Math.round(Math.min(2500, Math.max(400, 6000 / izleyiciSayisi())));
+
 // Uzak SDP'deki Opus parametreleri: karşı tarafın "şöyle gönder" dediği değerler bizim
 // kodlayıcımızı ayarlar. maxaveragebitrate olmadan tarayıcılar ~32 kbps'de kalıyor (ölçüm: 28 kbps);
 // setParameters(maxBitrate) yalnızca Chrome'da işe yarıyor, bu yol Firefox/Safari'de de geçerli.
 // useinbandfec=1: kayıpta yedek veri; usedtx=0: sessizlikte kesip açma (cızırtı) yok.
+// Her ses m-line'ı ayrı ayarlanır: birincisi mikrofon (mono, konuşma), ikincisi yayın sesi (stereo,
+// müzik kalitesi). Eskiden SDP'nin tamamına tek ayar uygulanıyordu.
+const mikOpusu = () => ({ minptime: '10', useinbandfec: '1', usedtx: '0', stereo: '0', maxplaybackrate: '48000', maxaveragebitrate: String(gonderimHizi() * 1000) });
+const yayinOpusu = () => ({
+	minptime: '10',
+	useinbandfec: '1',
+	usedtx: '0',
+	stereo: '1',
+	'sprop-stereo': '1',
+	maxplaybackrate: '48000',
+	maxaveragebitrate: String(yayinSesHizi() * 1000),
+});
 function opusAyarla(sdp) {
 	if (typeof sdp !== 'string') return sdp;
 	try {
-		const satirlar = sdp.split(/\r?\n/);
-		const opus = [];
-		for (const s of satirlar) {
-			const m = /^a=rtpmap:(\d+) opus\/48000/i.exec(s);
-			if (m) opus.push(m[1]);
+		// Bölümler: oturum başı + her "m=" satırıyla başlayan medya bölümü.
+		const bolumler = [[]];
+		for (const s of sdp.split(/\r?\n/)) {
+			if (s.startsWith('m=')) bolumler.push([]);
+			bolumler[bolumler.length - 1].push(s);
 		}
-		if (!opus.length) return sdp;
-		const ek = {
-			minptime: '10',
-			useinbandfec: '1',
-			usedtx: '0',
-			stereo: '0',
-			maxplaybackrate: '48000',
-			maxaveragebitrate: String(gonderimHizi() * 1000),
-		};
-		for (const pt of opus) {
-			const bas = 'a=fmtp:' + pt + ' ';
-			const i = satirlar.findIndex((s) => s.startsWith(bas));
-			if (i >= 0) {
-				const p = new Map();
-				for (const parca of satirlar[i].slice(bas.length).split(';')) {
-					const x = parca.trim();
-					if (!x) continue;
-					const j = x.indexOf('=');
-					p.set(j < 0 ? x : x.slice(0, j), j < 0 ? '' : x.slice(j + 1));
-				}
-				for (const [k, v] of Object.entries(ek)) p.set(k, v);
-				satirlar[i] = bas + [...p].map(([k, v]) => (v === '' ? k : k + '=' + v)).join(';');
-			} else {
-				const r = satirlar.findIndex((s) => s.toLowerCase().startsWith('a=rtpmap:' + pt + ' opus/'));
-				satirlar.splice(r + 1, 0, bas + Object.entries(ek).map(([k, v]) => k + '=' + v).join(';'));
-			}
+		let sesSirasi = 0;
+		for (const b of bolumler) {
+			if (!b.length || !b[0].startsWith('m=audio')) continue;
+			opusBolumu(b, sesSirasi++ === 0 ? mikOpusu() : yayinOpusu());
 		}
-		return satirlar.join('\r\n');
+		return bolumler.flat().join('\r\n');
 	} catch {
 		return sdp;
 	}
 }
+function opusBolumu(satirlar, ek) {
+	const opus = [];
+	for (const s of satirlar) {
+		const m = /^a=rtpmap:(\d+) opus\/48000/i.exec(s);
+		if (m) opus.push(m[1]);
+	}
+	for (const pt of opus) {
+		const bas = 'a=fmtp:' + pt + ' ';
+		const i = satirlar.findIndex((s) => s.startsWith(bas));
+		if (i >= 0) {
+			const p = new Map();
+			for (const parca of satirlar[i].slice(bas.length).split(';')) {
+				const x = parca.trim();
+				if (!x) continue;
+				const j = x.indexOf('=');
+				p.set(j < 0 ? x : x.slice(0, j), j < 0 ? '' : x.slice(j + 1));
+			}
+			for (const [k, v] of Object.entries(ek)) p.set(k, v);
+			satirlar[i] = bas + [...p].map(([k, v]) => (v === '' ? k : k + '=' + v)).join(';');
+		} else {
+			const r = satirlar.findIndex((s) => s.toLowerCase().startsWith('a=rtpmap:' + pt + ' opus/'));
+			satirlar.splice(r + 1, 0, bas + Object.entries(ek).map(([k, v]) => k + '=' + v).join(';'));
+		}
+	}
+}
 
+// Gönderim tavanları: mikrofon, yayın sesi ve ekran ayrı ayrı (Chrome'da anında geçerli).
 async function bitHiziAyarla(es) {
 	const pc = es.pc;
 	if (!pc || pc.signalingState === 'closed') return;
-	const hiz = gonderimHizi() * 1000;
-	for (const s of pc.getSenders()) {
-		if (!s.track || s.track.kind !== 'audio') continue;
+	const ayarlar = [
+		[es.tr, gonderimHizi() * 1000, 0],
+		[es.trSes, yayinSesHizi() * 1000, 0],
+		[es.trGoruntu, goruntuHizi() * 1000, 30],
+	];
+	for (const [tr, hiz, kare] of ayarlar) {
+		const s = tr && tr.sender;
+		if (!s || !s.track) continue;
 		try {
 			const p = s.getParameters();
 			if (!p.encodings || !p.encodings.length) p.encodings = [{}];
-			if (p.encodings[0].maxBitrate === hiz) continue;
+			if (p.encodings[0].maxBitrate === hiz && (!kare || p.encodings[0].maxFramerate === kare)) continue;
 			p.encodings[0].maxBitrate = hiz;
+			if (kare) p.encodings[0].maxFramerate = kare;
 			await s.setParameters(p);
 		} catch {}
 	}
@@ -2433,12 +3494,52 @@ function uzakSesBagla(es, iz) {
 	});
 }
 
+// Eşin yayın sesi (müzik / bilgisayar sesi): mikrofondan ayrı bir <audio>, ayrı seviye.
+function uzakYayinSesiBagla(es, iz) {
+	if (!iz) return;
+	if (!es.yayinSesOgesi) {
+		const a = el('audio', 'ses-akis yayin-akis');
+		a.autoplay = true;
+		a.setAttribute('playsinline', '');
+		a.setAttribute('webkit-playsinline', '');
+		$('ses-akislari').append(a);
+		es.yayinSesOgesi = a;
+	}
+	try {
+		es.yayinSesOgesi.srcObject = new MediaStream([iz]);
+	} catch {
+		return;
+	}
+	esSesUygula(es);
+	calmayiDene(es);
+}
+
+// Eşin ekran görüntüsü: yayın kutucuğundaki <video>'ya bağlanır (görüntü gelince "bekleniyor" kalkar).
+function uzakGoruntuBagla(es, iz) {
+	if (!iz) return;
+	es.uzakGoruntu = iz;
+	iz.onmute = iz.onunmute = () => yayinlarCiz();
+	if (es.goruntuOgesi) {
+		try {
+			es.goruntuOgesi.srcObject = new MediaStream([iz]);
+		} catch {}
+	}
+	yayinlarCiz();
+}
+
+const gelenSesler = (es) => [es.ses, es.yayinSesOgesi].filter((a) => a && a.srcObject);
+
 function esSesUygula(es) {
 	if (!es.ses) return;
 	es.ses.muted = ayar.sagir || es.susturuldu;
 	es.ses.volume = Math.max(0, Math.min(1, es.seviye / 100));
-	if (ayar.cikisId && typeof es.ses.setSinkId === 'function' && es.ses.sinkId !== ayar.cikisId) {
-		es.ses.setSinkId(ayar.cikisId).catch(() => {});
+	if (es.yayinSesOgesi) {
+		// Yayın sesi: sağırken ya da yayını kapattıysan susar; mikrofondaki kişi susturması onu etkilemez.
+		es.yayinSesOgesi.muted = ayar.sagir || !es.izliyorum;
+		es.yayinSesOgesi.volume = Math.max(0, Math.min(1, es.yayinSeviye / 100));
+	}
+	for (const a of [es.ses, es.yayinSesOgesi]) {
+		if (a && ayar.cikisId && typeof a.setSinkId === 'function' && a.sinkId !== ayar.cikisId) a.setSinkId(ayar.cikisId).catch(() => {});
 	}
 	if (es.kutu) {
 		es.kutu.classList.toggle('susturuldu', es.susturuldu);
@@ -2450,14 +3551,13 @@ function esSesUygula(es) {
 
 // Tarayıcı sesi kendiliğinden başlatmazsa (Safari, telefon) görünen "Sesi başlat" düğmesi çıkar.
 function calmayiDene(es) {
-	if (!es.ses || !es.ses.srcObject) return;
-	oynat(es.ses)
-		.then(sesAcDugmesiGuncelle)
-		.catch(sesAcDugmesiGuncelle);
+	const liste = gelenSesler(es);
+	if (!liste.length) return;
+	Promise.all(liste.map((a) => oynat(a).catch(() => {}))).then(sesAcDugmesiGuncelle);
 }
 function sesAcDugmesiGuncelle() {
 	let bekleyen = 0;
-	for (const es of esler.values()) if (es.ses && es.ses.srcObject && es.ses.paused && !es.ses.muted) bekleyen++;
+	for (const es of esler.values()) for (const a of gelenSesler(es)) if (a.paused && !a.muted) bekleyen++;
 	$('ses-ac').hidden = !sesKanal || !bekleyen;
 }
 
@@ -2467,7 +3567,8 @@ function sesAcDugmesiGuncelle() {
 function sesleriAc() {
 	if (!sesKanal) return;
 	sesKilidiAc();
-	for (const es of esler.values()) if (es.ses && es.ses.srcObject && es.ses.paused && !es.ses.muted) oynat(es.ses).catch(() => {});
+	for (const es of esler.values()) for (const a of gelenSesler(es)) if (a.paused && !a.muted) oynat(a).catch(() => {});
+	for (const v of document.querySelectorAll('#yayinlar video')) if (v.paused && v.srcObject) oynat(v).catch(() => {});
 	setTimeout(sesAcDugmesiGuncelle, 300);
 }
 $('ses-ac').addEventListener('click', sesleriAc);
@@ -2482,7 +3583,7 @@ function sesUyandir() {
 	const iz = mikrofon && mikrofon.getAudioTracks()[0];
 	const mikMesgul = !mikrofon && (mikHatasi === 'Mikrofon başka bir uygulamada kullanılıyor' || mikHatasi === 'Mikrofon açılamadı');
 	if ((iz && iz.readyState === 'ended') || mikMesgul) mikrofonBitti();
-	for (const es of esler.values()) if (es.ses && es.ses.srcObject && es.ses.paused && !es.ses.muted) oynat(es.ses).catch(() => {});
+	for (const es of esler.values()) for (const a of gelenSesler(es)) if (a.paused && !a.muted) oynat(a).catch(() => {});
 	setTimeout(sesAcDugmesiGuncelle, 300);
 	kurtarmaTuru();
 }
@@ -2637,6 +3738,25 @@ function esDurumIkonlariCiz(es) {
 	es.durumIkon.title = d.sagir ? 'sağırlaştırılmış' : d.sessiz ? 'mikrofonu kapalı' : '';
 	es.kutu.classList.toggle('sessiz', !!(d.sessiz || d.sagir));
 	es.kutu.classList.toggle('askida', !!d.askida);
+	if (es.yayinRozeti) es.yayinRozeti.remove();
+	es.yayinRozeti = yayinRozeti(d);
+	if (es.yayinRozeti) es.durumIkon.after(es.yayinRozeti);
+}
+
+// Ekranını paylaşana "CANLI", müzik / bilgisayar sesi paylaşana nota.
+function yayinRozeti(d) {
+	if (d.ekran) {
+		const r = el('span', 'canli', 'CANLI');
+		r.title = 'Ekranını paylaşıyor';
+		return r;
+	}
+	if (d.yayinSes) {
+		const r = el('span', 'nota');
+		r.append(ikon('muzik'));
+		r.title = d.yayinBaslik ? 'Çalıyor: ' + d.yayinBaslik : 'Ses paylaşıyor';
+		return r;
+	}
+	return null;
 }
 
 function esIstatistikYaz(es, metin, sinif) {
@@ -2723,32 +3843,608 @@ function sesKartiOzetCiz() {
 }
 
 // Sol alttaki ses bağlantısı paneli: genel durum (bağlanıyor / bağlı / zayıf / sunucu koptu).
+// "Bağlantı zayıf" (kırmızı) yalnızca HERKESTEN gelen ses gerçekten bozulduğunda (sorun büyük
+// olasılıkla bizim bağlantımızda) ya da mikrofonumuz gitmiyorsa çıkar. Tek bir kişinin bağlantısı
+// kötüyse panel yeşil kalır, alt satırda ve o kişinin kutusunda belirtilir.
+let sonOzet = null;
 function sesPaneliCiz(ozet) {
 	if (!sesKanal) return;
+	if (ozet) sonOzet = ozet;
+	else ozet = sonOzet;
 	const panel = $('ses-baglanti');
 	const sinyal = $('ses-sinyal');
 	let durumMetni = 'Ses bağlı';
 	let sinif = '';
+	let ek = ozet && ozet.metin ? ozet.metin : '';
 	const durumlar = [...esler.values()].filter((e) => e.pc).map((e) => e.pc.connectionState);
+	const kotuler = ozet ? ozet.kotu.filter((ad) => esler.has(ad)) : [];
+	const ortalar = ozet ? ozet.orta.filter((ad) => esler.has(ad)) : [];
 	if (!bagliyim) {
 		durumMetni = 'Sunucuya yeniden bağlanılıyor';
 		sinif = 'orta';
 	} else if (durumlar.some((d) => d !== 'connected')) {
 		durumMetni = durumlar.some((d) => d === 'connected') ? 'Bazı bağlantılar kuruluyor' : 'Ses bağlanıyor…';
 		sinif = 'bekliyor';
-	} else if (ozet && ozet.kotu) {
+	} else if (ozet && ozet.mikSorun) {
+		durumMetni = 'Mikrofonun gitmiyor';
+		sinif = 'kotu';
+	} else if (ozet && ozet.olculen && kotuler.length >= ozet.olculen) {
 		durumMetni = 'Bağlantı zayıf';
 		sinif = 'kotu';
-	} else if (ozet && ozet.orta) {
+	} else if (ozet && ozet.olculen && kotuler.length + ortalar.length >= ozet.olculen) {
 		durumMetni = 'Ses bağlı · dalgalı';
 		sinif = 'orta';
+	} else if (kotuler.length) {
+		ek = `${kotuler.join(', ')}: bağlantısı zayıf`;
 	}
 	$('ses-baglanti-durum').textContent = durumMetni;
 	panel.classList.toggle('orta', sinif === 'orta' || sinif === 'bekliyor');
 	panel.classList.toggle('kotu', sinif === 'kotu');
 	sinyal.className = 'sinyal' + (sinif ? ' ' + sinif : '');
-	$('ses-baglanti-kanal').textContent = kanalAdi(sesKanal) + (ozet && ozet.metin ? ' · ' + ozet.metin : '');
+	$('ses-baglanti-kanal').textContent = kanalAdi(sesKanal) + (ek ? ' · ' + ek : '');
 }
+
+// ---------------------------------------------------------------- yayın: ekran, bilgisayar sesi, müzik
+//
+// Sesli kanaldaki her eş bağlantısında mikrofonun yanında iki kanal önceden açıktır: yayın sesi
+// (stereo, müzik kalitesinde) ve görüntü. Paylaşım başlayınca/bitince bu kanallara yalnızca iz
+// takılır (yeniden anlaşma yok, konuşma kesilmez). Ekranı ve bilgisayar/sekme sesini tarayıcının
+// ekran paylaşımı verir; bu yalnızca masaüstünde var: telefon tarayıcıları (Android, iOS) ekranı da
+// telefonun sesini de yakalayamaz. Telefondaki karşılığı "Müzik çal": cihazdaki müzik dosyaları
+// çalınır ve kanala yayınlanır. Yayını istemeyen kapatır; ona görüntü ve yayın sesi gönderilmez.
+
+const yayin = { goruntu: null, ekranSesi: null, muzik: null };
+const yayinSesIzi = () => (yayin.muzik ? yayin.muzik.iz : yayin.ekranSesi) || null;
+const yayinVar = () => !!(yayin.goruntu || yayinSesIzi());
+// Telefon: tarayıcı kimliği ya da fare olmayan, kısa kenarı dar dokunmatik ekran ("masaüstü sitesi"
+// kipindeki telefon da getDisplayMedia'yı gösterir ama hep reddeder).
+const telefonMu = () =>
+	/Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent || '') ||
+	!!(navigator.userAgentData && navigator.userAgentData.mobile) ||
+	(medyaSorgu('(pointer: coarse)') && medyaSorgu('(hover: none)') && Math.min(screen.width || 0, screen.height || 0) < 600);
+const ekranPaylasilabilir = () => !!(navigator.mediaDevices && typeof navigator.mediaDevices.getDisplayMedia === 'function') && !telefonMu();
+function muzikCalinabilir() {
+	const Yapici = window.AudioContext || window.webkitAudioContext;
+	return !!(Yapici && Yapici.prototype && 'createMediaStreamDestination' in Yapici.prototype && 'createMediaElementSource' in Yapici.prototype);
+}
+
+function muzikBasligi() {
+	const mz = yayin.muzik;
+	if (!mz || mz.sira < 0 || mz.sira >= mz.liste.length) return '';
+	return String(mz.liste[mz.sira].name || 'parça').replace(/\.[a-z0-9]{2,5}$/i, '');
+}
+function yayinBayraklari() {
+	return { ekran: !!yayin.goruntu, yayinSes: !!yayinSesIzi(), yayinBaslik: yayin.muzik ? muzikBasligi() : '' };
+}
+function yayinBildir() {
+	if (!sesKanal) return;
+	const b = yayinBayraklari();
+	gonder({ type: 'yayin', ekran: b.ekran, ses: b.yayinSes, baslik: b.yayinBaslik });
+}
+
+// Yayın izlerini eşin kanallarına tak (yayınımı kapatmış olana boş).
+function yayinIzleriniBagla(es) {
+	if (!es.pc || es.pc.signalingState === 'closed') return;
+	const ses = es.izliyor ? yayinSesIzi() : null;
+	const goruntu = es.izliyor ? yayin.goruntu : null;
+	const isler = [];
+	if (es.trSes && es.trSes.sender.track !== ses) isler.push(es.trSes.sender.replaceTrack(ses).catch((h) => console.warn('yayın sesi bağlanamadı', es.ad, h)));
+	if (es.trGoruntu && es.trGoruntu.sender.track !== goruntu) isler.push(es.trGoruntu.sender.replaceTrack(goruntu).catch((h) => console.warn('görüntü bağlanamadı', es.ad, h)));
+	if (isler.length) Promise.all(isler).then(() => bitHiziAyarla(es));
+}
+function yayinDegisti() {
+	for (const es of esler.values()) yayinIzleriniBagla(es);
+	bitHizlariniAyarla();
+	yayinBildir();
+	yayinlarCiz();
+	yayinMenusuCiz();
+}
+
+async function ekranPaylas(yalnizSes) {
+	yayinMenuKapat();
+	if (!sesKanal) return durum('Önce bir sesli kanala gir.', true);
+	if (!ekranPaylasilabilir()) return durum('Bu cihazda ekran ve sistem sesi paylaşılamıyor (telefon tarayıcıları desteklemiyor); müzik dosyası çalabilirsin.', true);
+	const destek = (navigator.mediaDevices.getSupportedConstraints && navigator.mediaDevices.getSupportedConstraints()) || {};
+	// Bilgisayar sesi işlenmeden gitsin (yankı/gürültü giderme müziği bozar). restrictOwnAudio: bu
+	// sekmenin kendi sesi (kanaldakilerin konuşması) yakalanan sistem sesine karışmasın (yankı olmasın).
+	const sesKisiti = { echoCancellation: false, noiseSuppression: false, autoGainControl: false };
+	if (destek.suppressLocalAudioPlayback) sesKisiti.suppressLocalAudioPlayback = false;
+	if (destek.restrictOwnAudio) sesKisiti.restrictOwnAudio = true;
+	let akis;
+	const istekZamani = Date.now();
+	try {
+		akis = await navigator.mediaDevices.getDisplayMedia({
+			video: { frameRate: { ideal: 30, max: 30 }, width: { max: 1920 }, height: { max: 1080 } },
+			audio: sesKisiti,
+			systemAudio: 'include', // Chrome: "tüm ekran" seçilince sistem sesini paylaşma seçeneği
+			selfBrowserSurface: 'exclude', // Diszort sekmesinin kendisi seçenek olmasın
+			surfaceSwitching: 'include',
+		});
+	} catch (h) {
+		// Seçim penceresi açılmadan hemen reddedildiyse cihaz/tarayıcı izin vermiyor; yoksa kullanıcı vazgeçti.
+		if (h && (h.name === 'NotAllowedError' || h.name === 'AbortError')) {
+			if (Date.now() - istekZamani < 400) durum('Bu tarayıcı ya da cihaz ekran paylaşımına izin vermiyor.', true);
+			return;
+		}
+		return durum('Paylaşım başlatılamadı: ' + ((h && h.message) || h), true);
+	}
+	if (!sesKanal) return akis.getTracks().forEach((t) => t.stop());
+	const goruntu = akis.getVideoTracks()[0] || null;
+	const ses = akis.getAudioTracks()[0] || null;
+	if (yalnizSes) {
+		if (goruntu) goruntu.stop();
+		if (!ses) return durum('Ses paylaşılmadı: seçim penceresinde ses paylaşımını ("sistem sesini paylaş" / "sekme sesini paylaş") açman gerekiyor.', true);
+		ekranSesiAyarla(ses);
+		durum('Bilgisayar sesi paylaşılıyor. Hoparlörden dinliyorsan mikrofonun da bu sesi alır; kulaklık kullan.');
+	} else {
+		goruntuAyarla(goruntu);
+		if (ses) ekranSesiAyarla(ses);
+		durum(ses ? 'Ekranın ve sesi paylaşılıyor.' : 'Ekranın paylaşılıyor (ses yok: seçerken sesi de paylaşabilirsin).');
+	}
+	yayinDegisti();
+}
+
+function goruntuAyarla(iz) {
+	if (yayin.goruntu && yayin.goruntu !== iz) yayin.goruntu.stop();
+	yayin.goruntu = iz || null;
+	if (!iz) return;
+	try {
+		iz.contentHint = 'motion'; // oyun/video: akıcılık öncelikli
+	} catch {}
+	// Tarayıcının "Paylaşımı durdur" çubuğuyla bitirilirse.
+	iz.addEventListener('ended', () => {
+		if (yayin.goruntu !== iz) return;
+		yayin.goruntu = null;
+		yayinDegisti();
+	});
+}
+function ekranSesiAyarla(iz) {
+	if (yayin.ekranSesi && yayin.ekranSesi !== iz) yayin.ekranSesi.stop();
+	yayin.ekranSesi = iz || null;
+	if (!iz) return;
+	if (yayin.muzik) muzikDurdur(false); // aynı anda tek yayın sesi
+	try {
+		iz.contentHint = 'music';
+	} catch {}
+	iz.addEventListener('ended', () => {
+		if (yayin.ekranSesi !== iz) return;
+		yayin.ekranSesi = null;
+		yayinDegisti();
+	});
+}
+
+// Paylaşımı bitir. bildir=false: sesli kanaldan çıkılırken (eşler zaten kapandı).
+function yayinDurdur(bildir = true) {
+	goruntuAyarla(null);
+	ekranSesiAyarla(null);
+	muzikDurdur(false);
+	if (bildir) yayinDegisti();
+	else {
+		yayinlarCiz();
+		yayinMenusuCiz();
+	}
+	// Bir sonraki yayın herkese yine kendiliğinden gitsin.
+	for (const es of esler.values()) es.izliyor = true;
+}
+
+// --- müzik çalar: dosyalar bu cihazda çalınır; ses hem kendi hoparlörüne hem kanala (stereo) gider.
+
+$('muzik-dosya').addEventListener('change', () => {
+	const liste = [...($('muzik-dosya').files || [])];
+	$('muzik-dosya').value = '';
+	muzikEkle(liste);
+});
+
+function muzikEkle(dosyalar) {
+	const liste = (dosyalar || []).filter((f) => f && (/^audio\//.test(f.type || '') || /\.(mp3|m4a|aac|ogg|oga|opus|wav|flac|webm)$/i.test(f.name || '')));
+	if (!liste.length) return durum('Müzik dosyası seçilmedi.', true);
+	if (!sesKanal) return durum('Önce bir sesli kanala gir.', true);
+	const ac = sesBaglami();
+	if (!ac || !muzikCalinabilir()) return durum('Bu tarayıcı müzik paylaşamıyor.', true);
+	let mz = yayin.muzik;
+	if (!mz) {
+		const oge = el('audio');
+		oge.preload = 'auto';
+		let kaynak;
+		let hedef;
+		let yerel;
+		try {
+			kaynak = ac.createMediaElementSource(oge);
+			hedef = ac.createMediaStreamDestination();
+			yerel = ac.createGain();
+			yerel.gain.value = ayar.muzikYerel / 100;
+			kaynak.connect(hedef);
+			kaynak.connect(yerel);
+			yerel.connect(ac.destination);
+		} catch (h) {
+			return durum('Müzik başlatılamadı: ' + ((h && h.message) || h), true);
+		}
+		const iz = hedef.stream.getAudioTracks()[0];
+		try {
+			iz.contentHint = 'music';
+		} catch {}
+		if (yayin.ekranSesi) ekranSesiAyarla(null);
+		mz = yayin.muzik = { oge, kaynak, hedef, yerel, iz, liste: [], sira: -1, url: '' };
+		oge.addEventListener('ended', () => yayin.muzik === mz && muzikSonraki());
+		oge.addEventListener('timeupdate', () => yayin.muzik === mz && muzikIlerlemesiCiz());
+		oge.addEventListener('play', () => yayinlarCiz());
+		oge.addEventListener('pause', () => yayinlarCiz());
+		oge.addEventListener('error', () => {
+			if (yayin.muzik !== mz || !mz.url) return;
+			durum(`${muzikBasligi()} çalınamadı; sıradakine geçiliyor.`, true);
+			muzikSonraki();
+		});
+	}
+	const ilkYeni = mz.liste.length;
+	mz.liste.push(...liste);
+	if (mz.sira < 0) muzikCal(ilkYeni);
+	else durum(liste.length > 1 ? `${liste.length} parça sıraya eklendi.` : 'Parça sıraya eklendi.');
+	yayinDegisti();
+}
+
+function muzikCal(i) {
+	const mz = yayin.muzik;
+	if (!mz) return;
+	if (i >= mz.liste.length) {
+		durum('Çalma listesi bitti.');
+		return muzikDurdur(true);
+	}
+	if (mz.url) URL.revokeObjectURL(mz.url);
+	mz.sira = Math.max(0, i);
+	mz.url = URL.createObjectURL(mz.liste[mz.sira]);
+	mz.oge.src = mz.url;
+	sesBaglami();
+	oynat(mz.oge).catch(() => durum('Çalmak için ▶ düğmesine dokun.'));
+	yayinBildir(); // çalan parçanın adı
+	yayinlarCiz();
+}
+const muzikSonraki = () => yayin.muzik && muzikCal(yayin.muzik.sira + 1);
+function muzikDuraklat() {
+	const mz = yayin.muzik;
+	if (!mz) return;
+	if (mz.oge.paused) {
+		sesBaglami();
+		oynat(mz.oge).catch(() => {});
+	} else mz.oge.pause();
+}
+function muzikDurdur(bildir = true) {
+	const mz = yayin.muzik;
+	if (!mz) return;
+	yayin.muzik = null;
+	try {
+		mz.oge.pause();
+		mz.oge.removeAttribute('src');
+		mz.oge.load();
+	} catch {}
+	try {
+		mz.kaynak.disconnect();
+		mz.yerel.disconnect();
+	} catch {}
+	try {
+		mz.iz.stop();
+	} catch {}
+	if (mz.url) URL.revokeObjectURL(mz.url);
+	if (bildir) yayinDegisti();
+}
+
+// --- izleme: başkasının yayınını kapat / yeniden aç
+
+function izlemeAyarla(es, izle) {
+	es.izliyorum = !!izle;
+	gonder({ type: 'izle', to: es.ad, izle: es.izliyorum });
+	esSesUygula(es);
+	yayinlarCiz();
+}
+function izleGeldi(ad, izle) {
+	const es = esler.get(ad);
+	if (!es) return;
+	es.izliyor = izle;
+	yayinIzleriniBagla(es);
+	bitHizlariniAyarla();
+	yayinlarCiz(); // izleyen sayısı
+}
+// Kanaldakilerin yayın durumu değişti (sunucudan). Biten yayından sonra bir sonraki yine
+// kendiliğinden izlenir; ekran paylaşımı başlayınca haber verilir.
+function yayinDurumlariDegisti(onceki) {
+	if (!sesKanal) return;
+	for (const es of esler.values()) {
+		const o = onceki.get(es.ad) || {};
+		const s = sesDurumlari.get(es.ad) || {};
+		const vardi = !!(o.ekran || o.yayinSes);
+		const simdi = !!(s.ekran || s.yayinSes);
+		if (vardi && !simdi && !es.izliyorum) {
+			es.izliyorum = true;
+			esSesUygula(es);
+		}
+		if (!vardi && simdi && !es.izliyorum) gonder({ type: 'izle', to: es.ad, izle: false });
+		if (!o.ekran && s.ekran) durum(`${es.ad} ekranını paylaşıyor.`);
+		else if (!o.yayinSes && s.yayinSes && !s.ekran) durum(`${es.ad} ${s.yayinBaslik ? 'müzik çalıyor' : 'bilgisayar sesini paylaşıyor'}.`);
+	}
+}
+
+// --- yayın kutucukları (ses kartında): kendi yayınım + izlediğim/dinlediğim yayınlar. Kartlar
+// anahtarla tutulur, her çizimde yeniden yaratılmaz (oynayan görüntü ve sürüklenen kaydırıcı bozulmasın).
+
+const yayinKartlari = new Map(); // anahtar -> { kok, guncelle }
+function yayinlarCiz() {
+	const kap = $('yayinlar');
+	if (!kap) return;
+	const istenen = [];
+	if (sesKanal) {
+		if (yayinVar()) istenen.push(['ben', null]);
+		for (const es of esler.values()) {
+			const d = sesDurumlari.get(es.ad);
+			if (!d) continue;
+			if (d.ekran) istenen.push(['ekran:' + es.ad, es]);
+			else if (d.yayinSes) istenen.push(['ses:' + es.ad, es]);
+		}
+	}
+	const anahtarlar = new Set(istenen.map(([a]) => a));
+	for (const [a, k] of yayinKartlari) {
+		if (anahtarlar.has(a)) continue;
+		k.kok.remove();
+		yayinKartlari.delete(a);
+	}
+	istenen.forEach(([a, es], i) => {
+		let k = yayinKartlari.get(a);
+		if (!k || (es && k.es !== es)) {
+			if (k) k.kok.remove();
+			k = a === 'ben' ? benimYayinKarti() : a.startsWith('ekran:') ? ekranKarti(es) : sesYayinKarti(es);
+			yayinKartlari.set(a, k);
+		}
+		if (kap.children[i] !== k.kok) kap.insertBefore(k.kok, kap.children[i] || null);
+		k.guncelle();
+	});
+	kap.hidden = !istenen.length;
+}
+
+function videoYap(sinif) {
+	const v = el('video', 'yayin-video' + (sinif ? ' ' + sinif : ''));
+	v.autoplay = true;
+	v.muted = true; // yayının sesi ayrı kanaldan gelir
+	v.playsInline = true;
+	v.setAttribute('playsinline', '');
+	return v;
+}
+function videoyaBagla(v, iz) {
+	const mevcut = v.srcObject && typeof v.srcObject.getVideoTracks === 'function' ? v.srcObject.getVideoTracks()[0] : null;
+	if (!iz) {
+		if (v.srcObject) v.srcObject = null;
+		return;
+	}
+	if (mevcut !== iz) {
+		try {
+			v.srcObject = new MediaStream([iz]);
+		} catch {}
+	}
+	if (v.paused) oynat(v).catch(() => {});
+}
+function tamEkran(kap, v) {
+	if (document.fullscreenElement) return document.exitFullscreen().catch(() => {});
+	if (kap.requestFullscreen) kap.requestFullscreen().catch(() => v && v.webkitEnterFullscreen && v.webkitEnterFullscreen());
+	else if (v && v.webkitEnterFullscreen) v.webkitEnterFullscreen(); // iPhone
+}
+function ikonDugmesi(ad, baslik, fn, sinif = '') {
+	const d = el('button', 'ikon-dugme' + (sinif ? ' ' + sinif : ''));
+	d.type = 'button';
+	d.title = baslik;
+	d.setAttribute('aria-label', baslik);
+	d.append(ikon(ad));
+	d.onclick = fn;
+	return d;
+}
+function seviyeKaydirici(baslik, deger, fn) {
+	const s = el('input', 'yayin-seviye');
+	Object.assign(s, { type: 'range', min: 0, max: 100, step: 1 });
+	s.value = String(deger);
+	s.title = baslik;
+	s.setAttribute('aria-label', baslik);
+	s.oninput = () => fn(Number(s.value));
+	return s;
+}
+
+function ekranKarti(es) {
+	const kok = el('div', 'yayin-kart ekran');
+	const ust = el('div', 'yayin-ust');
+	const ad = el('b', null, es.ad);
+	const aciklama = el('span', 'yayin-aciklama');
+	const seviye = seviyeKaydirici('Yayın sesi (yalnızca sende)', es.yayinSeviye, (n) => {
+		es.yayinSeviye = n;
+		depoYaz('yayin-seviye-' + es.ad, n);
+		esSesUygula(es);
+	});
+	const sahne = el('div', 'yayin-sahne');
+	const video = es.goruntuOgesi || (es.goruntuOgesi = videoYap());
+	const bekle = el('div', 'yayin-bekle', 'Görüntü bekleniyor…');
+	sahne.append(video, bekle);
+	sahne.addEventListener('dblclick', () => tamEkran(sahne, video));
+	const tam = ikonDugmesi('tam-ekran', 'Tam ekran', () => tamEkran(sahne, video));
+	const izle = el('button', 'yayin-dugme');
+	izle.type = 'button';
+	izle.onclick = () => izlemeAyarla(es, !es.izliyorum);
+	ust.append(el('span', 'canli', 'CANLI'), ad, aciklama, el('span', 'bosluk'), seviye, tam, izle);
+	kok.append(ust, sahne);
+	const guncelle = () => {
+		const d = sesDurumlari.get(es.ad) || {};
+		const izliyorum = es.izliyorum;
+		aciklama.textContent = d.yayinBaslik ? ` ekranını paylaşıyor · çalıyor: ${d.yayinBaslik}` : d.yayinSes ? ' ekranını ve sesini paylaşıyor' : ' ekranını paylaşıyor';
+		sahne.hidden = !izliyorum;
+		tam.hidden = !izliyorum;
+		seviye.hidden = !izliyorum || !d.yayinSes;
+		izle.textContent = izliyorum ? 'Kapat' : 'İzle';
+		izle.title = izliyorum ? 'Yayını kapat (sana gönderilmez, bant genişliği harcanmaz)' : 'Yayını izle';
+		videoyaBagla(video, izliyorum ? es.uzakGoruntu : null);
+		bekle.hidden = !!(es.uzakGoruntu && !es.uzakGoruntu.muted && es.uzakGoruntu.readyState === 'live');
+	};
+	return { kok, guncelle, es };
+}
+
+function sesYayinKarti(es) {
+	const kok = el('div', 'yayin-kart ses');
+	const nota = el('span', 'yayin-nota');
+	nota.append(ikon('muzik'));
+	const metin = el('span', 'yayin-metin');
+	const seviye = seviyeKaydirici('Yayın sesi (yalnızca sende)', es.yayinSeviye, (n) => {
+		es.yayinSeviye = n;
+		depoYaz('yayin-seviye-' + es.ad, n);
+		esSesUygula(es);
+	});
+	const dinle = el('button', 'yayin-dugme');
+	dinle.type = 'button';
+	dinle.onclick = () => izlemeAyarla(es, !es.izliyorum);
+	kok.append(nota, metin, seviye, dinle);
+	const guncelle = () => {
+		const d = sesDurumlari.get(es.ad) || {};
+		metin.replaceChildren(el('b', null, es.ad), document.createTextNode(d.yayinBaslik ? ' çalıyor: ' : ' bilgisayar sesini paylaşıyor'));
+		if (d.yayinBaslik) metin.append(el('i', null, d.yayinBaslik));
+		seviye.hidden = !es.izliyorum;
+		dinle.textContent = es.izliyorum ? 'Kapat' : 'Dinle';
+		kok.classList.toggle('kapali', !es.izliyorum);
+	};
+	return { kok, guncelle, es };
+}
+
+let muzikOgeleri = null; // müzik çaların ilerleme öğeleri (timeupdate'te güncellenir)
+function benimYayinKarti() {
+	const kok = el('div', 'yayin-kart ben');
+	const ust = el('div', 'yayin-ust');
+	const metin = el('span', 'yayin-metin');
+	const durdur = el('button', 'yayin-dugme tehlike', 'Durdur');
+	durdur.type = 'button';
+	durdur.onclick = () => yayinDurdur(true);
+	ust.append(metin, el('span', 'bosluk'), durdur);
+	const onizleme = videoYap('kucuk-onizleme');
+
+	// Müzik çalar
+	const calar = el('div', 'muzik-calar');
+	const baslik = el('b', 'muzik-baslik');
+	const sira = el('small', 'muzik-sira');
+	const oynatD = ikonDugmesi('oynat', 'Çal / duraklat', muzikDuraklat);
+	const sonrakiD = ikonDugmesi('sonraki', 'Sonraki parça', () => muzikSonraki());
+	const ilerleme = el('input', 'muzik-ilerleme');
+	Object.assign(ilerleme, { type: 'range', min: 0, max: 1000, step: 1, value: 0 });
+	ilerleme.setAttribute('aria-label', 'Parçada ilerle');
+	ilerleme.addEventListener('pointerdown', () => (ilerleme.dataset.suruyor = '1'));
+	ilerleme.addEventListener('pointerup', () => delete ilerleme.dataset.suruyor);
+	ilerleme.addEventListener('change', () => {
+		delete ilerleme.dataset.suruyor;
+		const mz = yayin.muzik;
+		if (mz && Number.isFinite(mz.oge.duration)) mz.oge.currentTime = (Number(ilerleme.value) / 1000) * mz.oge.duration;
+	});
+	const zaman = el('small', 'muzik-zaman');
+	const yerel = seviyeKaydirici('Kendi hoparlöründe seviye (başkalarına gideni değiştirmez)', ayar.muzikYerel, (n) => {
+		ayar.muzikYerel = n;
+		ayarKaydet();
+		if (yayin.muzik) yayin.muzik.yerel.gain.value = n / 100;
+	});
+	const ekle = ikonDugmesi('arti', 'Parça ekle', () => $('muzik-dosya').click());
+	const ustSatir = el('div', 'muzik-ust');
+	ustSatir.append(baslik, sira);
+	const denetim = el('div', 'muzik-denetim');
+	denetim.append(oynatD, sonrakiD, ilerleme, zaman, yerel, ekle);
+	calar.append(ustSatir, denetim);
+	kok.append(ust, onizleme, calar);
+	muzikOgeleri = { ilerleme, zaman };
+
+	const guncelle = () => {
+		const izleyen = [...esler.values()].filter((e) => !e.bekleniyor && e.izliyor).length;
+		const ne = yayin.goruntu ? (yayinSesIzi() ? (yayin.muzik ? 'Ekranını paylaşıyor ve müzik çalıyorsun' : 'Ekranını ve sesini paylaşıyorsun') : 'Ekranını paylaşıyorsun') : yayin.ekranSesi ? 'Bilgisayar sesini paylaşıyorsun' : 'Müzik çalıyorsun';
+		metin.textContent = ne + (esler.size ? ` · ${izleyen}/${esler.size} kişiye gidiyor` : ' · kanalda yalnızsın');
+		onizleme.hidden = !yayin.goruntu;
+		videoyaBagla(onizleme, yayin.goruntu);
+		const mz = yayin.muzik;
+		calar.hidden = !mz;
+		if (mz) {
+			baslik.textContent = muzikBasligi() || '—';
+			sira.textContent = `${mz.sira + 1}/${mz.liste.length}`;
+			ikonKoy(oynatD, mz.oge.paused ? 'oynat' : 'duraklat');
+			oynatD.title = mz.oge.paused ? 'Çal' : 'Duraklat';
+			sonrakiD.disabled = mz.sira + 1 >= mz.liste.length;
+			muzikIlerlemesiCiz();
+		}
+	};
+	return { kok, guncelle, es: null };
+}
+function muzikIlerlemesiCiz() {
+	const mz = yayin.muzik;
+	if (!mz || !muzikOgeleri) return;
+	const { ilerleme, zaman } = muzikOgeleri;
+	const sure = mz.oge.duration;
+	if (!ilerleme.dataset.suruyor) ilerleme.value = String(Number.isFinite(sure) && sure > 0 ? Math.round((mz.oge.currentTime / sure) * 1000) : 0);
+	zaman.textContent = sureYaz(mz.oge.currentTime) + (Number.isFinite(sure) ? ' / ' + sureYaz(sure) : '');
+}
+
+// --- paylaşım menüsü (ses kartındaki yayın düğmesi)
+
+function yayinMenusuCiz() {
+	const m = $('yayin-menu');
+	const d = $('yayin-ac');
+	d.classList.toggle('secili', yayinVar());
+	if (m.hidden) return;
+	m.replaceChildren();
+	const ekle = (ikonAd, metin, fn, kapali = false) => {
+		const o = el('button', 'yayin-menu-oge');
+		o.type = 'button';
+		o.setAttribute('role', 'menuitem');
+		o.disabled = kapali;
+		o.append(ikon(ikonAd), el('span', null, metin));
+		o.onclick = () => {
+			yayinMenuKapat();
+			fn();
+		};
+		m.append(o);
+	};
+	const masaustu = ekranPaylasilabilir();
+	if (masaustu) {
+		if (yayin.goruntu)
+			ekle('dur', 'Ekran paylaşımını durdur', () => {
+				goruntuAyarla(null);
+				yayinDegisti();
+			});
+		else ekle('ekran', 'Ekranını paylaş', () => ekranPaylas(false));
+		if (yayin.ekranSesi)
+			ekle('dur', 'Bilgisayar sesini durdur', () => {
+				ekranSesiAyarla(null);
+				yayinDegisti();
+			});
+		else ekle('hoparlor', 'Bilgisayar sesini paylaş', () => ekranPaylas(true));
+	}
+	if (yayin.muzik) ekle('dur', 'Müziği durdur', () => muzikDurdur(true));
+	else ekle('muzik', 'Müzik çal (dosyadan)', () => $('muzik-dosya').click(), !muzikCalinabilir());
+	if (yayinVar()) ekle('x', 'Tüm paylaşımı durdur', () => yayinDurdur(true));
+	m.append(
+		el(
+			'p',
+			'yayin-menu-not',
+			masaustu
+				? 'Birlikte müzik: Spotify/YouTube çalan sekmeyi ya da (Windows) tüm ekranı seç ve sesi de paylaş. Ses stereo ve yüksek kalitede gider.'
+				: 'Telefon tarayıcıları ekranı ve telefonun sesini paylaşamaz; cihazındaki müzik dosyalarını çalabilirsin. Bilgisayardan paylaşılanları buradan izleyip dinleyebilirsin.',
+		),
+	);
+}
+function yayinMenuKapat() {
+	$('yayin-menu').hidden = true;
+	$('yayin-ac').setAttribute('aria-expanded', 'false');
+}
+// Menü ses kartının dışına taşabilir (kart overflow:hidden): ekrana göre konumlanır.
+$('yayin-ac').addEventListener('click', (e) => {
+	e.stopPropagation();
+	const m = $('yayin-menu');
+	if (!m.hidden) return yayinMenuKapat();
+	m.hidden = false;
+	$('yayin-ac').setAttribute('aria-expanded', 'true');
+	yayinMenusuCiz();
+	const r = $('yayin-ac').getBoundingClientRect();
+	const genislik = Math.min(300, window.innerWidth - 16);
+	m.style.width = genislik + 'px';
+	m.style.left = Math.max(8, Math.min(window.innerWidth - genislik - 8, r.right - genislik)) + 'px';
+	const yukseklik = m.offsetHeight || 220;
+	const asagi = r.bottom + 6 + yukseklik <= window.innerHeight - 8;
+	m.style.top = (asagi ? r.bottom + 6 : Math.max(8, r.top - 6 - yukseklik)) + 'px';
+});
+document.addEventListener('click', (e) => {
+	if (!$('yayin-menu').hidden && !(e.target && e.target.closest && e.target.closest('.yayin-menu-kap'))) yayinMenuKapat();
+});
 
 // ---------------------------------------------------------------- bildirim sesleri
 
@@ -2796,16 +4492,14 @@ function sesGozcuBaslat() {
 		if (!sesKanal) return;
 		let bekleyen = 0;
 		for (const es of esler.values()) {
-			const a = es.ses;
-			if (!a || !a.srcObject || a.muted) {
+			const bekleyenler = gelenSesler(es).filter((a) => !a.muted && a.paused);
+			if (!bekleyenler.length) {
 				es.calmaDenemesi = 0;
 				continue;
 			}
-			if (a.paused) {
-				es.calmaDenemesi = (es.calmaDenemesi || 0) + 1;
-				if (es.calmaDenemesi >= 2) bekleyen++;
-				if (es.calmaDenemesi % 3 === 0) oynat(a).catch(() => {});
-			} else es.calmaDenemesi = 0;
+			es.calmaDenemesi = (es.calmaDenemesi || 0) + 1;
+			if (es.calmaDenemesi >= 2) bekleyen++;
+			if (es.calmaDenemesi % 3 === 0) for (const a of bekleyenler) oynat(a).catch(() => {});
 		}
 		$('ses-ac').hidden = !bekleyen;
 	}, 1000);
@@ -2815,8 +4509,22 @@ function sesGozcuDurdur() {
 	sesGozcu = null;
 }
 
-// Her eş için: bağlantı türü (P2P / TURN), gecikme, paket kaybı ve bit hızı (iki ölçüm arasındaki
+// Her eş için: bağlantı türü (P2P / TURN), gecikme, ses kalitesi ve bit hızı (iki ölçüm arasındaki
 // farktan; kümülatif oran eski kayıpları sonsuza dek taşıdığı için yanıltıcı).
+//
+// Ses kalitesi: eskiden tek bir 2 saniyelik ölçümde %5 paket kaybı görülünce "Bağlantı zayıf"
+// (kırmızı) deniyordu. Opus'un yedek verisi (FEC) ve kayıp gizleme bu kadar kısa kayıpları duyulmaz
+// kılar: ses iyiyken uyarı çıkıyordu. Şimdi DUYULAN bozulma ölçülür: alıcının kayıp yüzünden
+// uydurmak zorunda kaldığı ses (concealedSamples; sessiz olanlar hariç) son ~10 saniyede toplam sesin
+// ne kadarı? (Bu ölçü yoksa — eski tarayıcı — 10 sn'lik kayıp oranı.) Bağlantı yeni kurulduysa ya da
+// karşı taraf ses göndermiyorsa karar verilmez. Yalnızca mikrofon kanalının istatistikleri kullanılır
+// (yayın sesi ve görüntü ayrı kanallardadır; eskiden "son ses kaydı" hangisiyse o okunuyordu).
+const KALITE_PENCERESI = 5; // ölçüm (2 sn'de bir) → ~10 sn
+const GIZLEME_ORTA = 0.03;
+const GIZLEME_KOTU = 0.1;
+const KAYIP_ORTA = 0.04;
+const KAYIP_KOTU = 0.12;
+
 let istatistikZamanlayici = null;
 function istatistikBaslat() {
 	if (!istatistikZamanlayici) istatistikZamanlayici = setInterval(istatistikTuru, 2000);
@@ -2825,36 +4533,92 @@ function istatistikDurdur() {
 	clearInterval(istatistikZamanlayici);
 	istatistikZamanlayici = null;
 }
+
+// RTCRtpReceiver/Sender.getStats yalnızca o kanalın raporunu verir (yoksa bağlantınınki).
+async function kanalRaporu(nesne, pc) {
+	try {
+		if (nesne && typeof nesne.getStats === 'function') return await nesne.getStats();
+	} catch {}
+	return pc.getStats();
+}
+// Rapordaki ses kaydı: birden çok varsa izin kimliği tutan, yoksa ilki.
+function sesKaydi(rapor, tur, iz) {
+	let ilk = null;
+	let eslesen = null;
+	rapor.forEach((r) => {
+		if (r.type !== tur || (r.kind && r.kind !== 'audio') || (r.mediaType && r.mediaType !== 'audio')) return;
+		if (!ilk) ilk = r;
+		if (iz && r.trackIdentifier === iz.id) eslesen = r;
+	});
+	return eslesen || ilk;
+}
+function seciliCift(rapor) {
+	let cift = null;
+	rapor.forEach((r) => {
+		if (r.type === 'transport' && r.selectedCandidatePairId) cift = rapor.get(r.selectedCandidatePairId) || cift;
+	});
+	if (!cift) {
+		rapor.forEach((r) => {
+			if (!cift && r.type === 'candidate-pair' && r.state === 'succeeded' && r.nominated) cift = r;
+		});
+	}
+	return cift ? { cift, rapor } : null;
+}
+
+// Son ~10 saniyenin ölçümlerinden kalite sınıfı: '' (iyi), 'orta', 'kotu'.
+function kaliteHesapla(pencere) {
+	const ornekler = pencere.filter((d) => d.alinan > 0 && !d.erken);
+	let alinan = 0;
+	let kayip = 0;
+	for (const d of pencere) {
+		alinan += Math.max(0, d.alinan);
+		kayip += d.kayip;
+	}
+	const kayipOrani = alinan + kayip > 0 ? kayip / (alinan + kayip) : null;
+	if (ornekler.length < 2) return { sinif: '', kayip: kayipOrani, gizleme: null, olculdu: false };
+	let ornek = 0;
+	let gizli = 0;
+	let gizlemeVar = true;
+	for (const d of ornekler) {
+		if (d.ornek == null || d.ornek <= 0) gizlemeVar = false;
+		else {
+			ornek += d.ornek;
+			gizli += d.gizli;
+		}
+	}
+	if (gizlemeVar && ornek > 0) {
+		const g = gizli / ornek;
+		return { sinif: g >= GIZLEME_KOTU ? 'kotu' : g >= GIZLEME_ORTA ? 'orta' : '', kayip: kayipOrani, gizleme: g, olculdu: true };
+	}
+	const k = kayipOrani || 0;
+	return { sinif: k >= KAYIP_KOTU ? 'kotu' : k >= KAYIP_ORTA ? 'orta' : '', kayip: kayipOrani, gizleme: null, olculdu: true };
+}
+const yuzdeYaz = (x) => '%' + (Math.round(x * 1000) / 10).toLocaleString('tr-TR');
+
 async function istatistikTuru() {
-	const ozet = { orta: false, kotu: false, metin: '' };
+	const ozet = { olculen: 0, kotu: [], orta: [], mikSorun: false, metin: '' };
 	let enIyiRtt = null;
 	let turnVar = false;
 	for (const es of [...esler.values()]) {
 		const pc = es.pc;
 		if (!pc || pc.connectionState !== 'connected') continue;
-		let rapor;
+		let gelenRapor;
+		let gidenRapor;
 		try {
-			rapor = await pc.getStats();
+			[gelenRapor, gidenRapor] = await Promise.all([kanalRaporu(es.tr && es.tr.receiver, pc), kanalRaporu(es.tr && es.tr.sender, pc)]);
 		} catch {
 			continue;
 		}
 		if (es.pc !== pc) continue;
 		const simdi = Date.now();
-		let cift = null;
-		let gelen = null;
-		let giden = null;
-		rapor.forEach((r) => {
-			if (r.type === 'transport' && r.selectedCandidatePairId) cift = rapor.get(r.selectedCandidatePairId);
-			if (r.type === 'inbound-rtp' && (r.kind === 'audio' || r.mediaType === 'audio')) gelen = r;
-			if (r.type === 'outbound-rtp' && (r.kind === 'audio' || r.mediaType === 'audio')) giden = r;
-		});
-		if (!cift) rapor.forEach((r) => {
-			if (!cift && r.type === 'candidate-pair' && r.state === 'succeeded' && r.nominated) cift = r;
-		});
+		const gelen = sesKaydi(gelenRapor, 'inbound-rtp', es.tr && es.tr.receiver && es.tr.receiver.track);
+		const giden = sesKaydi(gidenRapor, 'outbound-rtp', es.tr && es.tr.sender && es.tr.sender.track);
+		const secili = seciliCift(gelenRapor) || seciliCift(gidenRapor);
 		const parcalar = []; // görünen kısa özet: tür · gecikme (· kayıp · sorun)
-		const ayrinti = []; // ipucu: bit hızları, titreşim
+		const ayrinti = []; // ipucu: bit hızları, titreşim, kayıp, gizleme
 		let sinif = '';
-		if (cift) {
+		if (secili) {
+			const { cift, rapor } = secili;
 			const yerel = rapor.get(cift.localCandidateId);
 			const uzak = rapor.get(cift.remoteCandidateId);
 			const aktarim = (yerel && yerel.candidateType === 'relay') || (uzak && uzak.candidateType === 'relay');
@@ -2871,30 +4635,47 @@ async function istatistikTuru() {
 		}
 		if (gelen) {
 			const onceki = es.olcum;
-			const alinan = gelen.packetsReceived || 0;
-			const kayip = gelen.packetsLost || 0;
-			const bayt = gelen.bytesReceived || 0;
+			const o = {
+				zaman: simdi,
+				alinan: gelen.packetsReceived || 0,
+				kayip: gelen.packetsLost || 0,
+				bayt: gelen.bytesReceived || 0,
+				ornek: gelen.totalSamplesReceived,
+				gizli: gelen.concealedSamples != null ? gelen.concealedSamples - (gelen.silentConcealedSamples || 0) : null,
+			};
 			if (gelen.jitter != null) es.jitter = Math.round(gelen.jitter * 1000);
 			if (onceki && simdi - onceki.zaman > 400) {
-				const dt = simdi - onceki.zaman;
-				const dAlinan = alinan - onceki.alinan;
-				const dKayip = kayip - onceki.kayip;
-				if (dAlinan + dKayip > 0) {
-					const oran = Math.max(0, (dKayip / (dAlinan + dKayip)) * 100);
-					const metin = (oran < 0.05 ? '0' : oran.toFixed(1)) + '% kayıp';
-					if (oran >= 1) parcalar.push(metin);
-					ayrinti.push(metin);
-					es.sonKayip = Math.round(oran * 10) / 10;
-					if (oran >= 5) sinif = 'kotu';
-					else if (oran >= 1 && sinif !== 'kotu') sinif = 'orta';
-				}
-				const dBayt = bayt - onceki.bayt;
+				const d = {
+					alinan: o.alinan - onceki.alinan,
+					kayip: Math.max(0, o.kayip - onceki.kayip),
+					ornek: o.ornek != null && onceki.ornek != null ? o.ornek - onceki.ornek : null,
+					gizli: o.gizli != null && onceki.gizli != null ? Math.max(0, o.gizli - onceki.gizli) : null,
+					// Bağlantı yeni kurulduysa (alıcı tamponu dolarken biraz ses uydurulur) sayılmaz.
+					erken: simdi - (es.baglandiZaman || 0) < 6000,
+				};
+				const dBayt = o.bayt - onceki.bayt;
 				if (dBayt > 0) {
-					es.sonKbps = Math.round((dBayt * 8) / dt);
+					es.sonKbps = Math.round((dBayt * 8) / (simdi - onceki.zaman));
 					ayrinti.push('gelen ' + es.sonKbps + ' kbps');
 				}
+				es.pencere = (es.pencere || []).concat([d]).slice(-KALITE_PENCERESI);
+				const k = kaliteHesapla(es.pencere);
+				es.sonKayip = k.kayip != null ? Math.round(k.kayip * 1000) / 10 : null;
+				es.sonGizleme = k.gizleme != null ? Math.round(k.gizleme * 1000) / 10 : null;
+				if (k.kayip != null) ayrinti.push(yuzdeYaz(k.kayip) + ' kayıp');
+				if (k.gizleme != null) ayrinti.push(yuzdeYaz(k.gizleme) + ' ses uyduruldu');
+				if (k.olculdu) {
+					ozet.olculen++;
+					if (k.sinif === 'kotu') ozet.kotu.push(es.ad);
+					else if (k.sinif === 'orta') ozet.orta.push(es.ad);
+				}
+				if (k.sinif) {
+					parcalar.push(k.kayip >= 0.01 ? yuzdeYaz(k.kayip) + ' kayıp' : 'ses takılıyor');
+					if (k.sinif === 'kotu') sinif = 'kotu';
+					else if (sinif !== 'kotu') sinif = 'orta';
+				}
 			}
-			es.olcum = { zaman: simdi, alinan, kayip, bayt };
+			es.olcum = o;
 		}
 		// Giden ses: mikrofon gerçekten karşıya gidiyor mu? (Tek yönlü ses şüphesinde kanıt.)
 		if (giden) {
@@ -2904,13 +4685,14 @@ async function istatistikTuru() {
 				const kbps = Math.round(((bayt - onceki.bayt) * 8) / (simdi - onceki.zaman));
 				es.sonGiden = kbps;
 				ayrinti.push('giden ' + kbps + ' kbps');
-				if (kbps === 0 && gidenIz && !mikSessizMi()) {
+				if (kbps === 0 && gidenIz && !mikSessizMi() && simdi - (es.baglandiZaman || 0) > 6000) {
 					es.sifirGiden = (es.sifirGiden || 0) + 1;
-					// Tek ölçümde 0 olabilir; iki ardışık sıfır gerçek sorundur.
-					if (es.sifirGiden >= 2) {
+					// Tek tük sıfır olabilir; art arda üç ölçüm (~6 sn) gerçek sorundur.
+					if (es.sifirGiden >= 3) {
 						parcalar.push('mikrofon gitmiyor');
 						sinif = 'kotu';
-						taniGonder({ olay: 'mik-gitmiyor', es: es.ad, iz: !!(es.tr && es.tr.sender && es.tr.sender.track), yon: es.tr ? es.tr.currentDirection || null : null });
+						ozet.mikSorun = true;
+						if (es.sifirGiden === 3) taniGonder({ olay: 'mik-gitmiyor', es: es.ad, iz: !!(es.tr && es.tr.sender && es.tr.sender.track), yon: es.tr ? es.tr.currentDirection || null : null });
 					}
 				} else es.sifirGiden = 0;
 			}
@@ -2921,8 +4703,6 @@ async function istatistikTuru() {
 			parcalar.push('⚠ çalmıyor');
 			if (sinif !== 'kotu') sinif = 'orta';
 		}
-		if (sinif === 'kotu') ozet.kotu = true;
-		else if (sinif === 'orta') ozet.orta = true;
 		if (!parcalar.length) continue;
 		// Renk: TURN (relay) üzerinden bağlananlar turuncu; ciddi sorun (kırmızı) her zaman öne geçer.
 		esIstatistikYaz(es, parcalar.join(' · '), sinif !== 'kotu' && es.sonTip === 'TURN' ? 'turn' : sinif);
@@ -2975,9 +4755,13 @@ async function taniVeri() {
 			kbps: es.sonKbps ?? null,
 			giden: es.sonGiden ?? null,
 			kayip: es.sonKayip ?? null,
+			gizleme: es.sonGizleme ?? null,
 			tip: es.sonTip || null,
 			rtt: es.sonRtt ?? null,
 			kurtarma: es.kurtarma,
+			yayinKanali: !!(es.trSes && es.trGoruntu),
+			izliyor: es.izliyor,
+			izliyorum: es.izliyorum,
 			adaylar: pc ? await adayOzeti(pc) : null,
 		});
 	}
@@ -2998,6 +4782,7 @@ async function taniVeri() {
 		kalite: gonderimHizi(),
 		sesBaglami: baglam ? baglam.state : null,
 		iceSunucu: (ice.iceServers || []).map((s) => [].concat(s.urls || []).join('+')).join(',').slice(0, 200),
+		yayin: yayinBayraklari(),
 		esler: liste,
 	};
 }
@@ -3136,7 +4921,9 @@ $('ayar-cikis').addEventListener('change', () => {
 	ayar.cikisId = $('ayar-cikis').value;
 	ayarKaydet();
 	for (const es of esler.values()) {
-		if (es.ses && typeof es.ses.setSinkId === 'function') es.ses.setSinkId(ayar.cikisId).catch(() => durum('Bu çıkış aygıtı seçilemedi.', true));
+		for (const a of [es.ses, es.yayinSesOgesi]) {
+			if (a && typeof a.setSinkId === 'function') a.setSinkId(ayar.cikisId).catch(() => durum('Bu çıkış aygıtı seçilemedi.', true));
+		}
 	}
 });
 $('ayar-kalite').addEventListener('change', () => {
@@ -3154,6 +4941,91 @@ if (navigator.mediaDevices && 'ondevicechange' in navigator.mediaDevices) {
 	navigator.mediaDevices.addEventListener('devicechange', () => {
 		if (!$('ayarlar').hidden) aygitlariDoldur();
 	});
+}
+
+// ---------------------------------------------------------------- sunucu penceresi: veritabanı ve temizlik
+//
+// Veritabanının diskteki boyutu, mesaj ve dosya kaydı sayısı. "Sohbeti temizle" yalnızca yazılı
+// mesajları (ve dosya kayıtlarını) siler: tüm kanallar ya da tek kanal, hepsi ya da belli bir
+// günden eskiler. Beyaz liste, kanallar ve ayarlar değişmez. Sunucu ardından veritabanını küçültür.
+
+let sunucuPencereOncekiOdak = null;
+function sunucuPenceresiAc() {
+	cekmeceleriKapat();
+	sunucuPencereOncekiOdak = document.activeElement;
+	const secim = $('temizle-kanal');
+	const onceki = secim.value;
+	secim.replaceChildren();
+	const hepsi = el('option', null, 'Tüm yazılı kanallar');
+	hepsi.value = '';
+	secim.append(hepsi);
+	for (const k of kanallar.filter((x) => x.tur === 'yazi')) {
+		const o = el('option', null, '#' + k.ad);
+		o.value = k.id;
+		secim.append(o);
+	}
+	secim.value = [...secim.options].some((o) => o.value === onceki) ? onceki : '';
+	for (const id of ['vt-boyut', 'vt-mesaj', 'vt-dosya', 'vt-bos', 'vt-surum']) $(id).textContent = '…';
+	$('sunucu-pencere').hidden = false;
+	$('sunucu-kapat').focus();
+	gonder({ type: 'sunucu-bilgi' });
+}
+function sunucuPenceresiKapat() {
+	if ($('sunucu-pencere').hidden) return;
+	$('sunucu-pencere').hidden = true;
+	if (sunucuPencereOncekiOdak && sunucuPencereOncekiOdak.focus) sunucuPencereOncekiOdak.focus();
+}
+function sunucuBilgisiGeldi(m) {
+	const sayi = (n) => Number(n || 0).toLocaleString('tr-TR');
+	$('vt-boyut').textContent = boyutYaz(m.veritabani);
+	$('vt-mesaj').textContent = sayi(m.mesaj);
+	$('vt-dosya').textContent = sayi(m.dosya);
+	const eski = Number(m.yuklemeAdet) > 0;
+	for (const e of document.querySelectorAll('.vt-eski')) e.hidden = !eski;
+	$('vt-yukleme').textContent = eski ? `${boyutYaz(m.yuklemeler)} (${sayi(m.yuklemeAdet)} dosya, sunucuda; mesajlarıyla birlikte silinir)` : '';
+	$('vt-bos').textContent = m.bosAlan == null ? 'bilinmiyor' : boyutYaz(m.bosAlan);
+	$('vt-surum').textContent = m.surum || '—';
+	$('temizle').disabled = false;
+}
+$('sunucu-ac').addEventListener('click', sunucuPenceresiAc);
+$('sunucu-kapat').addEventListener('click', sunucuPenceresiKapat);
+$('sunucu-pencere').addEventListener('click', (e) => {
+	if (e.target === $('sunucu-pencere')) sunucuPenceresiKapat();
+});
+$('temizle').addEventListener('click', () => {
+	const kanal = $('temizle-kanal').value;
+	const gunSecimi = $('temizle-gun');
+	const gun = Number(gunSecimi.value) || 0;
+	const kapsam = kanal ? `#${kanalAdi(kanal)} kanalındaki` : 'Tüm yazılı kanallardaki';
+	const ne = gun ? `${gunSecimi.options[gunSecimi.selectedIndex].textContent.toLocaleLowerCase('tr')} mesajlar` : 'bütün mesajlar';
+	pencereAc({
+		baslik: 'Sohbeti temizle',
+		metin: `${kapsam} ${ne} ve paylaşılan dosyaların kayıtları kalıcı olarak silinecek. Beyaz liste, kanallar ve ayarlar değişmez. Bu geri alınamaz.`,
+		girdi: false,
+		tamam: 'Temizle',
+		tehlike: true,
+		onay: () => {
+			gonder({ type: 'sohbet-temizle', kanal, gun });
+			$('temizle').disabled = true;
+			$('vt-boyut').textContent = 'temizleniyor…';
+		},
+	});
+});
+function sohbetTemizlendi(m) {
+	$('temizle').disabled = false;
+	const kapsam = m.kanal ? `#${kanalAdi(m.kanal)}` : 'tüm kanallar';
+	durum(`${m.ad} sohbeti temizledi (${kapsam}${m.gun ? `, ${m.gun} günden eski` : ''}): ${Number(m.silinen || 0).toLocaleString('tr-TR')} mesaj silindi.`);
+	// Etkilenen kanalların okunmamış sayıları ve açık kanalın geçmişi tazelenir.
+	for (const id of [...okunmamis.keys()]) if (!m.kanal || m.kanal === id) okunmamis.delete(id);
+	kanalListesiCiz();
+	if (aktifKanal && (!m.kanal || m.kanal === aktifKanal)) {
+		mesajVerisi = [];
+		$('mesajlar').replaceChildren();
+		gecmisBitti = true;
+		gecmisIstegi = { kanal: '', zaman: 0 };
+		gecmisYukle();
+	}
+	if (!$('sunucu-pencere').hidden) gonder({ type: 'sunucu-bilgi' });
 }
 
 // ---------------------------------------------------------------- çekmeceler (dar ekran)
@@ -3199,8 +5071,10 @@ $('uye-ac').addEventListener('click', () => {
 document.addEventListener('keydown', (e) => {
 	if (e.key === 'Escape') {
 		if (!$('buyutec').hidden) buyutecKapat();
+		else if (!$('yayin-menu').hidden) yayinMenuKapat();
 		else if (!$('pencere').hidden) pencereKapat();
 		else if (!$('ayarlar').hidden) ayarlarKapat();
+		else if (!$('sunucu-pencere').hidden) sunucuPenceresiKapat();
 		else cekmeceleriKapat();
 		return;
 	}
@@ -3224,6 +5098,7 @@ window.addEventListener('pagehide', () => {
 	if (sesKanal && bagliyim) gonder({ type: 'ses-cik' });
 	durduruldu = true;
 	sesKapat(false); // arka planda kapatılma notunu da siler: normal kapanışta sese geri dönülmez
+	for (const bag of [...dosyaBaglari.values()]) bagKapat(bag, '');
 	if (ws) soketBirak(ws);
 });
 window.addEventListener('pageshow', (e) => {
@@ -3238,6 +5113,7 @@ window.addEventListener('pageshow', (e) => {
 
 simgeleriCiz(document);
 mikDugmeleriCiz();
+eskiIndirmeleriSil();
 $('ad').value = depoOku('ad', '');
 anahtar = depoOku('anahtar', '');
 // Kurulum bağlantısı: https://…/#anahtar=XXXX → anahtarı sakla, adresten temizle.

@@ -1,7 +1,9 @@
 // Diszort — sohbet veritabanı (SQLite).
 //
-// Yalnızca YAZILI kanalların mesajları ve yüklenen dosyaların kayıtları diske yazılır;
-// ses/görüntü hiçbir zaman kaydedilmez (P2P akar). Dosya: <veri>/sohbet.db
+// Yalnızca YAZILI kanalların mesajları ve paylaşılan dosyaların KAYITLARI (ad, boyut, tür) diske
+// yazılır. Dosyaların kendisi sunucuya gelmez: paylaşanın tarayıcısından doğrudan (P2P) alınır
+// (p2p=1). p2p=0 olanlar eski sürümün sunucuya yüklediği dosyalardır (<veri>/yuklemeler).
+// Ses/görüntü hiçbir zaman kaydedilmez. Dosya: <veri>/sohbet.db
 // Debian'ın node-sqlite3 paketi kullanılır (npm derlemesi gerekmez).
 'use strict';
 
@@ -40,13 +42,15 @@ CREATE TABLE IF NOT EXISTS kanal (
 	olusturma INTEGER NOT NULL
 );
 
+-- p2p=1: dosya sunucuda değil, paylaşanın tarayıcısında (sütun eski veritabanlarına açılışta eklenir).
 CREATE TABLE IF NOT EXISTS dosya (
 	id TEXT PRIMARY KEY,
 	kanal TEXT NOT NULL,
 	ad TEXT NOT NULL,
 	boyut INTEGER NOT NULL,
 	tur TEXT NOT NULL,
-	zaman INTEGER NOT NULL
+	zaman INTEGER NOT NULL,
+	p2p INTEGER NOT NULL DEFAULT 0
 );
 
 -- Basit anahtar/değer ayarları (ör. kisi_limiti). .env yalnızca varsayılanı verir; buradaki değer onu geçersiz kılar.
@@ -71,9 +75,31 @@ function mesajCevir(satir) {
 			boyut: sayi(satir.dosya_boyut),
 			tur: satir.dosya_tur || 'application/octet-stream',
 		};
+		if (satir.dosya_p2p) m.dosya.p2p = true;
 	}
 	return m;
 }
+
+const MESAJ_SORGUSU =
+	'SELECT m.*, d.ad AS dosya_ad, d.boyut AS dosya_boyut, d.tur AS dosya_tur, d.p2p AS dosya_p2p FROM mesaj m ' +
+	'LEFT JOIN dosya d ON d.id = m.dosya_id ';
+
+// Silinecek mesajların koşulları: kanal ('' = hepsi) ve zaman (0 = hepsi; yoksa bundan eskiler).
+// onek: sütun adlarının önüne (ör. 'm.').
+function temizlikKosulu({ kanal = '', once = 0 }, onek = '') {
+	const parcalar = [];
+	const params = [];
+	if (kanal) {
+		parcalar.push(onek + 'kanal = ?');
+		params.push(kanal);
+	}
+	if (once > 0) {
+		parcalar.push(onek + 'zaman < ?');
+		params.push(once);
+	}
+	return { parcalar, params };
+}
+const nerede = (parcalar) => (parcalar.length ? ' WHERE ' + parcalar.join(' AND ') : '');
 
 function ac(klasor) {
 	fs.mkdirSync(klasor, { recursive: true });
@@ -103,10 +129,29 @@ function ac(klasor) {
 			db.all(sql, params, (hata, satirlar) => (hata ? red(hata) : coz(satirlar || [])));
 		});
 
-	// Şema hazır olana kadar beklenir (sunucu dinlemeye bundan sonra başlar).
+	// Şema hazır olana kadar beklenir (sunucu dinlemeye bundan sonra başlar). Eski veritabanına
+	// (p2p sütunu yok) sütun eklenir; eski kayıtlar sunucudaki dosyalardır (p2p=0).
 	const hazir = new Promise((coz, red) => {
 		db.exec(SEMA, (hata) => (hata ? red(hata) : coz(true)));
+	}).then(async () => {
+		const sutunlar = await hepsi('PRAGMA table_info(dosya)');
+		if (!sutunlar.some((s) => s.name === 'p2p')) {
+			await calistir('ALTER TABLE dosya ADD COLUMN p2p INTEGER NOT NULL DEFAULT 0');
+			console.log('[veritabanı] dosya tablosuna p2p sütunu eklendi');
+		}
+		return true;
 	});
+
+	// Veritabanı dosyalarının diskteki boyutu (WAL günlüğü dahil).
+	async function diskBoyutu() {
+		let toplam = 0;
+		for (const ek of ['', '-wal', '-shm']) {
+			try {
+				toplam += (await fs.promises.stat(yol + ek)).size;
+			} catch {}
+		}
+		return toplam;
+	}
 
 	const api = {
 		hazir,
@@ -123,23 +168,18 @@ function ac(klasor) {
 				zaman,
 			]);
 			const mesaj = { id: sonuc.id, ad, metin, zaman };
-			if (dosya) mesaj.dosya = { id: dosya.id, ad: dosya.dosyaAd, boyut: dosya.boyut, tur: dosya.tur };
+			if (dosya) {
+				mesaj.dosya = { id: dosya.id, ad: dosya.dosyaAd, boyut: dosya.boyut, tur: dosya.tur };
+				if (dosya.p2p) mesaj.dosya.p2p = true;
+			}
 			return mesaj;
 		},
 
 		// Bir kanalın son mesajları (eskiden yeniye). once: bu id'den daha eski olanlar.
 		async mesajlar(kanal, once = 0, adet = 50) {
 			const satirlar = once
-				? await hepsi(
-						'SELECT m.*, d.ad AS dosya_ad, d.boyut AS dosya_boyut, d.tur AS dosya_tur FROM mesaj m ' +
-							'LEFT JOIN dosya d ON d.id = m.dosya_id WHERE m.kanal = ? AND m.id < ? ORDER BY m.id DESC LIMIT ?',
-						[kanal, once, adet],
-					)
-				: await hepsi(
-						'SELECT m.*, d.ad AS dosya_ad, d.boyut AS dosya_boyut, d.tur AS dosya_tur FROM mesaj m ' +
-							'LEFT JOIN dosya d ON d.id = m.dosya_id WHERE m.kanal = ? ORDER BY m.id DESC LIMIT ?',
-						[kanal, adet],
-					);
+				? await hepsi(MESAJ_SORGUSU + 'WHERE m.kanal = ? AND m.id < ? ORDER BY m.id DESC LIMIT ?', [kanal, once, adet])
+				: await hepsi(MESAJ_SORGUSU + 'WHERE m.kanal = ? ORDER BY m.id DESC LIMIT ?', [kanal, adet]);
 			return satirlar.reverse().map(mesajCevir);
 		},
 
@@ -217,27 +257,76 @@ function ac(klasor) {
 			return dosyalar.map((d) => d.dosya_id);
 		},
 
-		async dosyaEkle({ id, kanal, dosyaAd, boyut, tur }) {
-			await calistir('INSERT INTO dosya (id, kanal, ad, boyut, tur, zaman) VALUES (?, ?, ?, ?, ?, ?)', [
+		async dosyaEkle({ id, kanal, dosyaAd, boyut, tur, p2p = 0 }) {
+			await calistir('INSERT INTO dosya (id, kanal, ad, boyut, tur, zaman, p2p) VALUES (?, ?, ?, ?, ?, ?, ?)', [
 				id,
 				kanal,
 				dosyaAd,
 				boyut,
 				tur,
 				Date.now(),
+				p2p ? 1 : 0,
 			]);
 		},
 
 		async dosyaGetir(id) {
 			const satir = await tek('SELECT * FROM dosya WHERE id = ?', [id]);
 			if (!satir) return null;
-			return { id: satir.id, kanal: satir.kanal, dosyaAd: satir.ad, boyut: satir.boyut, tur: satir.tur, zaman: satir.zaman };
+			return { id: satir.id, kanal: satir.kanal, dosyaAd: satir.ad, boyut: satir.boyut, tur: satir.tur, zaman: satir.zaman, p2p: !!satir.p2p };
+		},
+
+		// idler içinden, sohbette `ad` kişisinin paylaştığı P2P dosyalar (kişi yalnızca kendi
+		// paylaştığı dosyayı sunabilir; mesajı silinen dosya da artık sunulamaz).
+		async sahipDosyalari(ad, idler) {
+			if (!idler.length) return [];
+			const satirlar = await hepsi(
+				`SELECT DISTINCT d.id FROM dosya d JOIN mesaj m ON m.dosya_id = d.id WHERE d.p2p = 1 AND m.ad = ? AND d.id IN (${idler.map(() => '?').join(',')})`,
+				[ad, ...idler],
+			);
+			return satirlar.map((s) => s.id);
 		},
 
 		async sayilar() {
 			const m = await tek('SELECT COUNT(*) AS n FROM mesaj');
-			const d = await tek('SELECT COUNT(*) AS n FROM dosya');
-			return { mesaj: m ? m.n : 0, dosya: d ? d.n : 0 };
+			const d = await tek('SELECT COUNT(*) AS n, COALESCE(SUM(CASE WHEN p2p = 0 THEN 1 ELSE 0 END), 0) AS sunucuda FROM dosya');
+			return { mesaj: m ? m.n : 0, dosya: d ? d.n : 0, sunucudaDosya: d ? sayi(d.sunucuda) : 0 };
+		},
+
+		// Diskteki boyut (bayt): sohbet.db + WAL günlüğü.
+		boyut: diskBoyutu,
+
+		// Sohbeti temizle: yalnızca mesajlar ve onların dosya kayıtları silinir. Beyaz liste (kisi),
+		// kanallar ve ayarlar DOKUNULMAZ. kanal: '' = tüm kanallar; once: 0 = hepsi, yoksa bu
+		// zamandan (ms) eski mesajlar. Sonra VACUUM ile dosya küçültülür (silinen yer diske döner).
+		// Dönüş: silinen mesaj sayısı, sunucudan silinecek eski yüklemeler, artık sunulamayacak P2P
+		// dosyalar ve önceki/sonraki boyut.
+		async sohbetiTemizle({ kanal = '', once = 0 } = {}) {
+			const onceki = await diskBoyutu();
+			const kosul = temizlikKosulu({ kanal, once });
+			const mKosul = temizlikKosulu({ kanal, once }, 'm.');
+			const dosyalar = await hepsi(
+				'SELECT DISTINCT m.dosya_id AS id, COALESCE(d.p2p, 0) AS p2p FROM mesaj m LEFT JOIN dosya d ON d.id = m.dosya_id' +
+					nerede([...mKosul.parcalar, 'm.dosya_id IS NOT NULL']),
+				mKosul.params,
+			);
+			const sonuc = await calistir('DELETE FROM mesaj' + nerede(kosul.parcalar), kosul.params);
+			// Dosya kayıtları yüzerlik parçalarla silinir (SQLite'ın değişken sınırı).
+			const idler = dosyalar.map((d) => d.id);
+			for (let i = 0; i < idler.length; i += 400) {
+				const parca = idler.slice(i, i + 400);
+				await calistir(`DELETE FROM dosya WHERE id IN (${parca.map(() => '?').join(',')})`, parca);
+			}
+			// Her şey silindiyse sahipsiz kalmış dosya kayıtları da gider.
+			if (!kanal && !once) await calistir('DELETE FROM dosya');
+			await calistir('VACUUM');
+			await calistir('PRAGMA wal_checkpoint(TRUNCATE)').catch(() => {});
+			return {
+				mesaj: sonuc.degisen,
+				sunucuDosyalari: dosyalar.filter((d) => !d.p2p).map((d) => d.id),
+				p2pDosyalari: dosyalar.filter((d) => d.p2p).map((d) => d.id),
+				onceki,
+				sonraki: await diskBoyutu(),
+			};
 		},
 
 		kapat() {
