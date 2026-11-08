@@ -677,7 +677,9 @@ async function sidebarKisileri(k, kanal = 'Sesli Sohbet') {
 			for (const k of [zeynep, mert]) if (await k.sayfa.evaluate(() => !!document.querySelector('#yayinlar .yayin-kart'))) return false;
 			return true;
 		}, 10000);
-		assert.equal(await taha.sayfa.evaluate(() => [...esler.values()].every((e) => !e.trGoruntu.sender.track && !e.trSes.sender.track)), true);
+		// İzlerin çıkarılması (replaceTrack) eşzamansız biter; yüklü makinede sunucunun duyurusundan sonra
+		// tamamlanabilir: bekle (hiç çıkmazsa yine başarısız olur).
+		await bekleKosul('taha artık görüntü ve ses göndermiyor', () => taha.sayfa.evaluate(() => [...esler.values()].every((e) => !e.trGoruntu.sender.track && !e.trSes.sender.track)), 5000, 100);
 		assert.equal(await mert.sayfa.evaluate(() => esler.get('taha').izliyorum), true, 'bir sonraki yayın yine kendiliğinden izlenmeli');
 	});
 
