@@ -1,7 +1,7 @@
 // Diszort — tarayıcı tarafı.
 // Discord'umsu tek sunucu: solda yazılı/sesli kanallar, ortada sohbet, sağda üyeler.
-// Yazılı mesajlar sunucudan geçer ve SQLite'ta saklanır; sesli kanallarda ses, ekran paylaşımı ve
-// müzik P2P akar (mesh WebRTC, doğrudan bağlanamayanlar TURN üzerinden). Dosyalar da P2P'dir:
+// Yazılı mesajlar sunucudan geçer ve SQLite'ta saklanır; sesli kanallarda ses, ekran ve sekme sesi
+// paylaşımı P2P akar (mesh WebRTC, doğrudan bağlanamayanlar TURN üzerinden). Dosyalar da P2P'dir:
 // sunucuya yüklenmez, paylaşanın tarayıcısından doğrudan alınır.
 //
 // Sunucuyla bağlantı koparsa (ağ değişti, sunucu güncellendi) ses bağlantıları KAPATILMAZ: ses
@@ -106,7 +106,7 @@ const SIMGELER = {
 	disari: '<path d="M14 4h6v6M20 4l-8.5 8.5"/><path d="M18 13.5v5a1.5 1.5 0 0 1-1.5 1.5h-11A1.5 1.5 0 0 1 4 18.5v-11A1.5 1.5 0 0 1 5.5 6h5"/>',
 	ekran: '<rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/>',
 	yayin: '<rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/><path d="M12 13V7.5M9.5 10 12 7.5l2.5 2.5"/>',
-	muzik: '<path d="M9 18V5.5l11-2V16"/><circle cx="6.5" cy="18" r="2.5"/><circle cx="17.5" cy="16" r="2.5"/>',
+	kalem: '<path d="M4 20h4L19 9l-4-4L4 16z"/><path d="m13.5 6.5 4 4"/>',
 	oynat: '<path d="M7.5 5v14l11-7z"/>',
 	duraklat: '<path d="M8.5 5.5v13M15.5 5.5v13"/>',
 	sonraki: '<path d="M6 5.5v13l9-6.5z"/><path d="M18 5.5v13"/>',
@@ -175,7 +175,6 @@ const AYAR_VARSAYILAN = {
 	sesler: true, // giriş/çıkış sesleri
 	mikKapali: false, // kendini susturdun (kanala girerken de geçerli)
 	sagir: false, // gelen sesleri kapattın
-	muzikYerel: 100, // çaldığın müziği kendi hoparlöründe duyma seviyesi (%; başkalarına gideni etkilemez)
 };
 const ayar = { ...AYAR_VARSAYILAN };
 try {
@@ -185,7 +184,6 @@ try {
 	}
 } catch {}
 ayar.mikSeviye = Math.min(200, Math.max(0, Math.round(ayar.mikSeviye / 5) * 5));
-ayar.muzikYerel = Math.min(100, Math.max(0, Math.round(ayar.muzikYerel)));
 if (![48, 96, 128].includes(ayar.kalite)) ayar.kalite = AYAR_VARSAYILAN.kalite;
 const ayarKaydet = () => depoYaz('ses-ayarlari', JSON.stringify(ayar));
 
@@ -754,6 +752,7 @@ function kanallarGeldi(liste) {
 	kanalListesiCiz();
 	sesKartiOzetCiz();
 	yayinlarCiz();
+	sanalUyeleriCiz();
 }
 
 function ilkKanal() {
@@ -819,7 +818,11 @@ function kanalListesiCiz() {
 		s.append(kanalSatiri(k, parcalar, { aktif: k.id === sesKanal }, () => sesAc(k.id)));
 		if (kisi.length) {
 			const liste = el('div', 'ses-uyeleri');
-			for (const p of kisi) liste.append(sesUyesiSatiri(p, k.id));
+			for (const p of kisi) {
+				liste.append(sesUyesiSatiri(p, k.id));
+				// Paylaşılan ses kanalda ayrı bir kişi gibi: "taha - YouTube".
+				if (p.yayinSes) liste.append(sanalUyeSatiri(p, k.id));
+			}
 			s.append(liste);
 		}
 	}
@@ -961,19 +964,29 @@ function kisiAtIste(ad) {
 
 let pencereOnay = null;
 let pencereOncekiOdak = null;
+let pencereBosOlabilir = false;
 
-function pencereAc({ baslik, metin, girdi, tamam, tehlike, onay }) {
+// girdi: tek satırlık metin alanı (deger: başlangıç, yerTutucu, etiket: erişilebilir ad, uzunluk:
+// en fazla karakter, bosOlabilir: boş bırakılınca da onaylanır).
+function pencereAc({ baslik, metin, girdi, tamam, tehlike, onay, deger = '', yerTutucu = '', etiket = 'Kanal adı', uzunluk = 24, bosOlabilir = false }) {
 	pencereOncekiOdak = document.activeElement;
 	$('pencere-baslik').textContent = baslik;
 	$('pencere-metin').textContent = metin || '';
-	$('pencere-girdi').hidden = !girdi;
-	$('pencere-girdi').value = '';
+	const g = $('pencere-girdi');
+	g.hidden = !girdi;
+	g.value = deger;
+	g.maxLength = uzunluk;
+	g.placeholder = yerTutucu;
+	g.setAttribute('aria-label', etiket);
+	pencereBosOlabilir = !!bosOlabilir;
 	$('pencere-tamam').textContent = tamam || 'Tamam';
 	$('pencere-tamam').classList.toggle('tehlike', !!tehlike);
 	pencereOnay = onay;
 	$('pencere').hidden = false;
-	if (girdi) $('pencere-girdi').focus();
-	else $('pencere-tamam').focus();
+	if (girdi) {
+		g.focus();
+		g.select();
+	} else $('pencere-tamam').focus();
 }
 
 function pencereKapat() {
@@ -1016,7 +1029,7 @@ $('pencere-form').addEventListener('submit', (e) => {
 	e.preventDefault();
 	const girdiVar = !$('pencere-girdi').hidden;
 	const girdi = girdiVar ? $('pencere-girdi').value.trim() : '';
-	if (girdiVar && !girdi) {
+	if (girdiVar && !girdi && !pencereBosOlabilir) {
 		$('pencere-girdi').focus();
 		return;
 	}
@@ -2797,6 +2810,7 @@ function sesKatil(m) {
 	kurtarmaBaslat();
 	bitHizlariniAyarla();
 	yayinlarCiz();
+	sanalUyeleriCiz();
 	if (yeniGiris) {
 		durum(`${kanalAdi(kanal)} kanalına girdin.` + (mikHatasi ? ` (${mikHatasi}; yalnızca dinliyorsun)` : ''));
 		sesCal('giris');
@@ -2813,7 +2827,7 @@ function sesKapat(bildir = true) {
 	konusanlar.clear();
 	if (vardi) sesCal('cikis');
 	mikrofonuBirak();
-	yayinDurdur(false); // ekran/müzik paylaşımı kanaldan çıkınca biter
+	yayinDurdur(false); // ekran/sekme sesi paylaşımı kanaldan çıkınca biter
 	sesArayuzuKapat();
 	sesGozcuDurdur();
 	taniDurdur();
@@ -2901,13 +2915,16 @@ function esYap(ad) {
 		konusuyor: false,
 		ses: null,
 		olcer: null,
-		// Yayın: tr = mikrofon kanalı, trSes = yayın sesi (müzik/bilgisayar sesi), trGoruntu = ekran.
+		// Yayın: tr = mikrofon kanalı, trSes = paylaşılan ses (sekme/bilgisayar sesi), trGoruntu = ekran.
 		trSes: null,
 		trGoruntu: null,
-		izliyor: true, // o, benim yayınımı izliyor (kapatırsa ona yayın gönderilmez)
-		izliyorum: true, // ben onun yayınını izliyorum
-		yayinSeviye: 100, // onun yayın sesinin (müzik) seviyesi, yalnızca bende
+		izliyor: true, // o, benim ekran paylaşımımı izliyor (kapatırsa ona görüntü gönderilmez)
+		izliyorum: true, // ben onun ekran paylaşımını izliyorum
+		yayinSeviye: 100, // paylaştığı sesin ("taha - YouTube") seviyesi, yalnızca bende
+		yayinSusturuldu: false, // paylaştığı sesi kendim için susturdum
 		yayinSesOgesi: null,
+		yayinOlcer: null,
+		sanalKutu: null,
 		goruntuOgesi: null,
 		uzakGoruntu: null,
 	};
@@ -2916,6 +2933,7 @@ function esYap(ad) {
 	const yayinSeviye = Number(depoOku('yayin-seviye-' + ad, '100'));
 	if (Number.isFinite(yayinSeviye) && yayinSeviye >= 0 && yayinSeviye <= 100) es.yayinSeviye = yayinSeviye;
 	es.susturuldu = depoOku('ses-sustur-' + ad, '') === '1';
+	es.yayinSusturuldu = depoOku('yayin-sustur-' + ad, '') === '1';
 	// Gelen sesin <audio>'su: görünmez ama çizilir (iOS display:none'u çalmıyor).
 	const ses = el('audio', 'ses-akis');
 	ses.autoplay = true;
@@ -2980,6 +2998,9 @@ function pcKapat(es) {
 	es.tr = es.trSes = es.trGoruntu = null;
 	if (es.olcer) es.olcer.dur();
 	es.olcer = null;
+	if (es.yayinOlcer) es.yayinOlcer.dur();
+	es.yayinOlcer = null;
+	sanalKonusma(es.ad, false);
 	if (es.ses) es.ses.srcObject = null;
 	if (es.yayinSesOgesi) es.yayinSesOgesi.srcObject = null;
 	if (es.goruntuOgesi) es.goruntuOgesi.srcObject = null;
@@ -2995,6 +3016,7 @@ function esKapat(ad) {
 	if (es.ses) es.ses.remove();
 	if (es.yayinSesOgesi) es.yayinSesOgesi.remove();
 	if (es.goruntuOgesi) es.goruntuOgesi.remove();
+	if (es.sanalKutu) es.sanalKutu.remove();
 	if (es.kutu) es.kutu.remove();
 	esler.delete(ad);
 	konusmaGuncelle(ad, false);
@@ -3003,7 +3025,7 @@ function esKapat(ad) {
 }
 
 // Eşe yeni bir RTCPeerConnection kur. Teklif eden yeni bir oturum kimliği üretir ve kanalları açar:
-// sırasıyla mikrofon (izi varsa onunla), yayın sesi ve görüntü (ekran paylaşımı / müzik için;
+// sırasıyla mikrofon (izi varsa onunla), yayın sesi ve görüntü (sekme sesi / ekran paylaşımı için;
 // paylaşım yokken boş durur, başlayınca yalnızca iz takılır, yeniden anlaşma gerekmez). Yanıtlayan,
 // teklifteki oturum kimliğini alır ve kanalları teklifin kendisi oluşturur (önceden açılan kanal
 // teklifin m-line'ıyla eşleşmiyor → tek yönlü ses).
@@ -3046,7 +3068,7 @@ function pcKur(es, oturum) {
 		};
 		try {
 			es.tr = pc.addTransceiver(gidenIz || 'audio', { direction: 'sendrecv' });
-			const sesIz = es.izliyor ? yayinSesIzi() : null;
+			const sesIz = yayinSesIzi();
 			const goruntuIz = es.izliyor ? yayin.goruntu : null;
 			es.trSes = pc.addTransceiver(sesIz || 'audio', { direction: 'sendrecv' });
 			es.trGoruntu = pc.addTransceiver(goruntuIz || 'video', { direction: 'sendrecv' });
@@ -3141,7 +3163,7 @@ async function sdpIsle(es, sdp, oturum) {
 		es.sonTeklif = sdp.sdp;
 		await adaylariUygula(es);
 		// Teklifin m-line'larına bağlanan kanallar: yönü sendrecv yap ve gönderilecek izleri bağla
-		// (mikrofon; yayın sürüyorsa ve o izliyorsa yayın sesi ve ekran). Eski sürüm istemcinin teklifinde
+		// (mikrofon; paylaşılan ses; ekran paylaşılıyorsa ve o izliyorsa görüntü). Eski sürüm istemcinin teklifinde
 		// yalnızca mikrofon kanalı vardır. ÖNEMLİ: izi bağlamadan yanıt üretilirse Firefox "recvonly"
 		// yanıt verip sesi tek yöne düşürüyor.
 		const k = kanallariBul(es.pc);
@@ -3158,7 +3180,7 @@ async function sdpIsle(es, sdp, oturum) {
 		}
 		es.trSes = k.ses;
 		es.trGoruntu = k.goruntu;
-		if (k.ses) await bagla(k.ses, es.izliyor ? yayinSesIzi() : null);
+		if (k.ses) await bagla(k.ses, yayinSesIzi());
 		if (k.goruntu) await bagla(k.goruntu, es.izliyor ? yayin.goruntu : null);
 		const yanit = await es.pc.createAnswer();
 		await es.pc.setLocalDescription(yanit);
@@ -3380,10 +3402,10 @@ function gonderimHizi() {
 	return Math.round(Math.min(ayar.kalite, Math.max(40, 640 / n)));
 }
 
-// Yayın bit hızları (kbps), yayını izleyen kişi sayısına göre (mesh: her izleyiciye ayrı akış).
-// Müzik/bilgisayar sesi stereo ~160 kbps; ekran en fazla 2,5 Mbit/s, toplam ~6 Mbit/s'yi geçmez.
+// Yayın bit hızları (kbps), alan kişi sayısına göre (mesh: herkese ayrı akış). Paylaşılan ses
+// (stereo) herkese gider: ~160 kbps; ekran yalnızca izleyene, en fazla 2,5 Mbit/s, toplam ~6 Mbit/s.
 const izleyiciSayisi = () => Math.max(1, [...esler.values()].filter((e) => !e.bekleniyor && e.izliyor).length);
-const yayinSesHizi = () => Math.round(Math.min(160, Math.max(64, 1280 / izleyiciSayisi())));
+const yayinSesHizi = () => Math.round(Math.min(160, Math.max(64, 1280 / Math.max(1, esSayisi()))));
 const goruntuHizi = () => Math.round(Math.min(2500, Math.max(400, 6000 / izleyiciSayisi())));
 
 // Uzak SDP'deki Opus parametreleri: karşı tarafın "şöyle gönder" dediği değerler bizim
@@ -3494,7 +3516,8 @@ function uzakSesBagla(es, iz) {
 	});
 }
 
-// Eşin yayın sesi (müzik / bilgisayar sesi): mikrofondan ayrı bir <audio>, ayrı seviye.
+// Eşin paylaştığı ses (sekme/bilgisayar sesi): mikrofondan ayrı bir <audio>, ayrı seviye ve
+// susturma; kanalda ayrı bir kişi gibi görünür, ses gelince onun konuşma halkası yanar.
 function uzakYayinSesiBagla(es, iz) {
 	if (!iz) return;
 	if (!es.yayinSesOgesi) {
@@ -3505,13 +3528,17 @@ function uzakYayinSesiBagla(es, iz) {
 		$('ses-akislari').append(a);
 		es.yayinSesOgesi = a;
 	}
+	let akis;
 	try {
-		es.yayinSesOgesi.srcObject = new MediaStream([iz]);
+		akis = new MediaStream([iz]);
+		es.yayinSesOgesi.srcObject = akis;
 	} catch {
 		return;
 	}
 	esSesUygula(es);
 	calmayiDene(es);
+	if (es.yayinOlcer) es.yayinOlcer.dur();
+	es.yayinOlcer = seviyeOlcer(akis, (konusuyor) => sanalKonusma(es.ad, konusuyor && !es.yayinSusturuldu && !ayar.sagir));
 }
 
 // Eşin ekran görüntüsü: yayın kutucuğundaki <video>'ya bağlanır (görüntü gelince "bekleniyor" kalkar).
@@ -3534,8 +3561,9 @@ function esSesUygula(es) {
 	es.ses.muted = ayar.sagir || es.susturuldu;
 	es.ses.volume = Math.max(0, Math.min(1, es.seviye / 100));
 	if (es.yayinSesOgesi) {
-		// Yayın sesi: sağırken ya da yayını kapattıysan susar; mikrofondaki kişi susturması onu etkilemez.
-		es.yayinSesOgesi.muted = ayar.sagir || !es.izliyorum;
+		// Paylaşılan ses ayrı bir kişi gibi: sağırken ya da onu susturduysan susar; paylaşanın
+		// mikrofonunu susturmak onu etkilemez.
+		es.yayinSesOgesi.muted = ayar.sagir || es.yayinSusturuldu;
 		es.yayinSesOgesi.volume = Math.max(0, Math.min(1, es.yayinSeviye / 100));
 	}
 	for (const a of [es.ses, es.yayinSesOgesi]) {
@@ -3727,6 +3755,7 @@ function esKutusuOlustur(es) {
 	Object.assign(es, { kutu, istatistik, susDugme: sus, seviyeGirdi: seviye, durumIkon });
 	esSesUygula(es);
 	esDurumIkonlariCiz(es);
+	esSanalCiz(es); // sesini paylaşıyorsa "ad - YouTube" kutusu hemen arkasında
 }
 
 function esDurumIkonlariCiz(es) {
@@ -3743,20 +3772,12 @@ function esDurumIkonlariCiz(es) {
 	if (es.yayinRozeti) es.durumIkon.after(es.yayinRozeti);
 }
 
-// Ekranını paylaşana "CANLI", müzik / bilgisayar sesi paylaşana nota.
+// Ekranını paylaşana "CANLI" (paylaşılan ses ise kanalda ayrı bir kişi gibi görünür).
 function yayinRozeti(d) {
-	if (d.ekran) {
-		const r = el('span', 'canli', 'CANLI');
-		r.title = 'Ekranını paylaşıyor';
-		return r;
-	}
-	if (d.yayinSes) {
-		const r = el('span', 'nota');
-		r.append(ikon('muzik'));
-		r.title = d.yayinBaslik ? 'Çalıyor: ' + d.yayinBaslik : 'Ses paylaşıyor';
-		return r;
-	}
-	return null;
+	if (!d.ekran) return null;
+	const r = el('span', 'canli', 'CANLI');
+	r.title = 'Ekranını paylaşıyor';
+	return r;
 }
 
 function esIstatistikYaz(es, metin, sinif) {
@@ -3884,18 +3905,21 @@ function sesPaneliCiz(ozet) {
 	$('ses-baglanti-kanal').textContent = kanalAdi(sesKanal) + (ek ? ' · ' + ek : '');
 }
 
-// ---------------------------------------------------------------- yayın: ekran, bilgisayar sesi, müzik
+// ---------------------------------------------------------------- yayın: ekran paylaşımı ve sekme sesi
 //
 // Sesli kanaldaki her eş bağlantısında mikrofonun yanında iki kanal önceden açıktır: yayın sesi
 // (stereo, müzik kalitesinde) ve görüntü. Paylaşım başlayınca/bitince bu kanallara yalnızca iz
-// takılır (yeniden anlaşma yok, konuşma kesilmez). Ekranı ve bilgisayar/sekme sesini tarayıcının
-// ekran paylaşımı verir; bu yalnızca masaüstünde var: telefon tarayıcıları (Android, iOS) ekranı da
-// telefonun sesini de yakalayamaz. Telefondaki karşılığı "Müzik çal": cihazdaki müzik dosyaları
-// çalınır ve kanala yayınlanır. Yayını istemeyen kapatır; ona görüntü ve yayın sesi gönderilmez.
+// takılır (yeniden anlaşma yok, konuşma kesilmez). Ekranı ve sekme/bilgisayar sesini tarayıcının
+// ekran paylaşımı verir; bu yalnızca masaüstünde var (telefon tarayıcıları ekranı da telefonun sesini
+// de yakalayamaz; telefondan izlenir ve dinlenir).
+// Paylaşılan ses kanalda ayrı bir kişi gibi görünür: "taha - YouTube". Adı paylaşırken verilir
+// (tarayıcı paylaşılan sekmenin adını sayfaya söylemez; son verilen ad hatırlanır). Herkes onu bir
+// kişi gibi kendi için susturur ya da sesini ayarlar; ses herkese gider. Ekran görüntüsünü istemeyen
+// kapatır, ona görüntü gönderilmez.
 
-const yayin = { goruntu: null, ekranSesi: null, muzik: null };
-const yayinSesIzi = () => (yayin.muzik ? yayin.muzik.iz : yayin.ekranSesi) || null;
-const yayinVar = () => !!(yayin.goruntu || yayinSesIzi());
+const yayin = { goruntu: null, ekranSesi: null, sesAdi: '', sesEkrandan: false, olcer: null };
+const yayinSesIzi = () => yayin.ekranSesi || null;
+const yayinVar = () => !!(yayin.goruntu || yayin.ekranSesi);
 // Telefon: tarayıcı kimliği ya da fare olmayan, kısa kenarı dar dokunmatik ekran ("masaüstü sitesi"
 // kipindeki telefon da getDisplayMedia'yı gösterir ama hep reddeder).
 const telefonMu = () =>
@@ -3903,18 +3927,22 @@ const telefonMu = () =>
 	!!(navigator.userAgentData && navigator.userAgentData.mobile) ||
 	(medyaSorgu('(pointer: coarse)') && medyaSorgu('(hover: none)') && Math.min(screen.width || 0, screen.height || 0) < 600);
 const ekranPaylasilabilir = () => !!(navigator.mediaDevices && typeof navigator.mediaDevices.getDisplayMedia === 'function') && !telefonMu();
-function muzikCalinabilir() {
-	const Yapici = window.AudioContext || window.webkitAudioContext;
-	return !!(Yapici && Yapici.prototype && 'createMediaStreamDestination' in Yapici.prototype && 'createMediaElementSource' in Yapici.prototype);
+
+// Paylaşılan sesin kanalda görünen adı: "taha - YouTube".
+const sanalAd = (ad, baslik) => `${ad} - ${baslik || 'Sekme sesi'}`;
+const temizSesAdi = (ad) =>
+	String(ad || '')
+		.replace(/[\u0000-\u001f\u007f]/g, '')
+		.trim()
+		.slice(0, 40);
+// Verilen ad; yoksa türüne göre (Chrome'un iz etiketi "Tab audio" ya da "System Audio").
+function sesYayinAdi() {
+	if (yayin.sesAdi) return yayin.sesAdi;
+	return /system/i.test(String((yayin.ekranSesi && yayin.ekranSesi.label) || '')) ? 'Bilgisayar sesi' : 'Sekme sesi';
 }
 
-function muzikBasligi() {
-	const mz = yayin.muzik;
-	if (!mz || mz.sira < 0 || mz.sira >= mz.liste.length) return '';
-	return String(mz.liste[mz.sira].name || 'parça').replace(/\.[a-z0-9]{2,5}$/i, '');
-}
 function yayinBayraklari() {
-	return { ekran: !!yayin.goruntu, yayinSes: !!yayinSesIzi(), yayinBaslik: yayin.muzik ? muzikBasligi() : '' };
+	return { ekran: !!yayin.goruntu, yayinSes: !!yayin.ekranSesi, yayinBaslik: yayin.ekranSesi ? sesYayinAdi() : '' };
 }
 function yayinBildir() {
 	if (!sesKanal) return;
@@ -3922,10 +3950,11 @@ function yayinBildir() {
 	gonder({ type: 'yayin', ekran: b.ekran, ses: b.yayinSes, baslik: b.yayinBaslik });
 }
 
-// Yayın izlerini eşin kanallarına tak (yayınımı kapatmış olana boş).
+// Yayın izlerini eşin kanallarına tak: ses herkese (kanaldaki bir kişinin sesi gibi), görüntü
+// yalnızca izleyene.
 function yayinIzleriniBagla(es) {
 	if (!es.pc || es.pc.signalingState === 'closed') return;
-	const ses = es.izliyor ? yayinSesIzi() : null;
+	const ses = yayinSesIzi();
 	const goruntu = es.izliyor ? yayin.goruntu : null;
 	const isler = [];
 	if (es.trSes && es.trSes.sender.track !== ses) isler.push(es.trSes.sender.replaceTrack(ses).catch((h) => console.warn('yayın sesi bağlanamadı', es.ad, h)));
@@ -3937,16 +3966,62 @@ function yayinDegisti() {
 	bitHizlariniAyarla();
 	yayinBildir();
 	yayinlarCiz();
+	sanalUyeleriCiz();
 	yayinMenusuCiz();
 }
 
-async function ekranPaylas(yalnizSes) {
+// Sekme sesi: önce adı sorulur (kanalda "taha - YouTube" diye görünür), sonra tarayıcının seçim
+// penceresi açılır. Onay düğmesine basmak seçim penceresi için gereken kullanıcı etkileşimidir.
+function sekmeSesiPaylasIste() {
 	yayinMenuKapat();
 	if (!sesKanal) return durum('Önce bir sesli kanala gir.', true);
-	if (!ekranPaylasilabilir()) return durum('Bu cihazda ekran ve sistem sesi paylaşılamıyor (telefon tarayıcıları desteklemiyor); müzik dosyası çalabilirsin.', true);
+	pencereAc({
+		baslik: 'Sekme sesini paylaş',
+		metin: `Kanaldakiler bunu ayrı bir kişi gibi görür (ör. "${benimAdim} - YouTube"). Ne paylaşıyorsun? Sonra sesi çalan sekmeyi seç; Windows'ta tüm ekranı seçip bilgisayarın sesini de paylaşabilirsin.`,
+		girdi: true,
+		deger: depoOku('yayin-ses-adi', ''),
+		yerTutucu: 'ör. YouTube, Spotify',
+		etiket: 'Paylaşılan sesin adı',
+		uzunluk: 40,
+		bosOlabilir: true,
+		tamam: 'Seç ve paylaş',
+		onay: (ad) => {
+			ad = temizSesAdi(ad);
+			depoYaz('yayin-ses-adi', ad || null);
+			ekranPaylas(true, ad);
+		},
+	});
+}
+
+// Paylaşan kendi sesinin adını sonradan değiştirebilir.
+function sesYayinAdiniDegistir() {
+	if (!yayin.ekranSesi) return;
+	pencereAc({
+		baslik: 'Adını değiştir',
+		metin: `Kanalda "${benimAdim} - …" diye görünür.`,
+		girdi: true,
+		deger: yayin.sesAdi,
+		yerTutucu: sesYayinAdi(),
+		etiket: 'Paylaşılan sesin adı',
+		uzunluk: 40,
+		bosOlabilir: true,
+		tamam: 'Kaydet',
+		onay: (ad) => {
+			yayin.sesAdi = temizSesAdi(ad);
+			depoYaz('yayin-ses-adi', yayin.sesAdi || null);
+			yayinBildir();
+			sanalUyeleriCiz();
+		},
+	});
+}
+
+async function ekranPaylas(yalnizSes, sesAdi = '') {
+	yayinMenuKapat();
+	if (!sesKanal) return durum('Önce bir sesli kanala gir.', true);
+	if (!ekranPaylasilabilir()) return durum('Bu cihazda ekran ve sekme sesi paylaşılamıyor (telefon tarayıcıları desteklemiyor); paylaşılanları izleyip dinleyebilirsin.', true);
 	const destek = (navigator.mediaDevices.getSupportedConstraints && navigator.mediaDevices.getSupportedConstraints()) || {};
-	// Bilgisayar sesi işlenmeden gitsin (yankı/gürültü giderme müziği bozar). restrictOwnAudio: bu
-	// sekmenin kendi sesi (kanaldakilerin konuşması) yakalanan sistem sesine karışmasın (yankı olmasın).
+	// Ses işlenmeden gitsin (yankı/gürültü giderme müziği bozar). restrictOwnAudio: bu sekmenin kendi
+	// sesi (kanaldakilerin konuşması) yakalanan bilgisayar sesine karışmasın (yankı olmasın).
 	const sesKisiti = { echoCancellation: false, noiseSuppression: false, autoGainControl: false };
 	if (destek.suppressLocalAudioPlayback) sesKisiti.suppressLocalAudioPlayback = false;
 	if (destek.restrictOwnAudio) sesKisiti.restrictOwnAudio = true;
@@ -3973,12 +4048,16 @@ async function ekranPaylas(yalnizSes) {
 	const ses = akis.getAudioTracks()[0] || null;
 	if (yalnizSes) {
 		if (goruntu) goruntu.stop();
-		if (!ses) return durum('Ses paylaşılmadı: seçim penceresinde ses paylaşımını ("sistem sesini paylaş" / "sekme sesini paylaş") açman gerekiyor.', true);
-		ekranSesiAyarla(ses);
-		durum('Bilgisayar sesi paylaşılıyor. Hoparlörden dinliyorsan mikrofonun da bu sesi alır; kulaklık kullan.');
+		if (!ses) return durum('Ses paylaşılmadı: seçim penceresinde sekmenin (ya da sistemin) sesini paylaşma seçeneğini açman gerekiyor.', true);
+		yayin.sesAdi = temizSesAdi(sesAdi);
+		ekranSesiAyarla(ses, false);
+		durum(`Ses "${sanalAd(benimAdim, sesYayinAdi())}" olarak paylaşılıyor. Hoparlörden dinliyorsan mikrofonun da bu sesi alır; kulaklık kullan.`);
 	} else {
 		goruntuAyarla(goruntu);
-		if (ses) ekranSesiAyarla(ses);
+		if (ses) {
+			yayin.sesAdi = '';
+			ekranSesiAyarla(ses, true);
+		}
 		durum(ses ? 'Ekranın ve sesi paylaşılıyor.' : 'Ekranın paylaşılıyor (ses yok: seçerken sesi de paylaşabilirsin).');
 	}
 	yayinDegisti();
@@ -3998,141 +4077,60 @@ function goruntuAyarla(iz) {
 		yayinDegisti();
 	});
 }
-function ekranSesiAyarla(iz) {
+// ekrandan: ses ekran paylaşımıyla birlikte geldi (ekran durunca o da durur).
+function ekranSesiAyarla(iz, ekrandan = false) {
 	if (yayin.ekranSesi && yayin.ekranSesi !== iz) yayin.ekranSesi.stop();
+	if (yayin.olcer) yayin.olcer.dur();
+	yayin.olcer = null;
 	yayin.ekranSesi = iz || null;
-	if (!iz) return;
-	if (yayin.muzik) muzikDurdur(false); // aynı anda tek yayın sesi
+	yayin.sesEkrandan = !!iz && ekrandan;
+	if (!iz) {
+		sanalKonusma(benimAdim, false);
+		return;
+	}
 	try {
 		iz.contentHint = 'music';
 	} catch {}
 	iz.addEventListener('ended', () => {
 		if (yayin.ekranSesi !== iz) return;
-		yayin.ekranSesi = null;
+		ekranSesiAyarla(null);
 		yayinDegisti();
 	});
+	// Kendi sesimin "konuşma" halkası ve seviye çubuğu (diğerlerinde de öyle görünür).
+	try {
+		yayin.olcer = seviyeOlcer(new MediaStream([iz]), (konusuyor, seviye) => {
+			sanalKonusma(benimAdim, konusuyor);
+			if (benSanal) benSanal.dolgu.style.width = Math.round(seviye * 100) + '%';
+		});
+	} catch {}
+}
+
+// Ekran paylaşımını durdur; ses onunla birlikte geldiyse o da durur.
+function ekranDurdur() {
+	goruntuAyarla(null);
+	if (yayin.sesEkrandan) ekranSesiAyarla(null);
+	yayinDegisti();
 }
 
 // Paylaşımı bitir. bildir=false: sesli kanaldan çıkılırken (eşler zaten kapandı).
 function yayinDurdur(bildir = true) {
 	goruntuAyarla(null);
 	ekranSesiAyarla(null);
-	muzikDurdur(false);
 	if (bildir) yayinDegisti();
 	else {
 		yayinlarCiz();
+		sanalUyeleriCiz();
 		yayinMenusuCiz();
 	}
-	// Bir sonraki yayın herkese yine kendiliğinden gitsin.
+	// Bir sonraki ekran paylaşımı herkese yine kendiliğinden gitsin.
 	for (const es of esler.values()) es.izliyor = true;
 }
 
-// --- müzik çalar: dosyalar bu cihazda çalınır; ses hem kendi hoparlörüne hem kanala (stereo) gider.
-
-$('muzik-dosya').addEventListener('change', () => {
-	const liste = [...($('muzik-dosya').files || [])];
-	$('muzik-dosya').value = '';
-	muzikEkle(liste);
-});
-
-function muzikEkle(dosyalar) {
-	const liste = (dosyalar || []).filter((f) => f && (/^audio\//.test(f.type || '') || /\.(mp3|m4a|aac|ogg|oga|opus|wav|flac|webm)$/i.test(f.name || '')));
-	if (!liste.length) return durum('Müzik dosyası seçilmedi.', true);
-	if (!sesKanal) return durum('Önce bir sesli kanala gir.', true);
-	const ac = sesBaglami();
-	if (!ac || !muzikCalinabilir()) return durum('Bu tarayıcı müzik paylaşamıyor.', true);
-	let mz = yayin.muzik;
-	if (!mz) {
-		const oge = el('audio');
-		oge.preload = 'auto';
-		let kaynak;
-		let hedef;
-		let yerel;
-		try {
-			kaynak = ac.createMediaElementSource(oge);
-			hedef = ac.createMediaStreamDestination();
-			yerel = ac.createGain();
-			yerel.gain.value = ayar.muzikYerel / 100;
-			kaynak.connect(hedef);
-			kaynak.connect(yerel);
-			yerel.connect(ac.destination);
-		} catch (h) {
-			return durum('Müzik başlatılamadı: ' + ((h && h.message) || h), true);
-		}
-		const iz = hedef.stream.getAudioTracks()[0];
-		try {
-			iz.contentHint = 'music';
-		} catch {}
-		if (yayin.ekranSesi) ekranSesiAyarla(null);
-		mz = yayin.muzik = { oge, kaynak, hedef, yerel, iz, liste: [], sira: -1, url: '' };
-		oge.addEventListener('ended', () => yayin.muzik === mz && muzikSonraki());
-		oge.addEventListener('timeupdate', () => yayin.muzik === mz && muzikIlerlemesiCiz());
-		oge.addEventListener('play', () => yayinlarCiz());
-		oge.addEventListener('pause', () => yayinlarCiz());
-		oge.addEventListener('error', () => {
-			if (yayin.muzik !== mz || !mz.url) return;
-			durum(`${muzikBasligi()} çalınamadı; sıradakine geçiliyor.`, true);
-			muzikSonraki();
-		});
-	}
-	const ilkYeni = mz.liste.length;
-	mz.liste.push(...liste);
-	if (mz.sira < 0) muzikCal(ilkYeni);
-	else durum(liste.length > 1 ? `${liste.length} parça sıraya eklendi.` : 'Parça sıraya eklendi.');
-	yayinDegisti();
-}
-
-function muzikCal(i) {
-	const mz = yayin.muzik;
-	if (!mz) return;
-	if (i >= mz.liste.length) {
-		durum('Çalma listesi bitti.');
-		return muzikDurdur(true);
-	}
-	if (mz.url) URL.revokeObjectURL(mz.url);
-	mz.sira = Math.max(0, i);
-	mz.url = URL.createObjectURL(mz.liste[mz.sira]);
-	mz.oge.src = mz.url;
-	sesBaglami();
-	oynat(mz.oge).catch(() => durum('Çalmak için ▶ düğmesine dokun.'));
-	yayinBildir(); // çalan parçanın adı
-	yayinlarCiz();
-}
-const muzikSonraki = () => yayin.muzik && muzikCal(yayin.muzik.sira + 1);
-function muzikDuraklat() {
-	const mz = yayin.muzik;
-	if (!mz) return;
-	if (mz.oge.paused) {
-		sesBaglami();
-		oynat(mz.oge).catch(() => {});
-	} else mz.oge.pause();
-}
-function muzikDurdur(bildir = true) {
-	const mz = yayin.muzik;
-	if (!mz) return;
-	yayin.muzik = null;
-	try {
-		mz.oge.pause();
-		mz.oge.removeAttribute('src');
-		mz.oge.load();
-	} catch {}
-	try {
-		mz.kaynak.disconnect();
-		mz.yerel.disconnect();
-	} catch {}
-	try {
-		mz.iz.stop();
-	} catch {}
-	if (mz.url) URL.revokeObjectURL(mz.url);
-	if (bildir) yayinDegisti();
-}
-
-// --- izleme: başkasının yayınını kapat / yeniden aç
+// --- izleme: başkasının ekran paylaşımını kapat / yeniden aç (yalnızca görüntü; ses ayrı kişi gibi)
 
 function izlemeAyarla(es, izle) {
 	es.izliyorum = !!izle;
 	gonder({ type: 'izle', to: es.ad, izle: es.izliyorum });
-	esSesUygula(es);
 	yayinlarCiz();
 }
 function izleGeldi(ad, izle) {
@@ -4143,27 +4141,139 @@ function izleGeldi(ad, izle) {
 	bitHizlariniAyarla();
 	yayinlarCiz(); // izleyen sayısı
 }
-// Kanaldakilerin yayın durumu değişti (sunucudan). Biten yayından sonra bir sonraki yine
-// kendiliğinden izlenir; ekran paylaşımı başlayınca haber verilir.
+// Kanaldakilerin yayın durumu değişti (sunucudan). Paylaşılan ses kanala bir kişi gibi girer/çıkar
+// (giriş/çıkış sesi); biten ekran paylaşımından sonra bir sonraki yine kendiliğinden izlenir.
 function yayinDurumlariDegisti(onceki) {
 	if (!sesKanal) return;
 	for (const es of esler.values()) {
 		const o = onceki.get(es.ad) || {};
 		const s = sesDurumlari.get(es.ad) || {};
-		const vardi = !!(o.ekran || o.yayinSes);
-		const simdi = !!(s.ekran || s.yayinSes);
-		if (vardi && !simdi && !es.izliyorum) {
-			es.izliyorum = true;
-			esSesUygula(es);
+		if (o.ekran && !s.ekran) es.izliyorum = true;
+		if (!o.ekran && s.ekran) {
+			if (!es.izliyorum) gonder({ type: 'izle', to: es.ad, izle: false });
+			durum(`${es.ad} ekranını paylaşıyor.`);
 		}
-		if (!vardi && simdi && !es.izliyorum) gonder({ type: 'izle', to: es.ad, izle: false });
-		if (!o.ekran && s.ekran) durum(`${es.ad} ekranını paylaşıyor.`);
-		else if (!o.yayinSes && s.yayinSes && !s.ekran) durum(`${es.ad} ${s.yayinBaslik ? 'müzik çalıyor' : 'bilgisayar sesini paylaşıyor'}.`);
+		if (!o.yayinSes && s.yayinSes) {
+			durum(`${sanalAd(es.ad, s.yayinBaslik)} kanala katıldı.`);
+			sesCal('kisi-girdi');
+		} else if (o.yayinSes && !s.yayinSes) sesCal('kisi-cikti');
 	}
 }
 
-// --- yayın kutucukları (ses kartında): kendi yayınım + izlediğim/dinlediğim yayınlar. Kartlar
-// anahtarla tutulur, her çizimde yeniden yaratılmaz (oynayan görüntü ve sürüklenen kaydırıcı bozulmasın).
+// --- paylaşılan ses: kanalda ayrı bir kişi gibi ("taha - YouTube"). Ses kartında paylaşanın
+// kutusunun hemen arkasında durur; kenar çubuğunda da kanaldakiler arasında görünür. Ses gelince
+// (çalarken) konuşma halkası yanar.
+
+const sanalKonusanlar = new Set(); // sesi şu an çalan paylaşımlar (paylaşanın adıyla)
+function sanalKonusma(ad, konusuyor) {
+	if (!ad || konusuyor === sanalKonusanlar.has(ad)) return;
+	if (konusuyor) sanalKonusanlar.add(ad);
+	else sanalKonusanlar.delete(ad);
+	for (const e of document.querySelectorAll('#ses-kisiler .ses-kisi.sanal, #ses-kanallari .ses-uyesi.sanal')) {
+		if (e.dataset.yayin === ad) e.classList.toggle('konusuyor', konusuyor);
+	}
+}
+
+function sanalAvatar(sinif) {
+	const av = el('span', 'avatar sanal-avatar ' + sinif);
+	av.append(ikon('hoparlor'));
+	return av;
+}
+
+// Kenar çubuğundaki satır (kanaldaki kişiler arasında).
+function sanalUyeSatiri(p, kanal) {
+	const satir = el('div', 'ses-uyesi sanal' + (kanal === sesKanal && sanalKonusanlar.has(p.ad) ? ' konusuyor' : ''));
+	satir.dataset.yayin = p.ad;
+	satir.title = `${p.ad} sesini paylaşıyor`;
+	satir.append(sanalAvatar('mini-avatar'), el('span', 'ad', sanalAd(p.ad, p.yayinBaslik)));
+	return satir;
+}
+
+let benSanal = null; // kendi paylaştığım sesin kutusu
+function sanalUyeleriCiz() {
+	benSanalCiz();
+	for (const es of esler.values()) esSanalCiz(es);
+}
+
+function esSanalCiz(es) {
+	const d = sesDurumlari.get(es.ad) || {};
+	if (!sesKanal || !d.yayinSes || !es.kutu) {
+		if (es.sanalKutu) es.sanalKutu.remove();
+		es.sanalKutu = null;
+		return;
+	}
+	if (!es.sanalKutu) {
+		const kutu = el('div', 'ses-kisi sanal' + (sanalKonusanlar.has(es.ad) ? ' konusuyor' : ''));
+		kutu.dataset.yayin = es.ad;
+		const bilgi = el('div', 'ses-kisi-bilgi');
+		const adSatir = el('div', 'ad-satir');
+		const ad = el('b', 'ad');
+		adSatir.append(ad);
+		bilgi.append(adSatir, el('span', 'ses-istatistik', `${es.ad} paylaşıyor · stereo`));
+		const sus = el('button', 'ikon-dugme sus');
+		sus.type = 'button';
+		sus.onclick = () => {
+			es.yayinSusturuldu = !es.yayinSusturuldu;
+			depoYaz('yayin-sustur-' + es.ad, es.yayinSusturuldu ? '1' : null);
+			esSesUygula(es);
+			esSanalCiz(es);
+		};
+		const seviye = el('input', 'ses-seviye');
+		Object.assign(seviye, { type: 'range', min: 0, max: 100, step: 1 });
+		seviye.value = String(es.yayinSeviye);
+		seviye.title = 'Ses seviyesi (yalnızca sende)';
+		seviye.oninput = () => {
+			es.yayinSeviye = Number(seviye.value);
+			depoYaz('yayin-seviye-' + es.ad, seviye.value);
+			esSesUygula(es);
+		};
+		kutu.append(sanalAvatar('orta-avatar'), bilgi, sus, seviye);
+		Object.assign(es, { sanalKutu: kutu, sanalAdOgesi: ad, sanalSus: sus, sanalSeviye: seviye });
+	}
+	if (es.kutu.nextSibling !== es.sanalKutu) es.kutu.after(es.sanalKutu);
+	const gorunen = sanalAd(es.ad, d.yayinBaslik);
+	es.sanalAdOgesi.textContent = gorunen;
+	es.sanalSeviye.setAttribute('aria-label', gorunen + ' ses seviyesi');
+	ikonKoy(es.sanalSus, es.yayinSusturuldu ? 'hoparlor-kapali' : 'hoparlor');
+	es.sanalSus.classList.toggle('kapali', es.yayinSusturuldu);
+	es.sanalSus.title = es.yayinSusturuldu ? 'Bu sesi aç' : 'Bu sesi yalnızca kendin için sustur';
+	es.sanalSus.setAttribute('aria-label', gorunen + (es.yayinSusturuldu ? ' sesini aç' : ' sesini sustur'));
+	es.sanalKutu.classList.toggle('susturuldu', es.yayinSusturuldu);
+}
+
+function benSanalCiz() {
+	if (!sesKanal || !yayin.ekranSesi) {
+		if (benSanal) benSanal.kok.remove();
+		benSanal = null;
+		return;
+	}
+	if (!benSanal) {
+		const kok = el('div', 'ses-kisi sanal ben' + (sanalKonusanlar.has(benimAdim) ? ' konusuyor' : ''));
+		kok.dataset.yayin = benimAdim;
+		const bilgi = el('div', 'ses-kisi-bilgi');
+		const adSatir = el('div', 'ad-satir');
+		const ad = el('b', 'ad');
+		adSatir.append(ad);
+		bilgi.append(adSatir, el('span', 'ses-istatistik', 'senin paylaşımın · herkese gidiyor'));
+		const cubuk = el('div', 'seviye-cubuk');
+		const dolgu = el('div');
+		cubuk.append(dolgu);
+		cubuk.title = 'Paylaştığın sesin seviyesi';
+		const degistir = ikonDugmesi('kalem', 'Adını değiştir', sesYayinAdiniDegistir);
+		const durdur = ikonDugmesi('x', 'Sesi paylaşmayı durdur', () => {
+			ekranSesiAyarla(null);
+			yayinDegisti();
+		}, 'tehlike');
+		kok.append(sanalAvatar('orta-avatar'), bilgi, cubuk, degistir, durdur);
+		benSanal = { kok, ad, dolgu };
+	}
+	const ben = $('ben-ses-satir');
+	if (ben.nextSibling !== benSanal.kok) ben.after(benSanal.kok);
+	benSanal.ad.textContent = sanalAd(benimAdim, sesYayinAdi()) + ' (sen)';
+}
+
+// --- ekran paylaşımı kutucukları (ses kartının üstünde): kendi ekranım + izlediğim ekranlar.
+// Kartlar anahtarla tutulur, her çizimde yeniden yaratılmaz (oynayan görüntü bozulmasın).
 
 const yayinKartlari = new Map(); // anahtar -> { kok, guncelle }
 function yayinlarCiz() {
@@ -4171,12 +4281,10 @@ function yayinlarCiz() {
 	if (!kap) return;
 	const istenen = [];
 	if (sesKanal) {
-		if (yayinVar()) istenen.push(['ben', null]);
+		if (yayin.goruntu) istenen.push(['ben', null]);
 		for (const es of esler.values()) {
 			const d = sesDurumlari.get(es.ad);
-			if (!d) continue;
-			if (d.ekran) istenen.push(['ekran:' + es.ad, es]);
-			else if (d.yayinSes) istenen.push(['ses:' + es.ad, es]);
+			if (d && d.ekran) istenen.push(['ekran:' + es.ad, es]);
 		}
 	}
 	const anahtarlar = new Set(istenen.map(([a]) => a));
@@ -4189,7 +4297,7 @@ function yayinlarCiz() {
 		let k = yayinKartlari.get(a);
 		if (!k || (es && k.es !== es)) {
 			if (k) k.kok.remove();
-			k = a === 'ben' ? benimYayinKarti() : a.startsWith('ekran:') ? ekranKarti(es) : sesYayinKarti(es);
+			k = a === 'ben' ? benimEkranKarti() : ekranKarti(es);
 			yayinKartlari.set(a, k);
 		}
 		if (kap.children[i] !== k.kok) kap.insertBefore(k.kok, kap.children[i] || null);
@@ -4233,26 +4341,10 @@ function ikonDugmesi(ad, baslik, fn, sinif = '') {
 	d.onclick = fn;
 	return d;
 }
-function seviyeKaydirici(baslik, deger, fn) {
-	const s = el('input', 'yayin-seviye');
-	Object.assign(s, { type: 'range', min: 0, max: 100, step: 1 });
-	s.value = String(deger);
-	s.title = baslik;
-	s.setAttribute('aria-label', baslik);
-	s.oninput = () => fn(Number(s.value));
-	return s;
-}
 
 function ekranKarti(es) {
 	const kok = el('div', 'yayin-kart ekran');
 	const ust = el('div', 'yayin-ust');
-	const ad = el('b', null, es.ad);
-	const aciklama = el('span', 'yayin-aciklama');
-	const seviye = seviyeKaydirici('Yayın sesi (yalnızca sende)', es.yayinSeviye, (n) => {
-		es.yayinSeviye = n;
-		depoYaz('yayin-seviye-' + es.ad, n);
-		esSesUygula(es);
-	});
 	const sahne = el('div', 'yayin-sahne');
 	const video = es.goruntuOgesi || (es.goruntuOgesi = videoYap());
 	const bekle = el('div', 'yayin-bekle', 'Görüntü bekleniyor…');
@@ -4262,131 +4354,51 @@ function ekranKarti(es) {
 	const izle = el('button', 'yayin-dugme');
 	izle.type = 'button';
 	izle.onclick = () => izlemeAyarla(es, !es.izliyorum);
-	ust.append(el('span', 'canli', 'CANLI'), ad, aciklama, el('span', 'bosluk'), seviye, tam, izle);
+	ust.append(el('span', 'canli', 'CANLI'), el('b', null, es.ad), el('span', 'yayin-aciklama', ' ekranını paylaşıyor'), el('span', 'bosluk'), tam, izle);
 	kok.append(ust, sahne);
 	const guncelle = () => {
-		const d = sesDurumlari.get(es.ad) || {};
 		const izliyorum = es.izliyorum;
-		aciklama.textContent = d.yayinBaslik ? ` ekranını paylaşıyor · çalıyor: ${d.yayinBaslik}` : d.yayinSes ? ' ekranını ve sesini paylaşıyor' : ' ekranını paylaşıyor';
 		sahne.hidden = !izliyorum;
 		tam.hidden = !izliyorum;
-		seviye.hidden = !izliyorum || !d.yayinSes;
 		izle.textContent = izliyorum ? 'Kapat' : 'İzle';
-		izle.title = izliyorum ? 'Yayını kapat (sana gönderilmez, bant genişliği harcanmaz)' : 'Yayını izle';
+		izle.title = izliyorum ? 'Görüntüyü kapat (sana gönderilmez, bant genişliği harcanmaz)' : 'Ekranı izle';
 		videoyaBagla(video, izliyorum ? es.uzakGoruntu : null);
 		bekle.hidden = !!(es.uzakGoruntu && !es.uzakGoruntu.muted && es.uzakGoruntu.readyState === 'live');
 	};
 	return { kok, guncelle, es };
 }
 
-function sesYayinKarti(es) {
-	const kok = el('div', 'yayin-kart ses');
-	const nota = el('span', 'yayin-nota');
-	nota.append(ikon('muzik'));
-	const metin = el('span', 'yayin-metin');
-	const seviye = seviyeKaydirici('Yayın sesi (yalnızca sende)', es.yayinSeviye, (n) => {
-		es.yayinSeviye = n;
-		depoYaz('yayin-seviye-' + es.ad, n);
-		esSesUygula(es);
-	});
-	const dinle = el('button', 'yayin-dugme');
-	dinle.type = 'button';
-	dinle.onclick = () => izlemeAyarla(es, !es.izliyorum);
-	kok.append(nota, metin, seviye, dinle);
-	const guncelle = () => {
-		const d = sesDurumlari.get(es.ad) || {};
-		metin.replaceChildren(el('b', null, es.ad), document.createTextNode(d.yayinBaslik ? ' çalıyor: ' : ' bilgisayar sesini paylaşıyor'));
-		if (d.yayinBaslik) metin.append(el('i', null, d.yayinBaslik));
-		seviye.hidden = !es.izliyorum;
-		dinle.textContent = es.izliyorum ? 'Kapat' : 'Dinle';
-		kok.classList.toggle('kapali', !es.izliyorum);
-	};
-	return { kok, guncelle, es };
-}
-
-let muzikOgeleri = null; // müzik çaların ilerleme öğeleri (timeupdate'te güncellenir)
-function benimYayinKarti() {
+function benimEkranKarti() {
 	const kok = el('div', 'yayin-kart ben');
 	const ust = el('div', 'yayin-ust');
 	const metin = el('span', 'yayin-metin');
 	const durdur = el('button', 'yayin-dugme tehlike', 'Durdur');
 	durdur.type = 'button';
-	durdur.onclick = () => yayinDurdur(true);
+	durdur.onclick = ekranDurdur;
 	ust.append(metin, el('span', 'bosluk'), durdur);
 	const onizleme = videoYap('kucuk-onizleme');
-
-	// Müzik çalar
-	const calar = el('div', 'muzik-calar');
-	const baslik = el('b', 'muzik-baslik');
-	const sira = el('small', 'muzik-sira');
-	const oynatD = ikonDugmesi('oynat', 'Çal / duraklat', muzikDuraklat);
-	const sonrakiD = ikonDugmesi('sonraki', 'Sonraki parça', () => muzikSonraki());
-	const ilerleme = el('input', 'muzik-ilerleme');
-	Object.assign(ilerleme, { type: 'range', min: 0, max: 1000, step: 1, value: 0 });
-	ilerleme.setAttribute('aria-label', 'Parçada ilerle');
-	ilerleme.addEventListener('pointerdown', () => (ilerleme.dataset.suruyor = '1'));
-	ilerleme.addEventListener('pointerup', () => delete ilerleme.dataset.suruyor);
-	ilerleme.addEventListener('change', () => {
-		delete ilerleme.dataset.suruyor;
-		const mz = yayin.muzik;
-		if (mz && Number.isFinite(mz.oge.duration)) mz.oge.currentTime = (Number(ilerleme.value) / 1000) * mz.oge.duration;
-	});
-	const zaman = el('small', 'muzik-zaman');
-	const yerel = seviyeKaydirici('Kendi hoparlöründe seviye (başkalarına gideni değiştirmez)', ayar.muzikYerel, (n) => {
-		ayar.muzikYerel = n;
-		ayarKaydet();
-		if (yayin.muzik) yayin.muzik.yerel.gain.value = n / 100;
-	});
-	const ekle = ikonDugmesi('arti', 'Parça ekle', () => $('muzik-dosya').click());
-	const ustSatir = el('div', 'muzik-ust');
-	ustSatir.append(baslik, sira);
-	const denetim = el('div', 'muzik-denetim');
-	denetim.append(oynatD, sonrakiD, ilerleme, zaman, yerel, ekle);
-	calar.append(ustSatir, denetim);
-	kok.append(ust, onizleme, calar);
-	muzikOgeleri = { ilerleme, zaman };
-
+	kok.append(ust, onizleme);
 	const guncelle = () => {
 		const izleyen = [...esler.values()].filter((e) => !e.bekleniyor && e.izliyor).length;
-		const ne = yayin.goruntu ? (yayinSesIzi() ? (yayin.muzik ? 'Ekranını paylaşıyor ve müzik çalıyorsun' : 'Ekranını ve sesini paylaşıyorsun') : 'Ekranını paylaşıyorsun') : yayin.ekranSesi ? 'Bilgisayar sesini paylaşıyorsun' : 'Müzik çalıyorsun';
-		metin.textContent = ne + (esler.size ? ` · ${izleyen}/${esler.size} kişiye gidiyor` : ' · kanalda yalnızsın');
-		onizleme.hidden = !yayin.goruntu;
+		metin.textContent = 'Ekranını paylaşıyorsun' + (esler.size ? ` · ${izleyen}/${esler.size} kişi izliyor` : ' · kanalda yalnızsın');
 		videoyaBagla(onizleme, yayin.goruntu);
-		const mz = yayin.muzik;
-		calar.hidden = !mz;
-		if (mz) {
-			baslik.textContent = muzikBasligi() || '—';
-			sira.textContent = `${mz.sira + 1}/${mz.liste.length}`;
-			ikonKoy(oynatD, mz.oge.paused ? 'oynat' : 'duraklat');
-			oynatD.title = mz.oge.paused ? 'Çal' : 'Duraklat';
-			sonrakiD.disabled = mz.sira + 1 >= mz.liste.length;
-			muzikIlerlemesiCiz();
-		}
 	};
 	return { kok, guncelle, es: null };
 }
-function muzikIlerlemesiCiz() {
-	const mz = yayin.muzik;
-	if (!mz || !muzikOgeleri) return;
-	const { ilerleme, zaman } = muzikOgeleri;
-	const sure = mz.oge.duration;
-	if (!ilerleme.dataset.suruyor) ilerleme.value = String(Number.isFinite(sure) && sure > 0 ? Math.round((mz.oge.currentTime / sure) * 1000) : 0);
-	zaman.textContent = sureYaz(mz.oge.currentTime) + (Number.isFinite(sure) ? ' / ' + sureYaz(sure) : '');
-}
 
-// --- paylaşım menüsü (ses kartındaki yayın düğmesi)
+// --- paylaşım menüsü (ses kartındaki yayın düğmesi; telefonda gizli)
 
 function yayinMenusuCiz() {
 	const m = $('yayin-menu');
 	const d = $('yayin-ac');
+	d.hidden = !ekranPaylasilabilir();
 	d.classList.toggle('secili', yayinVar());
 	if (m.hidden) return;
 	m.replaceChildren();
-	const ekle = (ikonAd, metin, fn, kapali = false) => {
+	const ekle = (ikonAd, metin, fn) => {
 		const o = el('button', 'yayin-menu-oge');
 		o.type = 'button';
 		o.setAttribute('role', 'menuitem');
-		o.disabled = kapali;
 		o.append(ikon(ikonAd), el('span', null, metin));
 		o.onclick = () => {
 			yayinMenuKapat();
@@ -4394,31 +4406,20 @@ function yayinMenusuCiz() {
 		};
 		m.append(o);
 	};
-	const masaustu = ekranPaylasilabilir();
-	if (masaustu) {
-		if (yayin.goruntu)
-			ekle('dur', 'Ekran paylaşımını durdur', () => {
-				goruntuAyarla(null);
-				yayinDegisti();
-			});
-		else ekle('ekran', 'Ekranını paylaş', () => ekranPaylas(false));
-		if (yayin.ekranSesi)
-			ekle('dur', 'Bilgisayar sesini durdur', () => {
-				ekranSesiAyarla(null);
-				yayinDegisti();
-			});
-		else ekle('hoparlor', 'Bilgisayar sesini paylaş', () => ekranPaylas(true));
-	}
-	if (yayin.muzik) ekle('dur', 'Müziği durdur', () => muzikDurdur(true));
-	else ekle('muzik', 'Müzik çal (dosyadan)', () => $('muzik-dosya').click(), !muzikCalinabilir());
-	if (yayinVar()) ekle('x', 'Tüm paylaşımı durdur', () => yayinDurdur(true));
+	if (yayin.goruntu) ekle('dur', 'Ekran paylaşımını durdur', ekranDurdur);
+	else ekle('ekran', 'Ekranını paylaş', () => ekranPaylas(false));
+	if (yayin.ekranSesi)
+		ekle('dur', 'Sesi paylaşmayı durdur', () => {
+			ekranSesiAyarla(null);
+			yayinDegisti();
+		});
+	else ekle('hoparlor', 'Sekme sesini paylaş', sekmeSesiPaylasIste);
+	if (yayin.goruntu && yayin.ekranSesi) ekle('x', 'Tüm paylaşımı durdur', () => yayinDurdur(true));
 	m.append(
 		el(
 			'p',
 			'yayin-menu-not',
-			masaustu
-				? 'Birlikte müzik: Spotify/YouTube çalan sekmeyi ya da (Windows) tüm ekranı seç ve sesi de paylaş. Ses stereo ve yüksek kalitede gider.'
-				: 'Telefon tarayıcıları ekranı ve telefonun sesini paylaşamaz; cihazındaki müzik dosyalarını çalabilirsin. Bilgisayardan paylaşılanları buradan izleyip dinleyebilirsin.',
+			`Birlikte dinlemek için: Spotify/YouTube çalan sekmenin sesini paylaş; kanalda "${benimAdim || 'ad'} - YouTube" gibi ayrı bir kişi olarak görünür. Ses stereo ve yüksek kalitede gider.`,
 		),
 	);
 }
@@ -5113,6 +5114,7 @@ window.addEventListener('pageshow', (e) => {
 
 simgeleriCiz(document);
 mikDugmeleriCiz();
+yayinMenusuCiz(); // paylaş düğmesi telefonda gizli (ekran/sekme sesi paylaşılamıyor)
 eskiIndirmeleriSil();
 $('ad').value = depoOku('ad', '');
 anahtar = depoOku('anahtar', '');

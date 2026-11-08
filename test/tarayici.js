@@ -13,7 +13,7 @@
 //   - sorunsuz bağlantıda yanlış "Bağlantı zayıf" uyarısı çıkmaması
 //   - P2P dosya: resim önizlemesi doğrudan paylaşandan; 24 MB dosya ortada bağlantısı koparılsa da
 //     kaldığı yerden eksiksiz gelir (içerik özeti aynı), iki kişi aynı anda indirir
-//   - müzik çalma (telefon karşılığı): dosyadan çalınan müzik kanala stereo, yüksek bit hızıyla gider
+//   - sekme sesi: kanalda ayrı bir kişi gibi ("mert - YouTube") görünür, stereo ve yüksek bit hızıyla gider
 //   - ekran paylaşımı (bilgisayar sesiyle): izleyene görüntü gider, yayını kapatana gitmez
 //
 //   node test/tarayici.js                    kendi sunucusunu (node sunucu/sunucu.js) geçici veriyle açar
@@ -224,38 +224,6 @@ function konusmaWav(dosya, saniye = 12) {
 	fs.writeFileSync(dosya, v);
 }
 
-// Müzik benzeri stereo sinyal (48 kHz, 16 bit): sol ve sağ kanalda farklı akorlar.
-function muzikWav(dosya, saniye = 10) {
-	const HIZ = 48000;
-	const N = HIZ * saniye;
-	const v = Buffer.alloc(44 + N * 4);
-	const sol = [261.63, 329.63, 392.0];
-	const sag = [220.0, 277.18, 329.63];
-	for (let i = 0; i < N; i++) {
-		const t = i / HIZ;
-		const zarf = 0.6 + 0.4 * Math.sin(2 * Math.PI * 0.5 * t);
-		let l = 0;
-		let r = 0;
-		for (const f of sol) l += Math.sin(2 * Math.PI * f * t);
-		for (const f of sag) r += Math.sin(2 * Math.PI * f * t);
-		v.writeInt16LE(Math.round((l / 3) * zarf * 0.4 * 32767), 44 + i * 4);
-		v.writeInt16LE(Math.round((r / 3) * zarf * 0.4 * 32767), 44 + i * 4 + 2);
-	}
-	v.write('RIFF', 0);
-	v.writeUInt32LE(36 + N * 4, 4);
-	v.write('WAVEfmt ', 8);
-	v.writeUInt32LE(16, 16);
-	v.writeUInt16LE(1, 20);
-	v.writeUInt16LE(2, 22);
-	v.writeUInt32LE(HIZ, 24);
-	v.writeUInt32LE(HIZ * 4, 28);
-	v.writeUInt16LE(4, 32);
-	v.writeUInt16LE(16, 34);
-	v.write('data', 36);
-	v.writeUInt32LE(N * 4, 40);
-	fs.writeFileSync(dosya, v);
-}
-
 // ---------------------------------------------------------------- tarayıcı yardımcıları
 
 let tarayici;
@@ -416,8 +384,6 @@ async function sidebarKisileri(k, kanal = 'Sesli Sohbet') {
 (async () => {
 	const wav = path.join(os.tmpdir(), `diszort-konusma-${process.pid}.wav`);
 	konusmaWav(wav);
-	const muzikDosyasi = path.join(os.tmpdir(), `diszort-muzik-${process.pid}.wav`);
-	muzikWav(muzikDosyasi);
 	await sunucuBaslat();
 	tarayici = await chromium.launch({
 		executablePath: process.env.CHROMIUM_YOLU || undefined,
@@ -630,35 +596,52 @@ async function sidebarKisileri(k, kanal = 'Sesli Sohbet') {
 		for (const k of [taha, mert]) await k.sayfa.evaluate(() => localStorage.removeItem('dosya-yazici'));
 	});
 
-	await dene('müzik çalma (telefon karşılığı): dosyadan çalınan müzik kanala stereo ve yüksek bit hızıyla gider, mikrofondan ayrı', async () => {
-		await mert.sayfa.setInputFiles('#muzik-dosya', muzikDosyasi);
-		await bekleKosul('mert müzik çalıyor', () => mert.sayfa.evaluate(() => !!yayin.muzik && !yayin.muzik.oge.paused), 10000);
-		await bekleKosul('taha müzik yayınını görüyor', () => taha.sayfa.evaluate(() => /mert/.test((document.querySelector('#yayinlar .yayin-kart.ses') || {}).textContent || '')), 10000);
-		await bekleKosul('taha ← mert müzik akıyor (yayın kanalında)', async () => {
+	await dene('sekme sesi: kanalda ayrı kişi gibi ("mert - YouTube") görünür, stereo ve yüksek bit hızıyla gider, mikrofondan ayrı', async () => {
+		// Sahte ekran yakalamanın sesi (test tarayıcısında sahte mikrofonla aynı konuşma kaydı) sekme sesi yerine geçer.
+		await mert.sayfa.click('#yayin-ac');
+		await mert.sayfa.locator('#yayin-menu button', { hasText: 'Sekme sesini paylaş' }).click();
+		await mert.sayfa.locator('#pencere-girdi').fill('YouTube');
+		await mert.sayfa.click('#pencere-tamam');
+		await bekleKosul('mert sesi paylaşıyor', () => mert.sayfa.evaluate(() => !!yayin.ekranSesi && !yayin.goruntu), 10000);
+		const sanalAdi = (k, nerede) =>
+			k.sayfa.evaluate((nerede) => {
+				const e = [...document.querySelectorAll(nerede)].find((x) => x.dataset.yayin === 'mert');
+				return e ? e.querySelector('.ad').textContent : null;
+			}, nerede);
+		for (const k of [taha, zeynep]) {
+			await bekleKosul(`${k.ad}: ses kartında "mert - YouTube"`, async () => (await sanalAdi(k, '#ses-kisiler .ses-kisi.sanal')) === 'mert - YouTube', 10000);
+			assert.equal(await sanalAdi(k, '#ses-kanallari .ses-uyesi.sanal'), 'mert - YouTube', `${k.ad}: kenar çubuğunda ayrı kişi`);
+		}
+		assert.equal(await sanalAdi(mert, '#ses-kisiler .ses-kisi.sanal'), 'mert - YouTube (sen)');
+		await bekleKosul('taha ← mert sekme sesi akıyor (ayrı kanalda)', async () => {
 			const d1 = await durumu(taha);
 			await bekle(1500);
 			const d2 = await durumu(taha);
 			return d2.esler.mert.yayinEnerji - d1.esler.mert.yayinEnerji > SES_VAR / 2;
 		}, 20000, 100);
+		await bekleKosul('taha\'da "mert - YouTube" konuşuyor görünüyor', () =>
+			taha.sayfa.evaluate(() => !![...document.querySelectorAll('#ses-kisiler .ses-kisi.sanal.konusuyor')].find((x) => x.dataset.yayin === 'mert')),
+		);
 		const bolum = await mert.sayfa.evaluate(() => esler.get('taha').pc.remoteDescription.sdp.split('m=audio').slice(1)[1] || '');
-		assert.match(bolum, /stereo=1/, 'yayın sesi stereo anlaşılmalı');
+		assert.match(bolum, /stereo=1/, 'sekme sesi stereo anlaşılmalı');
 		const d1 = await durumu(mert);
 		await bekle(3000);
 		const d2 = await durumu(mert);
 		const kbps = ((d2.esler.taha.yayinGidenBayt - d1.esler.taha.yayinGidenBayt) * 8) / 3000;
-		console.log(`     müzik mert → taha ${kbps.toFixed(1)} kbps (stereo Opus, tavan 160)`);
-		assert.ok(kbps > 64, 'müzik bit hızı düşük: ' + kbps.toFixed(1));
-		await duyuyor(taha, 'mert', 'müzik çalarken mikrofon da ayrıca duyulmalı');
-		// taha dinlemeyi kapatır: mert ona yayın sesi göndermez, zeynep'e gönderir.
-		await taha.sayfa.locator('#yayinlar .yayin-kart.ses button', { hasText: 'Kapat' }).click();
-		await bekleKosul("mert taha'ya müzik göndermiyor", () => mert.sayfa.evaluate(() => esler.get('taha').trSes.sender.track === null), 10000);
-		assert.ok(await mert.sayfa.evaluate(() => !!esler.get('zeynep').trSes.sender.track), "zeynep'e müzik gitmeye devam etmeli");
-		await mert.sayfa.locator('#yayinlar .yayin-kart.ben button', { hasText: 'Durdur' }).click();
-		await bekleKosul('müzik durunca herkeste yayın kalktı', async () => {
-			for (const k of [taha, zeynep]) if (await k.sayfa.evaluate(() => !!document.querySelector('#yayinlar .yayin-kart'))) return false;
+		console.log(`     sekme sesi mert → taha ${kbps.toFixed(1)} kbps (stereo Opus, tavan 160)`);
+		assert.ok(kbps > 48, 'sekme sesi bit hızı düşük: ' + kbps.toFixed(1));
+		await duyuyor(taha, 'mert', 'sekme sesi paylaşılırken mikrofon da ayrıca duyulmalı');
+		// taha "mert - YouTube"u kendi için susturur: yalnızca onda susar, mert göndermeye devam eder.
+		await taha.sayfa.evaluate(() => [...document.querySelectorAll('#ses-kisiler .ses-kisi.sanal')].find((x) => x.dataset.yayin === 'mert').querySelector('button.sus').click());
+		assert.equal(await taha.sayfa.evaluate(() => esler.get('mert').yayinSesOgesi.muted), true, 'taha\'da susmalı');
+		assert.ok(await mert.sayfa.evaluate(() => !!esler.get('taha').trSes.sender.track), 'susturmak yalnızca yerel: mert göndermeye devam etmeli');
+		await taha.sayfa.evaluate(() => [...document.querySelectorAll('#ses-kisiler .ses-kisi.sanal')].find((x) => x.dataset.yayin === 'mert').querySelector('button.sus').click());
+		// mert durdurur: ayrı kişi herkeste kalkar.
+		await mert.sayfa.evaluate(() => [...document.querySelectorAll('#ses-kisiler .ses-kisi.sanal')].find((x) => x.dataset.yayin === 'mert').querySelector('button[title="Sesi paylaşmayı durdur"]').click());
+		await bekleKosul('sekme sesi durunca ayrı kişi herkeste kalktı', async () => {
+			for (const k of [taha, zeynep, mert]) if (await k.sayfa.evaluate(() => !!document.querySelector('.ses-kisi.sanal, .ses-uyesi.sanal'))) return false;
 			return true;
 		}, 10000);
-		assert.equal(await taha.sayfa.evaluate(() => esler.get('mert').izliyorum), true, 'bir sonraki yayın yine kendiliğinden dinlenmeli');
 	});
 
 	await dene('ekran paylaşımı: izleyene görüntü gider, yayını kapatana gitmez', async () => {
@@ -857,7 +840,6 @@ async function sidebarKisileri(k, kanal = 'Sesli Sohbet') {
 	await tarayici.close();
 	await sunucuDurdur();
 	fs.rmSync(wav, { force: true });
-	fs.rmSync(muzikDosyasi, { force: true });
 	if (veriKlasoru) fs.rmSync(veriKlasoru, { recursive: true, force: true });
 	console.log(process.exitCode ? 'BAŞARISIZ' : `Tarayıcı denemeleri geçti (${gecen}${atlanan ? `, ${atlanan} atlandı` : ''}).`);
 	process.exit(process.exitCode || 0);

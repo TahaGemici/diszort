@@ -1,7 +1,7 @@
 // Diszort sunucusu — Discord'umsu tek sunucu: yazılı kanallar + sesli kanallar.
 //   - web sayfasını sunar (web/),
 //   - /rtc WebSocket'inde yazılı sohbeti iletir ve kaydeder (SQLite), sesli kanallar için
-//     WebRTC signaling yapar (mesh: ses, ekran ve müzik paylaşımı tarayıcılar arasında P2P akar),
+//     WebRTC signaling yapar (mesh: ses, ekran ve sekme sesi paylaşımı tarayıcılar arasında P2P akar),
 //   - dosya paylaşımında yalnızca aracıdır: dosya paylaşanın tarayıcısında kalır, isteyen onu
 //     doğrudan (WebRTC veri kanalıyla) alır; sunucu yalnızca sohbetteki kaydı (ad, boyut) tutar ve
 //     iki tarayıcıyı tanıştırır. Eski sürümün yüklediği dosyalar /dosya/<id> ile sunulmaya devam eder,
@@ -476,8 +476,9 @@ function iceSunuculari(host) {
 //   {type:'yenile', to, oturum}                yanıtlayan: "bağlantımız bozuk" → teklif eden ICE'yi
 //                                              yeniler ya da baştan kurar
 //   {type:'sessiz', sessiz, sagir}             mikrofon kapalı / sağırlaştırılmış mı
-//   {type:'yayin', ekran, ses, baslik}         ekranını / sesini (bilgisayar sesi, müzik) paylaşıyor mu;
-//                                              baslik: çalan parçanın adı. Akışlar P2P gider.
+//   {type:'yayin', ekran, ses, baslik}         ekranını / sekme (bilgisayar) sesini paylaşıyor mu;
+//                                              baslik: paylaşılan sesin adı (ör. YouTube); kanalda
+//                                              "ad - baslik" diye ayrı bir kişi gibi görünür. Akışlar P2P gider.
 //   {type:'izle', to, izle}                    yayını izle / kapat (aynı sesli kanaldaki yayıncıya;
 //                                              kapatana görüntü ve yayın sesi gönderilmez)
 //   {type:'dosya-paylas', kanal, id, ad, boyut, tur}
@@ -552,7 +553,7 @@ function kanalDurumu() {
 				const kisi = { ad, sessiz: !!ws.sessiz, sagir: !!ws.sagir };
 				if (ws.askida) kisi.askida = true; // bağlantısı koptu, geri dönmesi bekleniyor
 				if (ws.ekran) kisi.ekran = true; // ekranını paylaşıyor
-				if (ws.yayinSes) kisi.yayinSes = true; // bilgisayar sesini / müzik paylaşıyor
+				if (ws.yayinSes) kisi.yayinSes = true; // sekme / bilgisayar sesini paylaşıyor
 				if (ws.yayinBaslik) kisi.yayinBaslik = ws.yayinBaslik;
 				return kisi;
 			});
@@ -1085,7 +1086,7 @@ function sesGir(ws, m) {
 	ws.sesKanal = kanal;
 	ws.sessiz = !!m.sessiz;
 	ws.sagir = !!m.sagir;
-	// Yeniden bağlanan kişinin süren yayını (ekran / müzik) bilgisi de geri gelir.
+	// Yeniden bağlanan kişinin süren yayını (ekran / sekme sesi) bilgisi de geri gelir.
 	yayinAyarla(ws, m.ekran, m.yayinSes, m.yayinBaslik);
 	console.log(`[ses] ${kanal}: ${ws.ad} ${geriAl ? 'geri döndü (bağlantılar sürüyor)' : devam ? 'devam ediyor' : 'girdi'} (${uyeler.size}/${MAX_KISI})`);
 	gonder(ws, { type: 'ses-girdi', kanal, kisiler: digerleri, ice: iceSunuculari(ws.host), devam });
@@ -1110,7 +1111,7 @@ function sdpIlet(ws, m, tur) {
 	gonder(karsi, ileti);
 }
 
-// --- yayın: ekran paylaşımı ve bilgisayar sesi / müzik. Akışlar eşler arasında P2P gider (sesli
+// --- yayın: ekran paylaşımı ve sekme / bilgisayar sesi. Akışlar eşler arasında P2P gider (sesli
 // kanalın bağlantılarında önceden açılmış görüntü ve ikinci ses kanalı); sunucu yalnızca kimin neyi
 // paylaştığını duyurur.
 

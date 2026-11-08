@@ -1,7 +1,7 @@
 # Diszort
 
 Arkadaş grupları için tarayıcıdan girilen, Discord benzeri küçük bir sohbet sunucusu. Yazılı kanallar
-sunucuda saklanır; sesli kanallarda ses, ekran paylaşımı ve müzik kişiler arasında doğrudan (P2P) akar,
+sunucuda saklanır; sesli kanallarda ses, ekran ve sekme sesi paylaşımı kişiler arasında doğrudan (P2P) akar,
 doğrudan bağlanamayanlar için sunucudaki TURN aktarır. Dosyalar da sunucuya yüklenmez, paylaşandan
 doğrudan alınır. İçeri yalnızca içeridekilerin onayıyla girilir.
 
@@ -16,13 +16,15 @@ doğrudan alınır. İçeri yalnızca içeridekilerin onayıyla girilir.
   sürer; büyük dosyalar belleğe değil doğrudan diske yazılır. Küçük resimler sohbette önizlenir.
 - **Sesli kanallar:** kanal başına 10 kişiye kadar, yüksek kaliteli Opus (~96 kbps), konuşma göstergesi,
   kişi başı ses seviyesi, susturma ve sağırlaştırma, mikrofon/hoparlör seçimi, gürültü bastırma.
-- **Ekran paylaşımı ve birlikte müzik** (ses kartındaki paylaş düğmesi):
-  - *Ekranını paylaş* (masaüstü): ekran, pencere ya da sekme; istenirse sesiyle.
-  - *Bilgisayar sesini paylaş* (masaüstü): Spotify/YouTube çalan sekmenin ya da (Windows) tüm
-    bilgisayarın sesi kanala stereo ve yüksek kalitede gider.
-  - *Müzik çal (dosyadan)*: telefonun karşılığı. Telefon tarayıcıları (Android, iOS) ekranı da telefonun
-    sesini de yakalayamaz; bunun yerine cihazdaki müzik dosyaları çalınır ve kanala yayınlanır.
-  - Yayını istemeyen kapatır (ona hiç gönderilmez); yayın sesinin seviyesi kişi başına ayarlanır.
+- **Ekran paylaşımı ve birlikte müzik** (ses kartındaki paylaş düğmesi, masaüstünde):
+  - *Ekranını paylaş*: ekran, pencere ya da sekme; istenirse sesiyle. İstemeyen görüntüyü kapatır
+    (ona hiç gönderilmez).
+  - *Sekme sesini paylaş*: Spotify/YouTube çalan sekmenin (Windows'ta istenirse tüm bilgisayarın) sesi
+    kanala stereo ve yüksek kalitede gider. Kanalda ayrı bir kişi gibi görünür: sesi taha paylaşıyorsa
+    **taha - YouTube** (adı paylaşırken yazılır, son ad hatırlanır). Herkes onu bir kişi gibi kendi için
+    susturur ya da sesini ayarlar; ses gelince konuşma halkası yanar.
+  - Telefon tarayıcıları (Android, iOS) ekranı da telefonun sesini de yakalayamaz; telefondan
+    paylaşılanlar izlenir ve dinlenir.
 - **Bağlantı göstergesi:** yalnızca ses gerçekten bozulunca (alıcının uydurmak zorunda kaldığı ses) uyarır;
   tek kişinin bağlantısı kötüyse yalnızca onun kutusunda görünür.
 - **Sunucu penceresi** (sol üstteki veritabanı simgesi): veritabanının boyutu ve mesaj sayısı;
@@ -112,10 +114,11 @@ açıklanmıştır.
 - Ses ve yayın mesh ile taşınır: herkes kanaldaki herkese ayrı akış gönderir, bu yüzden kanal başına
   ~10 kişi. Ekran paylaşan, izleyen her kişiye ayrı görüntü gönderir (kişi başı en fazla 2,5 Mbit/s,
   toplam ~6 Mbit/s); yayını kapatana gönderilmez. Daha kalabalık odalar için SFU gerekir.
-- Ekran ve bilgisayar sesi paylaşımı tarayıcıya bağlıdır: Chrome/Edge'de en iyisi (Windows'ta tüm
-  bilgisayarın sesi, macOS ve Linux'ta sekme sesi); Firefox ve Safari ses paylaşamaz; telefon
-  tarayıcıları ekranı ve telefonun sesini hiç paylaşamaz (müzik dosyası çalınabilir). İzlemek ve dinlemek
-  her yerde olur. Hoparlörden dinleyenin mikrofonu çalan sesi de alır; kulaklık önerilir.
+- Ekran ve sekme sesi paylaşımı tarayıcıya bağlıdır: Chrome/Edge'de en iyisi (Windows'ta tüm
+  bilgisayarın sesi de, macOS ve Linux'ta sekme sesi); Firefox ve Safari ses paylaşamaz; telefon
+  tarayıcıları hiç paylaşamaz. İzlemek ve dinlemek her yerde olur. Tarayıcı paylaşılan sekmenin adını
+  sayfaya söylemediği için ad ("YouTube") paylaşırken sorulur. Hoparlörden dinleyenin mikrofonu çalan
+  sesi de alır; kulaklık önerilir.
 - P2P dosya, paylaşanın sayfası açıkken alınabilir. Chrome/Edge (masaüstü) büyük dosyayı doğrudan seçilen
   yere yazar; diğer tarayıcılar önce tarayıcının dosya alanına (kotası diskin bir kısmı) yazar.
 - TURN'den geçen ses sunucunun bant genişliğini kullanır (kişi başı ~100 kbps); TURN'den geçen dosya

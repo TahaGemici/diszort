@@ -1,7 +1,7 @@
 {
   "name": "diszort",
   "private": true,
-  "description": "Beyaz listeli, tarayıcıdan girilen Discord'umsu sunucu: yazılı kanallar + P2P sesli kanallar, ekran/müzik paylaşımı ve sınırsız P2P dosya (mesh WebRTC + coturn)",
+  "description": "Beyaz listeli, tarayıcıdan girilen Discord'umsu sunucu: yazılı kanallar + P2P sesli kanallar, ekran ve sekme sesi paylaşımı ve sınırsız P2P dosya (mesh WebRTC + coturn)",
   "license": "MIT",
   "scripts": {
     "start": "node sunucu/sunucu.js",
