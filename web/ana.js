@@ -171,6 +171,10 @@ const AYAR_VARSAYILAN = {
 	sesler: true, // giriş/çıkış sesleri
 	mikKapali: false, // kendini susturdun (kanala girerken de geçerli)
 	sagir: false, // gelen sesleri kapattın
+	// Ekran paylaşımı ses vermeyen tarayıcıda (Firefox, Safari) paylaşılan sesin alındığı aygıt
+	// ('' = henüz seçilmedi) ve o sesten kanaldakilerin konuşmasının çıkarılması (yankı engelleme).
+	yayinAygitId: '',
+	yayinYanki: true,
 };
 const ayar = { ...AYAR_VARSAYILAN };
 try {
@@ -2758,6 +2762,7 @@ function sesKapat(bildir = true) {
 	if (vardi) sesCal('cikis');
 	mikrofonuBirak();
 	yayinDurdur(false); // ekran paylaşımı (ekransız da) kanaldan çıkınca biter
+	sesKaynagiKapat();
 	sesArayuzuKapat();
 	sesGozcuDurdur();
 	taniDurdur();
@@ -3832,32 +3837,55 @@ function sesPaneliCiz(ozet) {
 
 // ---------------------------------------------------------------- yayın: ekran paylaşımı (ekranlı ya da ekransız)
 //
-// Paylaşmanın tek yolu tarayıcının ekran paylaşımıdır (ekran, pencere ya da sekme; istenirse sesiyle).
-// Bilgisayarın ya da sekmenin sesini paylaşmak da böyle olur: "ekransız paylaşım" bir ekran
+// Paylaşım tarayıcının ekran paylaşımıyla yapılır (ekran, pencere ya da sekme; istenirse sesiyle).
+// Sekmenin ya da bilgisayarın sesini paylaşmak da böyle olur: "ekransız paylaşım" bir ekran
 // paylaşımıdır; yakalama sürer ama görüntü kimseye gönderilmez, yalnızca sesi gider. Görüntü izi bu
 // yüzden durdurulmaz (saniyede bir kareye indirilir): tarayıcıda ses yakalaması ve "paylaşılıyor"
 // göstergesi görüntüye bağlıdır, görüntüyü durdurmak sesi de kesebilir. Paylaşan ekranı tek dokunuşla
 // (yeniden seçmeden) gösterip gizler.
+//
+// Ekran paylaşımında sesi yalnızca Chrome/Edge verir (sekmenin sesi; Windows'ta "Tüm ekran" ile tüm
+// bilgisayarın sesi). Firefox ve Safari, ne seçilirse seçilsin, ses vermez: bu tarayıcılarda paylaşılan
+// ses bir SES AYGITINDAN alınır (getUserMedia). Linux'ta bilgisayarın sesi PulseAudio/PipeWire'ın
+// "Monitor of …" aygıtıdır (Windows'ta "Stereo Karışımı", Mac'te BlackHole gibi sanal bir aygıt).
+// Ekransız paylaşım orada seçim penceresi açmaz, aygıt sorar; ekranlı paylaşıma ses sonradan eklenir,
+// ses aygıtından ekransız paylaşıma ekran sonradan eklenir. Bu aygıt bilgisayarda çalan her şeyi,
+// kanaldakilerin konuşması dahil, duyar: yankı engelleme açıkken tarayıcı bu sayfanın çaldığını
+// yakalanan sesten çıkarır (kimse kendi sesini geri duymaz); başka sekmelerin ve uygulamaların sesi
+// kalır.
 //
 // Sesli kanaldaki her eş bağlantısında mikrofonun yanında iki kanal önceden açıktır: paylaşımın sesi
 // (stereo, müzik kalitesinde) ve görüntüsü. Paylaşım başlayınca/bitince ya da ekran gösterilip
 // gizlenince bu kanallara yalnızca iz takılır (yeniden anlaşma yok, konuşma kesilmez). Ses herkese
 // gider (herkes yayın kartından kendi için kısar ya da susturur); görüntü yalnızca izleyene: görüntüyü
 // kapatana (ör. telefonda yalnızca dinlemek isteyene) gönderilmez.
-// Yakalamayı tarayıcı yapar: masaüstü Chrome/Edge sekmenin sesini (Windows'ta tüm bilgisayarın sesini)
-// verir; Firefox ve Safari ses vermez. Telefon tarayıcılarının çoğu hiç yakalayamaz: paylaş düğmesi
-// yalnızca tarayıcı ekran paylaşımı sunuyorsa görünür. Paylaşılanı her cihaz izler ve dinler.
+// Telefon tarayıcılarının çoğu hiç yakalayamaz: paylaş düğmesi yalnızca tarayıcı ekran paylaşımı
+// sunuyorsa görünür. Paylaşılanı her cihaz izler ve dinler.
 
 const GORUNTU_KISITI = { frameRate: { ideal: 30, max: 30 }, width: { max: 1920 }, height: { max: 1080 } };
 const EKRANSIZ_KISITI = { ...GORUNTU_KISITI, frameRate: { max: 1 } };
 
-const yayin = { goruntu: null, ses: null, ekransiz: false, olcer: null };
+// goruntu/ses: paylaşılan izler (biri yoksa null). aygit: ses bir ses aygıtından alınıyorsa onun kimliği
+// ('' = ekran yakalamasının kendi sesi), aygitAdi: o aygıtın adı. ekransiz: görüntü gönderilmiyor
+// (gizlendi ya da ses aygıtından paylaşımda hiç seçilmedi).
+const yayin = { goruntu: null, ses: null, ekransiz: false, olcer: null, aygit: '', aygitAdi: '' };
+const yayinVar = () => !!(yayin.goruntu || yayin.ses);
 // Tarayıcı seçim penceresini açmadan reddetti (ör. "masaüstü sitesi" kipindeki telefon): düğme gizlenir.
 let yayinDesteklenmiyor = false;
 const ekranPaylasilabilir = () => !yayinDesteklenmiyor && !!(navigator.mediaDevices && typeof navigator.mediaDevices.getDisplayMedia === 'function');
+// Ekran paylaşımı ses de verebilir mi? Verebilen tarayıcılar (Chrome/Edge) ekran yakalamasının ses
+// kısıtlarını tanır; Firefox ve Safari tanımaz (onlarda ses ancak bir ses aygıtından gelir).
+function ekranSesiVar() {
+	try {
+		const d = navigator.mediaDevices.getSupportedConstraints();
+		return !!(d && (d.suppressLocalAudioPlayback || d.restrictOwnAudio));
+	} catch {
+		return false;
+	}
+}
 
 // Duyurulan durum: null (paylaşım yok) ya da { goruntu, ses } (goruntu: false = ekransız).
-const yayinBilgisi = () => (yayin.goruntu ? { goruntu: !yayin.ekransiz, ses: !!yayin.ses } : null);
+const yayinBilgisi = () => (yayinVar() ? { goruntu: !!yayin.goruntu && !yayin.ekransiz, ses: !!yayin.ses } : null);
 // Eşe giden görüntü: ekran gösteriliyorsa ve o izliyorsa. (Ses herkese gider: yayin.ses.)
 const gidenGoruntu = (es) => (yayin.goruntu && !yayin.ekransiz && es.izliyor ? yayin.goruntu : null);
 
@@ -3890,30 +3918,28 @@ function kisitUygula(iz, kisit) {
 	} catch {}
 }
 
-// Paylaşımı başlat. ekransiz: yalnızca ses gider (seçim penceresi sekmelerle açılır; sesi olmayan
-// seçim kabul edilmez).
-async function yayinBaslat(ekransiz) {
-	yayinMenuKapat();
-	if (!sesKanal) return durum('Önce bir sesli kanala gir.', true);
-	if (!ekranPaylasilabilir()) return durum('Bu tarayıcı ekranı ve sesi paylaşamıyor; paylaşılanları izleyip dinleyebilirsin.', true);
-	const destek = (navigator.mediaDevices.getSupportedConstraints && navigator.mediaDevices.getSupportedConstraints()) || {};
-	// Ses işlenmeden gitsin (yankı/gürültü giderme müziği bozar). restrictOwnAudio: bu sekmenin kendi
-	// sesi (kanaldakilerin konuşması) yakalanan bilgisayar sesine karışmasın (yankı olmasın).
-	const sesKisiti = { echoCancellation: false, noiseSuppression: false, autoGainControl: false };
-	if (destek.suppressLocalAudioPlayback) sesKisiti.suppressLocalAudioPlayback = false;
-	if (destek.restrictOwnAudio) sesKisiti.restrictOwnAudio = true;
-	// Ekransız: seçim penceresi sekmelerle açılsın (sekmenin sesi her işletim sisteminde paylaşılır).
-	const video = ekransiz ? { ...GORUNTU_KISITI, displaySurface: 'browser' } : { ...GORUNTU_KISITI };
-	let akis;
+// Tarayıcının seçim penceresi. sesli: ekranın sesi de istenir (verebilen tarayıcıda); sekme: seçim
+// sekmelerle açılsın. Vazgeçilir ya da reddedilirse null.
+async function ekranIste(sesli, sekme) {
+	const secenek = {
+		video: sekme ? { ...GORUNTU_KISITI, displaySurface: 'browser' } : { ...GORUNTU_KISITI },
+		audio: false,
+		selfBrowserSurface: 'exclude', // Diszort sekmesinin kendisi seçenek olmasın
+		surfaceSwitching: 'include',
+	};
+	if (sesli) {
+		const destek = (navigator.mediaDevices.getSupportedConstraints && navigator.mediaDevices.getSupportedConstraints()) || {};
+		// Ses işlenmeden gitsin (yankı/gürültü giderme müziği bozar). restrictOwnAudio: bu sekmenin kendi
+		// sesi (kanaldakilerin konuşması) yakalanan bilgisayar sesine karışmasın (yankı olmasın).
+		const sesKisiti = { echoCancellation: false, noiseSuppression: false, autoGainControl: false };
+		if (destek.suppressLocalAudioPlayback) sesKisiti.suppressLocalAudioPlayback = false;
+		if (destek.restrictOwnAudio) sesKisiti.restrictOwnAudio = true;
+		secenek.audio = sesKisiti;
+		secenek.systemAudio = 'include'; // Chrome: "tüm ekran" seçilince sistem sesini paylaşma seçeneği
+	}
 	const istekZamani = Date.now();
 	try {
-		akis = await navigator.mediaDevices.getDisplayMedia({
-			video,
-			audio: sesKisiti,
-			systemAudio: 'include', // Chrome: "tüm ekran" seçilince sistem sesini paylaşma seçeneği
-			selfBrowserSurface: 'exclude', // Diszort sekmesinin kendisi seçenek olmasın
-			surfaceSwitching: 'include',
-		});
+		return await navigator.mediaDevices.getDisplayMedia(secenek);
 	} catch (h) {
 		if (h && (h.name === 'NotAllowedError' || h.name === 'AbortError')) {
 			// Seçim penceresi açılmadan hemen reddedildiyse tarayıcı/cihaz izin vermiyor (düğme gizlenir);
@@ -3923,10 +3949,23 @@ async function yayinBaslat(ekransiz) {
 				yayinMenusuCiz();
 				durum('Bu tarayıcı ya da cihaz ekran paylaşımına izin vermiyor; paylaşılanları izleyip dinleyebilirsin.', true);
 			}
-			return;
+			return null;
 		}
-		return durum('Paylaşım başlatılamadı: ' + ((h && h.message) || h), true);
+		durum('Paylaşım başlatılamadı: ' + ((h && h.message) || h), true);
+		return null;
 	}
+}
+
+// Paylaşımı başlat. ekransiz: yalnızca ses gider (seçim penceresi sekmelerle açılır; sesi olmayan
+// seçim kabul edilmez). Ekran paylaşımı ses vermeyen tarayıcıda (Firefox, Safari) ekransız
+// paylaşım seçim penceresi açmaz: ses aygıtı sorulur.
+async function yayinBaslat(ekransiz) {
+	yayinMenuKapat();
+	if (!sesKanal) return durum('Önce bir sesli kanala gir.', true);
+	if (!ekranPaylasilabilir()) return durum('Bu tarayıcı ekranı ve sesi paylaşamıyor; paylaşılanları izleyip dinleyebilirsin.', true);
+	if (ekransiz && !ekranSesiVar()) return sesKaynagiAc();
+	const akis = await ekranIste(true, ekransiz);
+	if (!akis) return;
 	const goruntu = akis.getVideoTracks()[0] || null;
 	const ses = akis.getAudioTracks()[0] || null;
 	const birak = () => akis.getTracks().forEach((t) => t.stop());
@@ -3939,37 +3978,61 @@ async function yayinBaslat(ekransiz) {
 		birak();
 		return durum('Ses gelmedi: seçim penceresinde sesi paylaşma seçeneğini aç (sekmenin sesi her bilgisayarda; tüm bilgisayarın sesi Windows\'ta "Tüm ekran" ile).', true);
 	}
-	if (yayin.goruntu) yayinDurdur(false);
-	yayin.goruntu = goruntu;
-	yayin.ses = ses;
+	if (yayinVar()) yayinDurdur(false);
 	yayin.ekransiz = !!ekransiz;
+	yayinGoruntusuTak(goruntu);
+	if (ekransiz) kisitUygula(goruntu, EKRANSIZ_KISITI);
+	if (ses) yayinSesiTak(ses);
+	yayinDegisti();
+	if (ekransiz) durum('Ekransız paylaşıyorsun: yalnızca ses gidiyor. Hoparlörden dinliyorsan mikrofonun da bu sesi alır; kulaklık kullan.');
+	else if (ses) durum('Ekranın ve sesi paylaşılıyor.');
+	else if (ekranSesiVar()) durum('Ekranın paylaşılıyor (ses yok: seçerken sesi de paylaşabilirsin).');
+	else durum('Ekranın paylaşılıyor (sessiz). Bilgisayarın sesini de paylaşmak için: "Ses ekle".');
+}
+
+// Paylaşılan görüntü izi. Tarayıcının "Paylaşımı durdur" çubuğu ya da paylaşılan pencerenin kapanması
+// onu bitirir: ekran yakalamasının kendi sesi de onunla gider (paylaşım biter); ses bir ses aygıtından
+// geliyorsa paylaşım ekransız sürer.
+function yayinGoruntusuTak(goruntu) {
+	yayin.goruntu = goruntu;
 	try {
 		goruntu.contentHint = 'motion'; // oyun/video: akıcılık öncelikli
 	} catch {}
-	if (ekransiz) kisitUygula(goruntu, EKRANSIZ_KISITI);
-	// Tarayıcının "Paylaşımı durdur" çubuğu ya da paylaşılan pencere kapandı: paylaşım biter.
 	goruntu.addEventListener('ended', () => {
-		if (yayin.goruntu === goruntu) yayinDurdur();
+		if (yayin.goruntu !== goruntu) return;
+		if (!yayin.ses || !yayin.aygit) return yayinDurdur();
+		yayin.goruntu = null;
+		yayin.ekransiz = true;
+		yayinDegisti();
+		durum('Ekran paylaşımı bitti; ses paylaşımı sürüyor.');
 	});
-	if (ses) {
-		try {
-			ses.contentHint = 'music';
-		} catch {}
-		ses.addEventListener('ended', () => {
-			if (yayin.ses !== ses) return;
-			// Ekransızken paylaşılacak bir şey kalmadı; ekran gösteriliyorsa görüntü sürer.
-			if (yayin.ekransiz) return yayinDurdur();
-			yayinSesiniBirak();
-			yayinDegisti();
-		});
-		// Paylaştığım sesin seviyesi kendi kartımda (diğerlerinde de öyle görünür).
-		try {
-			yayin.olcer = seviyeOlcer(new MediaStream([ses]), (caliyor, seviye) => kartSesi('ben', caliyor, seviye));
-		} catch {}
-	}
-	yayinDegisti();
-	if (ekransiz) durum('Ekransız paylaşıyorsun: yalnızca ses gidiyor. Hoparlörden dinliyorsan mikrofonun da bu sesi alır; kulaklık kullan.');
-	else durum(ses ? 'Ekranın ve sesi paylaşılıyor.' : 'Ekranın paylaşılıyor (ses yok: seçerken sesi de paylaşabilirsin).');
+}
+
+// Paylaşılan ses izi: ekran yakalamasının sesi ya da (aygit verilirse) bir ses aygıtının sesi.
+function yayinSesiTak(ses, aygit = '', aygitAdi = '') {
+	if (yayin.ses && yayin.ses !== ses) yayinSesiniBirak();
+	yayin.ses = ses;
+	yayin.aygit = aygit;
+	yayin.aygitAdi = aygitAdi;
+	try {
+		ses.contentHint = 'music';
+	} catch {}
+	ses.addEventListener('ended', () => {
+		if (yayin.ses !== ses) return;
+		// Ekransızken paylaşılacak bir şey kalmadı; ekran gösteriliyorsa görüntü sürer.
+		if (yayin.ekransiz || !yayin.goruntu) {
+			yayinDurdur();
+			if (aygit) durum('Ses aygıtı kapandı; paylaşım bitti.', true);
+			return;
+		}
+		yayinSesiniBirak();
+		yayinDegisti();
+		if (aygit) durum('Ses aygıtı kapandı; yalnızca ekranın gidiyor.', true);
+	});
+	// Paylaştığım sesin seviyesi kendi kartımda (diğerlerinde de öyle görünür).
+	try {
+		yayin.olcer = seviyeOlcer(new MediaStream([ses]), (caliyor, seviye) => kartSesi('ben', caliyor, seviye));
+	} catch {}
 }
 
 function yayinSesiniBirak() {
@@ -3977,15 +4040,35 @@ function yayinSesiniBirak() {
 	yayin.olcer = null;
 	if (yayin.ses) yayin.ses.stop();
 	yayin.ses = null;
+	yayin.aygit = '';
+	yayin.aygitAdi = '';
 }
 
-// Ekranı göster / gizle: aynı yakalama sürer, yalnızca görüntünün gidip gitmediği değişir.
+// Ekranı göster / gizle: aynı yakalama sürer, yalnızca görüntünün gidip gitmediği değişir. Ses
+// aygıtından ekransız paylaşımda ekran henüz seçilmediyse önce seçilir.
 function ekransizAyarla(ekransiz) {
+	if (!ekransiz && yayin.ses && !yayin.goruntu) return ekranEkle();
 	if (!yayin.goruntu || yayin.ekransiz === ekransiz || (ekransiz && !yayin.ses)) return;
 	yayin.ekransiz = ekransiz;
 	kisitUygula(yayin.goruntu, ekransiz ? EKRANSIZ_KISITI : GORUNTU_KISITI);
 	yayinDegisti();
 	durum(ekransiz ? 'Ekranın gizlendi; yalnızca ses gidiyor.' : 'Ekranın yeniden görünüyor.');
+}
+
+// Ses aygıtından süren ekransız paylaşıma ekran ekle: seçim penceresi bir kez açılır (sonra gösterip
+// gizlemek yeniden seçim istemez).
+async function ekranEkle() {
+	const akis = await ekranIste(false, false);
+	if (!akis) return;
+	const goruntu = akis.getVideoTracks()[0] || null;
+	for (const t of akis.getTracks()) if (t !== goruntu) t.stop();
+	if (!goruntu) return durum('Paylaşım başlatılamadı: tarayıcı görüntü vermedi.', true);
+	// Seçerken paylaşım bitti (ya da ekran başka yoldan eklendi).
+	if (!sesKanal || !yayin.ses || yayin.goruntu) return goruntu.stop();
+	yayinGoruntusuTak(goruntu);
+	yayin.ekransiz = false;
+	yayinDegisti();
+	durum('Ekranın da paylaşılıyor.');
 }
 
 // Paylaşımı bitir. bildir=false: sesli kanaldan çıkılırken (eşler zaten kapandı).
@@ -4003,6 +4086,151 @@ function yayinDurdur(bildir = true) {
 		yayinMenusuCiz();
 	}
 }
+
+// --- ses kaynağı: paylaşılan sesin alındığı ses aygıtı (ekran paylaşımı ses vermeyen tarayıcılarda)
+//
+// Bilgisayarın sesi gibi görünen aygıtlar ("Monitor of …", Stereo Mix, BlackHole…) başta gelir ve ilki
+// seçili gelir (en son seçilen hâlâ takılıysa o); mikrofonun işaretlenir. Ses stereo ve gürültü
+// bastırmasız, otomatik kazançsız alınır (ikisi de müziği bozar). Yankı engelleme açıkken (varsayılan)
+// tarayıcı bu sayfanın çaldığını, yani kanaldakilerin sesini, yakalanandan çıkarır.
+
+const BILGISAYAR_SESI = /monit|izleyici|stereo ?mix|stereo karı|what ?u ?hear|loopback|blackhole|soundflower|vb-audio|cable output|voicemeeter/i;
+
+async function sesAygitlari() {
+	try {
+		const liste = await navigator.mediaDevices.enumerateDevices();
+		return liste.filter((a) => a.kind === 'audioinput' && a.deviceId && a.deviceId !== 'default' && a.deviceId !== 'communications');
+	} catch {
+		return [];
+	}
+}
+
+let sesKaynagiOncekiOdak = null;
+// Pencereyi aç ve aygıtları listele. Aygıt adları izin verilmeden gizlidir (mikrofonsuz, yalnızca
+// dinlerken): o zaman bir kez izin istenir.
+async function sesKaynagiAc() {
+	yayinMenuKapat();
+	if (!sesKanal) return durum('Önce bir sesli kanala gir.', true);
+	if (!navigator.mediaDevices || typeof navigator.mediaDevices.getUserMedia !== 'function') return durum('Bu tarayıcı ses aygıtından paylaşamıyor.', true);
+	if ($('ses-kaynagi').hidden) sesKaynagiOncekiOdak = document.activeElement;
+	const secim = $('ses-kaynagi-aygit');
+	secim.replaceChildren(el('option', null, 'Ses aygıtları aranıyor…'));
+	secim.disabled = true;
+	$('ses-kaynagi-paylas').disabled = true;
+	$('ses-kaynagi-ipucu').hidden = true;
+	$('ses-kaynagi-yanki').checked = ayar.yayinYanki;
+	$('ses-kaynagi').hidden = false;
+	$('ses-kaynagi-iptal').focus();
+	let aygitlar = await sesAygitlari();
+	if (!aygitlar.some((a) => a.label)) {
+		try {
+			const izin = await navigator.mediaDevices.getUserMedia({ audio: true });
+			izin.getTracks().forEach((t) => t.stop());
+			aygitlar = await sesAygitlari();
+		} catch {}
+	}
+	if (!$('ses-kaynagi').hidden) sesKaynaklariniCiz(aygitlar);
+}
+
+function sesKaynaklariniCiz(aygitlar) {
+	const secim = $('ses-kaynagi-aygit');
+	let mikId = '';
+	try {
+		const iz = mikrofon && mikrofon.getAudioTracks()[0];
+		mikId = (iz && iz.getSettings && iz.getSettings().deviceId) || '';
+	} catch {}
+	const bilgisayar = aygitlar.filter((a) => BILGISAYAR_SESI.test(a.label));
+	const diger = aygitlar.filter((a) => !BILGISAYAR_SESI.test(a.label));
+	secim.replaceChildren();
+	let sira = 0;
+	for (const a of [...bilgisayar, ...diger]) {
+		const ad = a.label || `Ses aygıtı ${++sira}`;
+		const o = el('option', null, BILGISAYAR_SESI.test(a.label) ? `Bilgisayarın sesi · ${ad}` : a.deviceId === mikId ? `${ad} · mikrofonun` : ad);
+		o.value = a.deviceId;
+		o.dataset.ad = ad;
+		secim.append(o);
+	}
+	if (!aygitlar.length) secim.append(el('option', null, 'Ses aygıtı bulunamadı'));
+	const takili = (id) => !!id && aygitlar.some((a) => a.deviceId === id);
+	const ilk = bilgisayar[0] || diger.find((a) => a.deviceId !== mikId) || diger[0];
+	if (takili(ayar.yayinAygitId)) secim.value = ayar.yayinAygitId;
+	else if (ilk) secim.value = ilk.deviceId;
+	secim.disabled = !aygitlar.length;
+	$('ses-kaynagi-paylas').disabled = !aygitlar.length;
+	$('ses-kaynagi-ipucu').hidden = bilgisayar.length > 0;
+	if (aygitlar.length) secim.focus();
+}
+
+function sesKaynagiKapat() {
+	if ($('ses-kaynagi').hidden) return;
+	$('ses-kaynagi').hidden = true;
+	const odak = sesKaynagiOncekiOdak;
+	sesKaynagiOncekiOdak = null;
+	// Menüden açıldıysa menü öğesi artık yok: paylaş düğmesine dön.
+	if (odak && odak.focus && document.contains(odak) && !odak.closest('[hidden]')) odak.focus();
+	else if (!$('yayin-ac').hidden && !$('ses-karti').hidden) $('yayin-ac').focus();
+}
+
+function aygitHataMetni(h) {
+	const ad = h && h.name;
+	if (ad === 'NotAllowedError' || ad === 'SecurityError') return 'Ses aygıtına izin verilmedi.';
+	if (ad === 'NotFoundError' || ad === 'OverconstrainedError') return 'Ses aygıtı bulunamadı; yeniden seç.';
+	const neden = String((h && h.message) || h || '').slice(0, 120);
+	if (ad === 'NotReadableError' || ad === 'AbortError') return 'Ses aygıtı açılamadı' + (neden ? ': ' + neden : ' (başka bir uygulama kullanıyor olabilir).');
+	return 'Ses aygıtı açılamadı: ' + neden;
+}
+
+// Seçilen aygıtın sesini paylaş: ekranlı bir paylaşım sürüyorsa ona eklenir, yoksa ekransız paylaşım
+// başlar.
+async function sesKaynagiPaylas() {
+	const secim = $('ses-kaynagi-aygit');
+	if (secim.disabled) return;
+	const id = secim.value;
+	const secili = secim.selectedOptions && secim.selectedOptions[0];
+	const ad = (secili && secili.dataset.ad) || '';
+	const yanki = $('ses-kaynagi-yanki').checked;
+	sesKaynagiKapat();
+	if (!sesKanal) return durum('Önce bir sesli kanala gir.', true);
+	ayar.yayinAygitId = id;
+	ayar.yayinYanki = yanki;
+	ayarKaydet();
+	const kisit = { echoCancellation: yanki, noiseSuppression: false, autoGainControl: false, channelCount: { ideal: 2 }, sampleRate: { ideal: 48000 } };
+	if (id) kisit.deviceId = { exact: id };
+	let ses;
+	try {
+		const akis = await navigator.mediaDevices.getUserMedia({ audio: kisit });
+		ses = akis.getAudioTracks()[0] || null;
+		for (const t of akis.getTracks()) if (t !== ses) t.stop();
+		if (!ses) throw Object.assign(new Error('ses izi yok'), { name: 'NotFoundError' });
+	} catch (h) {
+		if (h && (h.name === 'OverconstrainedError' || h.name === 'NotFoundError')) {
+			ayar.yayinAygitId = '';
+			ayarKaydet();
+		}
+		taniGonder({ olay: 'yayin-aygit-hata', ad: (h && h.name) || null, metin: String((h && h.message) || h).slice(0, 160) });
+		return durum(aygitHataMetni(h), true);
+	}
+	if (!sesKanal) return ses.stop();
+	// Teşhis: tarayıcının gerçekte uyguladığı (kanal sayısı, yankı engelleme).
+	try {
+		const s = ses.getSettings ? ses.getSettings() : {};
+		taniGonder({ olay: 'yayin-aygit', kanal: s.channelCount ?? null, aec: s.echoCancellation ?? null, ns: s.noiseSuppression ?? null, agc: s.autoGainControl ?? null, ornekHizi: s.sampleRate ?? null });
+	} catch {}
+	const ekle = yayinVar();
+	if (!ekle) yayin.ekransiz = true;
+	yayinSesiTak(ses, id || 'varsayilan', ad);
+	yayinDegisti();
+	const kaynak = ad ? ` (${ad})` : '';
+	const not = yanki ? '' : ' Yankı engelleme kapalı: kanaldakiler kendi sesini geri duyabilir.';
+	durum((ekle ? `Ses de paylaşılıyor${kaynak}.` : `Ekransız paylaşıyorsun: yalnızca ses gidiyor${kaynak}.`) + not);
+}
+
+$('ses-kaynagi-paylas').addEventListener('click', sesKaynagiPaylas);
+$('ses-kaynagi-iptal').addEventListener('click', sesKaynagiKapat);
+$('ses-kaynagi-kapat').addEventListener('click', sesKaynagiKapat);
+$('ses-kaynagi').addEventListener('click', (e) => {
+	if (e.target === $('ses-kaynagi')) sesKaynagiKapat();
+});
 
 // --- izleme: başkasının ekranını kapat / yeniden aç (yalnızca görüntü; ses sürer)
 
@@ -4069,7 +4297,7 @@ function yayinlarCiz() {
 	if (!kap) return;
 	const istenen = [];
 	if (sesKanal) {
-		if (yayin.goruntu) istenen.push(['ben', null]);
+		if (yayinVar()) istenen.push(['ben', null]);
 		for (const es of esler.values()) if ((sesDurumlari.get(es.ad) || {}).yayin) istenen.push(['es:' + es.ad, es]);
 	}
 	const anahtarlar = new Set(istenen.map(([a]) => a));
@@ -4201,11 +4429,16 @@ function yayinKarti(es) {
 	return { kok, guncelle, es, dolgu };
 }
 
-// Kendi paylaşımım: ekranı göster / gizle (sesi varsa), durdur; ekranlıysa küçük önizleme.
+// Kendi paylaşımım: ekranı göster / gizle (sesi varsa), ses ekle (ekran paylaşımı ses vermeyen
+// tarayıcıda, sessiz ekran paylaşımına), durdur; ekranlıysa küçük önizleme.
 function benimYayinKartim() {
 	const kok = el('div', 'yayin-kart ben');
 	const ust = el('div', 'yayin-ust');
 	const metin = el('span', 'yayin-metin');
+	const sesEkle = el('button', 'yayin-dugme', 'Ses ekle');
+	sesEkle.type = 'button';
+	sesEkle.title = 'Bilgisayarın sesini de paylaş (ses aygıtından)';
+	sesEkle.onclick = () => sesKaynagiAc();
 	const gizle = el('button', 'yayin-dugme');
 	gizle.type = 'button';
 	gizle.onclick = () => ekransizAyarla(!yayin.ekransiz);
@@ -4213,7 +4446,7 @@ function benimYayinKartim() {
 	durdur.type = 'button';
 	durdur.title = 'Paylaşımı durdur';
 	durdur.onclick = () => yayinDurdur();
-	ust.append(el('span', 'canli', 'CANLI'), metin, el('span', 'bosluk'), gizle, durdur);
+	ust.append(el('span', 'canli', 'CANLI'), metin, el('span', 'bosluk'), sesEkle, gizle, durdur);
 	const onizleme = videoYap('kucuk-onizleme');
 	const sesSatir = el('div', 'yayin-ses');
 	const sesIkon = el('span', 'yayin-ses-ikon');
@@ -4227,9 +4460,12 @@ function benimYayinKartim() {
 		kok.classList.toggle('ekransiz', yayin.ekransiz);
 		if (yayin.ekransiz) metin.textContent = 'Ekransız paylaşıyorsun · yalnızca ses gidiyor' + (kisi ? '' : ' · kanalda yalnızsın');
 		else metin.textContent = 'Ekranını paylaşıyorsun' + (kisi ? ` · ${izleyen}/${kisi} kişi izliyor` : ' · kanalda yalnızsın');
+		metin.title = yayin.aygitAdi ? 'Ses: ' + yayin.aygitAdi : '';
+		sesEkle.hidden = !!yayin.ses || ekranSesiVar();
 		gizle.hidden = !yayin.ses;
 		gizle.textContent = yayin.ekransiz ? 'Ekranı göster' : 'Ekranı gizle';
-		gizle.title = yayin.ekransiz ? 'Ekran da gönderilsin (yeniden seçmeden)' : 'Ekran gönderilmesin, yalnızca ses gitsin';
+		if (!yayin.ekransiz) gizle.title = 'Ekran gönderilmesin, yalnızca ses gitsin';
+		else gizle.title = yayin.goruntu ? 'Ekran da gönderilsin (yeniden seçmeden)' : 'Ekranı da paylaş (seçim penceresi açılır)';
 		onizleme.hidden = yayin.ekransiz;
 		videoyaBagla(onizleme, yayin.ekransiz ? null : yayin.goruntu);
 		sesSatir.hidden = !yayin.ses;
@@ -4242,8 +4478,8 @@ function benimYayinKartim() {
 function yayinMenusuCiz() {
 	const m = $('yayin-menu');
 	const d = $('yayin-ac');
-	d.hidden = !yayin.goruntu && !ekranPaylasilabilir();
-	d.classList.toggle('secili', !!yayin.goruntu);
+	d.hidden = !yayinVar() && !ekranPaylasilabilir();
+	d.classList.toggle('secili', yayinVar());
 	if (m.hidden) return;
 	m.replaceChildren();
 	const ekle = (ikonAd, baslik, aciklama, fn) => {
@@ -4260,11 +4496,14 @@ function yayinMenusuCiz() {
 		};
 		m.append(o);
 	};
-	if (!yayin.goruntu) {
-		ekle('ekran', 'Ekranını paylaş', 'Ekran, pencere ya da sekme; istersen sesiyle', () => yayinBaslat(false));
-		ekle('hoparlor', 'Ekransız paylaş', 'Yalnızca ses: sekmenin ya da bilgisayarın sesi', () => yayinBaslat(true));
+	// Ekran paylaşımı ses vermeyen tarayıcıda (Firefox, Safari) ses bir ses aygıtından gelir.
+	const ekranSesli = ekranSesiVar();
+	if (!yayinVar()) {
+		ekle('ekran', 'Ekranını paylaş', ekranSesli ? 'Ekran, pencere ya da sekme; istersen sesiyle' : 'Ekran ya da pencere; sesi sonra eklersin', () => yayinBaslat(false));
+		ekle('hoparlor', 'Ekransız paylaş', ekranSesli ? 'Yalnızca ses: sekmenin ya da bilgisayarın sesi' : 'Yalnızca ses: bilgisayarın sesi (ses aygıtından)', () => yayinBaslat(true));
 	} else {
-		if (yayin.ses && yayin.ekransiz) ekle('ekran', 'Ekranı göster', 'Aynı paylaşım, yeniden seçmeden', () => ekransizAyarla(false));
+		if (!yayin.ses && !ekranSesli) ekle('hoparlor', 'Ses ekle', 'Bilgisayarın sesi (ses aygıtından)', () => sesKaynagiAc());
+		if (yayin.ses && yayin.ekransiz) ekle('ekran', 'Ekranı göster', yayin.goruntu ? 'Aynı paylaşım, yeniden seçmeden' : 'Ekranı da paylaş (seçim penceresi açılır)', () => ekransizAyarla(false));
 		else if (yayin.ses) ekle('ekran-kapali', 'Ekranı gizle', 'Yalnızca ses gitsin', () => ekransizAyarla(true));
 		ekle('dur', 'Paylaşımı durdur', '', () => yayinDurdur());
 	}
@@ -4272,7 +4511,9 @@ function yayinMenusuCiz() {
 		el(
 			'p',
 			'yayin-menu-not',
-			'Ses için seçim penceresinde sesi paylaşma seçeneğini aç: sekmenin sesi her bilgisayarda gider, tüm bilgisayarın sesi Windows\'ta "Tüm ekran" seçilince. Hoparlörden dinliyorsan kulaklık kullan (mikrofonun sesi geri alır).',
+			ekranSesli
+				? 'Ses için seçim penceresinde sesi paylaşma seçeneğini aç: sekmenin sesi her bilgisayarda gider, tüm bilgisayarın sesi Windows\'ta "Tüm ekran" seçilince. Hoparlörden dinliyorsan kulaklık kullan (mikrofonun sesi geri alır).'
+				: 'Bu tarayıcı ekranla birlikte ses paylaşamaz; ses bir ses aygıtından alınır (Linux\'ta bilgisayarın sesi "Monitor of …" aygıtıdır). Hoparlörden dinliyorsan kulaklık kullan (mikrofonun sesi geri alır).',
 		),
 	);
 }
@@ -4637,8 +4878,19 @@ async function taniVeri() {
 		sesBaglami: baglam ? baglam.state : null,
 		iceSunucu: (ice.iceServers || []).map((s) => [].concat(s.urls || []).join('+')).join(',').slice(0, 200),
 		yayin: yayinBilgisi(),
+		yayinSes: yayinSesiOzeti(),
 		esler: liste,
 	};
+}
+
+// Paylaşılan ses: kaynağı (ses aygıtı ya da ekran yakalaması) ve tarayıcının gerçekte uyguladığı.
+function yayinSesiOzeti() {
+	if (!yayin.ses) return null;
+	let s = {};
+	try {
+		s = yayin.ses.getSettings ? yayin.ses.getSettings() : {};
+	} catch {}
+	return { kaynak: yayin.aygit ? 'aygit' : 'ekran', durum: yayin.ses.readyState, kanal: s.channelCount ?? null, aec: s.echoCancellation ?? null };
 }
 
 function taniBaslat() {
@@ -4923,6 +5175,7 @@ document.addEventListener('keydown', (e) => {
 	if (e.key === 'Escape') {
 		if (!$('buyutec').hidden) buyutecKapat();
 		else if (!$('yayin-menu').hidden) yayinMenuKapat();
+		else if (!$('ses-kaynagi').hidden) sesKaynagiKapat();
 		else if (!$('pencere').hidden) pencereKapat();
 		else if (!$('ayarlar').hidden) ayarlarKapat();
 		else if (!$('sunucu-pencere').hidden) sunucuPenceresiKapat();

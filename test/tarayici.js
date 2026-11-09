@@ -15,6 +15,8 @@
 //     kaldığı yerden eksiksiz gelir (içerik özeti aynı), iki kişi aynı anda indirir
 //   - ekransız paylaşım (bilgisayarın sesi): yakalama sürer ama yalnızca ses gider (stereo, yüksek bit
 //     hızı); ekran yeniden seçmeden gösterilip gizlenir; dinleyen kendi için susturur
+//   - ekran paylaşımı ses vermeyen tarayıcı (Firefox gibi): ekransız paylaşımın sesi bir ses aygıtından
+//     (mikrofonla aynı anda); ekran sonradan eklenir, ekran bitince ses sürer
 //   - ekran paylaşımı (bilgisayar sesiyle): izleyene görüntü gider, görüntüyü kapatana gitmez
 //
 //   node test/tarayici.js                    kendi sunucusunu (node sunucu/sunucu.js) geçici veriyle açar
@@ -666,6 +668,104 @@ async function sidebarKisileri(k, kanal = 'Sesli Sohbet') {
 			return true;
 		}, 10000);
 		await bekleKosul('mert artık ses ve görüntü göndermiyor', () => mert.sayfa.evaluate(() => [...esler.values()].every((e) => !e.trGoruntu.sender.track && !e.trSes.sender.track)), 5000, 100);
+	});
+
+	await dene('ekran paylaşımı ses vermeyen tarayıcı (Firefox gibi): ekransız paylaşımın sesi ses aygıtından; ekran sonradan eklenir, ekran bitince ses sürer', async () => {
+		// Firefox ve Safari ekran yakalamasının ses kısıtlarını tanımaz (ve ses vermez): zeynep'te öyle
+		// görünsün. Bilgisayarın sesi ("Monitor of …") yerine Chromium'un sahte ses aygıtı seçilir.
+		await zeynep.sayfa.evaluate(() => {
+			const asil = navigator.mediaDevices.getSupportedConstraints.bind(navigator.mediaDevices);
+			window.asilKisitlar = asil;
+			navigator.mediaDevices.getSupportedConstraints = () => {
+				const d = { ...asil() };
+				delete d.suppressLocalAudioPlayback;
+				delete d.restrictOwnAudio;
+				return d;
+			};
+		});
+		await zeynep.sayfa.click('#yayin-ac');
+		await zeynep.sayfa.locator('#yayin-menu button', { hasText: 'Ekransız paylaş' }).click();
+		await goruneneKadar(zeynep, '#ses-kaynagi');
+		await bekleKosul('ses aygıtları listelendi', () => zeynep.sayfa.evaluate(() => !document.getElementById('ses-kaynagi-aygit').disabled), 10000);
+		assert.equal(await zeynep.sayfa.evaluate(() => yayinVar()), false, 'aygıt seçilmeden paylaşım başlamamalı (seçim penceresi de açılmamalı)');
+		const secenekler = await zeynep.sayfa.evaluate(() => [...document.getElementById('ses-kaynagi-aygit').options].map((o) => ({ ad: o.textContent, id: o.value })));
+		const aygit = secenekler.find((o) => /Fake Audio Input 1/.test(o.ad));
+		assert.ok(aygit, 'sahte ses aygıtı listelenmeli: ' + secenekler.map((o) => o.ad).join(' | '));
+		await zeynep.sayfa.selectOption('#ses-kaynagi-aygit', aygit.id);
+		// Denemede herkesin mikrofonu aynı konuşma kaydını çalıyor: yankı engelleme onu da çıkarabilirdi.
+		await zeynep.sayfa.uncheck('#ses-kaynagi-yanki');
+		await zeynep.sayfa.click('#ses-kaynagi-paylas');
+		await bekleKosul('zeynep ses aygıtından ekransız paylaşıyor', () => zeynep.sayfa.evaluate((id) => !!yayin.ses && yayin.aygit === id && !yayin.goruntu && yayin.ekransiz && yayin.ses.readyState === 'live', aygit.id), 10000);
+		const ayarlari = await zeynep.sayfa.evaluate(() => yayin.ses.getSettings());
+		assert.equal(ayarlari.deviceId, aygit.id, 'ses seçilen aygıttan alınmalı');
+		assert.equal(ayarlari.echoCancellation, false, 'yankı engelleme kapalı istendi');
+		assert.equal(ayarlari.noiseSuppression, false, 'gürültü bastırma müziği bozar');
+		assert.equal(ayarlari.autoGainControl, false, 'otomatik kazanç müziği bozar');
+		assert.notEqual(await zeynep.sayfa.evaluate(() => mikrofon.getAudioTracks()[0].readyState), 'ended', 'mikrofon sürmeli');
+		await bekleKosul('aygıtın sesi herkese takıldı, görüntü kimseye', () => zeynep.sayfa.evaluate(() => [...esler.values()].every((e) => e.trSes.sender.track === yayin.ses && e.trGoruntu.sender.track === null)), 5000, 100);
+		const kart = (k) =>
+			k.sayfa.evaluate(() => {
+				const e = document.querySelector('#yayinlar .yayin-kart[data-ad="zeynep"]');
+				return e && { ekransiz: e.classList.contains('ekransiz'), sesGizli: e.querySelector('.yayin-ses').hidden };
+			});
+		for (const k of [taha, mert]) {
+			await bekleKosul(`${k.ad}: zeynep'in ekransız yayın kartı`, async () => {
+				const x = await kart(k);
+				return x && x.ekransiz && !x.sesGizli;
+			}, 10000);
+			await bekleKosul(`${k.ad} ← zeynep paylaşımın sesi akıyor`, async () => {
+				const d1 = await durumu(k);
+				await bekle(1500);
+				const d2 = await durumu(k);
+				return d2.esler.zeynep.yayinEnerji - d1.esler.zeynep.yayinEnerji > SES_VAR / 2;
+			}, 20000, 100);
+		}
+		const bolum = await zeynep.sayfa.evaluate(() => esler.get('taha').pc.remoteDescription.sdp.split('m=audio').slice(1)[1] || '');
+		assert.match(bolum, /stereo=1/, 'paylaşımın sesi stereo anlaşılmalı');
+		const d1 = await durumu(zeynep);
+		await bekle(3000);
+		const d2 = await durumu(zeynep);
+		const kbps = ((d2.esler.taha.yayinGidenBayt - d1.esler.taha.yayinGidenBayt) * 8) / 3000;
+		const kare = d2.esler.taha.goruntuGidenBayt - d1.esler.taha.goruntuGidenBayt;
+		console.log(`     ses aygıtından paylaşım zeynep → taha ${kbps.toFixed(1)} kbps; görüntü ${kare} bayt`);
+		assert.ok(kbps > 48, 'paylaşımın ses bit hızı düşük: ' + kbps.toFixed(1));
+		assert.ok(kare === 0, 'ekransızken görüntü gönderilmemeli: ' + kare + ' bayt');
+		await duyuyor(taha, 'zeynep', 'paylaşırken mikrofon da ayrıca duyulmalı');
+		// Ekranı göster: seçim penceresi bir kez açılır (denemede kendiliğinden "Entire screen").
+		await zeynep.sayfa.locator('#yayinlar .yayin-kart.ben button', { hasText: 'Ekranı göster' }).click();
+		for (const k of [taha, mert]) {
+			await bekleKosul(`${k.ad} zeynep'in ekranını görüyor`, () =>
+				k.sayfa.evaluate(() => {
+					const v = document.querySelector('#yayinlar .yayin-kart[data-ad="zeynep"] video');
+					return !!v && v.videoWidth > 0 && !v.paused;
+				}),
+			);
+		}
+		assert.equal(await zeynep.sayfa.evaluate((id) => yayin.aygit === id && yayin.ses.readyState === 'live', aygit.id), true, 'ses yine aygıttan gelmeli');
+		// Tarayıcının "Paylaşımı durdur"u ekranı bitirir: ses aygıttan geldiği için paylaşım ekransız sürer.
+		await zeynep.sayfa.evaluate(() => {
+			const g = yayin.goruntu;
+			g.dispatchEvent(new Event('ended'));
+			g.stop();
+		});
+		await bekleKosul('ekran bitince zeynep ekransız paylaşmayı sürdürüyor', () => zeynep.sayfa.evaluate(() => !yayin.goruntu && !!yayin.ses && yayin.ekransiz && [...esler.values()].every((e) => e.trGoruntu.sender.track === null && e.trSes.sender.track === yayin.ses)), 5000, 100);
+		for (const k of [taha, mert]) {
+			await bekleKosul(`${k.ad}: zeynep'in kartı yeniden ekransız`, async () => {
+				const x = await kart(k);
+				return x && x.ekransiz && !x.sesGizli;
+			}, 10000);
+		}
+		await zeynep.sayfa.evaluate(() => (window.paylasilanIz = yayin.ses));
+		await zeynep.sayfa.locator('#yayinlar .yayin-kart.ben button', { hasText: 'Durdur' }).click();
+		await bekleKosul('paylaşım herkeste kalktı', async () => {
+			for (const k of [taha, zeynep, mert]) if (await k.sayfa.evaluate(() => !!document.querySelector('#yayinlar .yayin-kart'))) return false;
+			return true;
+		}, 10000);
+		await bekleKosul('zeynep artık paylaşım sesi göndermiyor, aygıt bırakıldı', () => zeynep.sayfa.evaluate(() => window.paylasilanIz.readyState === 'ended' && [...esler.values()].every((e) => !e.trGoruntu.sender.track && !e.trSes.sender.track)), 5000, 100);
+		await duyuyor(taha, 'zeynep', 'paylaşım bitince mikrofon sürmeli');
+		await zeynep.sayfa.evaluate(() => {
+			navigator.mediaDevices.getSupportedConstraints = window.asilKisitlar;
+		});
 	});
 
 	await dene('ekran paylaşımı: izleyene görüntü gider, görüntüyü kapatana gitmez', async () => {

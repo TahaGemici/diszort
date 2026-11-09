@@ -239,6 +239,29 @@
 	</div>
 </div>
 
+<!-- Paylaşılacak ses: ekran paylaşımı ses vermeyen tarayıcılarda (Firefox, Safari) bir ses aygıtından.
+     Linux'ta bilgisayarın sesi "Monitor of …" aygıtıdır. -->
+<div id="ses-kaynagi" class="pencere" hidden>
+	<div class="pencere-kart ayar-kart" role="dialog" aria-modal="true" aria-labelledby="ses-kaynagi-baslik">
+		<header class="ayar-ust">
+			<h2 id="ses-kaynagi-baslik">Hangi ses paylaşılsın?</h2>
+			<button id="ses-kaynagi-kapat" class="ikon-dugme" type="button" aria-label="Kapat" data-ikon="x"></button>
+		</header>
+		<section class="ayar-bolum">
+			<p class="ayar-not-ic">Bu tarayıcı ekran paylaşımında ses vermiyor; paylaşılan ses bir ses aygıtından alınır.</p>
+			<label class="alan-adi" for="ses-kaynagi-aygit">Ses aygıtı</label>
+			<select id="ses-kaynagi-aygit"></select>
+			<p id="ses-kaynagi-ipucu" class="ayar-not-ic" hidden>Bilgisayarın sesi listede görünmüyor. Linux'ta "Monitor of …" adıyla gelir; Windows'ta Ses ayarlarından "Stereo Karışımı"nı (Stereo Mix) aç; Mac'te BlackHole gibi sanal bir ses aygıtı gerekir.</p>
+			<label class="anahtar"><input id="ses-kaynagi-yanki" type="checkbox"><span>Kanaldakilerin sesini çıkar (yankı engelleme)</span></label>
+			<p class="ayar-not-ic">Bilgisayarın sesinde kanaldakilerin konuşması da var. Açık kalırsa kimse kendi sesini geri duymaz; kapatırsan müzik biraz daha temiz gider.</p>
+		</section>
+		<div class="pencere-dugmeler ayar-dugmeler">
+			<button id="ses-kaynagi-iptal" class="ikincil" type="button">İptal</button>
+			<button id="ses-kaynagi-paylas" type="button">Paylaş</button>
+		</div>
+	</div>
+</div>
+
 <!-- Resim büyüteci: sığdırılmış açılır; resme dokununca tam genişlik (uzun resimler kaydırılarak gezilir) -->
 <div id="buyutec" class="buyutec" role="dialog" aria-modal="true" aria-label="Resim" hidden>
 	<div id="buyutec-kaydir" class="buyutec-kaydir">

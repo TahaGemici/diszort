@@ -21,7 +21,9 @@ da sunucuya yüklenmez, paylaşandan doğrudan alınır. İçeri yalnızca içer
     (ona hiç gönderilmez, ses yine gelir).
   - *Ekransız paylaş*: bilgisayarın ya da Spotify/YouTube çalan sekmenin sesini paylaşmak da bir ekran
     paylaşımıdır, yalnızca ekran kimseye gönderilmez: ses kanala stereo ve yüksek kalitede gider.
-    Paylaşan ekranı sonradan yeniden seçmeden gösterip gizleyebilir.
+    Paylaşan ekranı sonradan yeniden seçmeden gösterip gizleyebilir. Firefox ve Safari ekran
+    paylaşımında ses vermediği için orada ses bir ses aygıtından alınır (Linux'ta bilgisayarın sesi
+    "Monitor of …" aygıtıdır); kanaldakilerin konuşması bu sesten yankı engellemeyle çıkarılır.
   - Paylaşım, kanaldakilerde bir yayın kartı olarak görünür (CANLI): ekranlıysa görüntü, sesliyse ses
     satırı. Herkes paylaşımın sesini kendi için susturur ya da kısar; ses geldikçe kart ışır.
   - İzlemek ve dinlemek her cihazda olur (telefonda görüntüyü kapatıp yalnızca dinlenebilir).
@@ -118,9 +120,11 @@ açıklanmıştır.
   toplam ~6 Mbit/s); görüntüyü kapatana ve ekransız paylaşımda kimseye gönderilmez (paylaşımın sesi
   kişi başı ~160 kbps). Daha kalabalık odalar için SFU gerekir.
 - Ekran ve ses paylaşımı tarayıcıya bağlıdır: Chrome/Edge'de en iyisi (sekmenin sesi her işletim
-  sisteminde, tüm bilgisayarın sesi Windows'ta "Tüm ekran" seçilince); Firefox ve Safari ses
-  paylaşamaz (ekransız paylaşım için ses gerekir); telefon tarayıcılarının çoğu hiç paylaşamaz. İzlemek
-  ve dinlemek her yerde olur. Hoparlörden dinleyenin mikrofonu çalan sesi de alır; kulaklık önerilir.
+  sisteminde, tüm bilgisayarın sesi Windows'ta "Tüm ekran" seçilince). Firefox ve Safari ekranla
+  birlikte ses vermez: ses bir ses aygıtından alınır (Linux'ta "Monitor of …"; Windows'ta "Stereo
+  Karışımı" açılmalı, Mac'te BlackHole gibi sanal bir aygıt gerekir). Telefon tarayıcılarının çoğu hiç
+  paylaşamaz. İzlemek ve dinlemek her yerde olur. Hoparlörden dinleyenin mikrofonu çalan sesi de alır;
+  kulaklık önerilir.
 - P2P dosya, paylaşanın sayfası açıkken alınabilir. Chrome/Edge (masaüstü) büyük dosyayı doğrudan seçilen
   yere yazar; diğer tarayıcılar önce tarayıcının dosya alanına (kotası diskin bir kısmı) yazar.
 - TURN'den geçen ses sunucunun bant genişliğini kullanır (kişi başı ~100 kbps); TURN'den geçen dosya

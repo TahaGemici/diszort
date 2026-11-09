@@ -5,7 +5,8 @@
 // (paylaşma, kartlar, indirme ve gönderme protokolü), sesli kanal (mikrofon kısıtları, teklif/yanıt +
 // oturum kimliği, mikrofon/yayın sesi/görüntü kanalları, m-line başına Opus ayarı, seviye,
 // susturma/sağırlaştırma), yayın (ekranlı ve ekransız paylaşım, ekranı göster/gizle, izle/kapat,
-// paylaşımın sesi: susturma/seviye; paylaşamayan tarayıcı), bağlantı kalitesi (kısa kayıp
+// paylaşımın sesi: susturma/seviye; paylaşamayan tarayıcı; ekran paylaşımı ses vermeyen Firefox/Safari'de
+// sesin ses aygıtından, "Monitor of …", alınması), bağlantı kalitesi (kısa kayıp
 // ani uyarı vermez, gerçek bozulma verir), sunucu bağlantısı koparken ses bağlantılarının korunması,
 // giriş freninde uygulamada kalma, sunucu penceresi (veritabanı, sohbeti temizle), oturum devri ve
 // atılma doğrulanır. Gerçek WebRTC için: test/tarayici.js.
@@ -117,12 +118,39 @@ function kur({ url = 'https://chat.deneme/', depo = {}, oturumDepo = {}, ekranYo
 		getVideoTracks: () => izler.filter((i) => i.kind === 'video'),
 	});
 	durum.ekranSesiVer = true;
+	// Firefox/Safari taklidi: ekran paylaşımı ses vermez, ekran sesi kısıtlarını tanımaz.
+	durum.ekranSesiYok = false;
+	// Ses aygıtları (enumerateDevices). etiketGizli: izin verilmeden adlar boş gelir.
+	durum.aygitlar = [];
+	durum.etiketGizli = false;
+	durum.izinIstegi = 0;
+	// Paylaşım için ses aygıtından alınan ses (mikrofon sayılmaz): son kısıt, iz, hata adı.
+	durum.aygitKisit = null;
+	durum.aygitIzi = null;
+	durum.aygitHata = '';
 	Object.defineProperty(window.navigator, 'mediaDevices', {
 		value: {
 			getUserMedia: async (kisitlar) => {
+				const ses = kisitlar && kisitlar.audio;
+				// Yalnızca izin (aygıt adları görünsün diye): mikrofon sayılmaz.
+				if (ses === true) {
+					durum.izinIstegi++;
+					durum.etiketGizli = false;
+					return akisYap([izYap()]);
+				}
+				const id = ses && ses.deviceId && ses.deviceId.exact;
+				if (id && id !== 'mik-1') {
+					if (durum.aygitHata) throw Object.assign(new Error('aygıt'), { name: durum.aygitHata });
+					durum.aygitKisit = { ...ses };
+					const iz = izYap();
+					durum.aygitIzi = iz;
+					return akisYap([iz]);
+				}
 				durum.mikrofon++;
-				durum.micKisit = kisitlar && kisitlar.audio ? { ...kisitlar.audio } : null;
+				durum.micKisit = ses ? { ...ses } : null;
 				const iz = izYap();
+				const ayarlar = iz.getSettings();
+				iz.getSettings = () => ({ ...ayarlar, deviceId: 'mik-1' });
 				durum.sonIz = iz;
 				return akisYap([iz]);
 			},
@@ -139,8 +167,8 @@ function kur({ url = 'https://chat.deneme/', depo = {}, oturumDepo = {}, ekranYo
 						durum.ekranIzleri = izler;
 						return akisYap(izler);
 					},
-			getSupportedConstraints: () => ({ restrictOwnAudio: true, suppressLocalAudioPlayback: true }),
-			enumerateDevices: async () => [],
+			getSupportedConstraints: () => (durum.ekranSesiYok ? { echoCancellation: true, deviceId: true } : { restrictOwnAudio: true, suppressLocalAudioPlayback: true }),
+			enumerateDevices: async () => durum.aygitlar.map((a) => (durum.etiketGizli ? { ...a, label: '' } : { ...a })),
 			addEventListener() {},
 			ondevicechange: null,
 		},
@@ -1114,6 +1142,162 @@ const ICE = { iceServers: [{ urls: ['stun:1.2.3.4:3478'] }, { urls: ['turn:1.2.3
 		await bekle(40);
 		denetle('hemen reddedilen paylaşımda düğme gizlenir', d.getElementById('yayin-ac').hidden && /izin vermiyor/.test(d.getElementById('durum').textContent), d.getElementById('durum').textContent);
 		s.oc.ekranReddet = false;
+	}
+
+	// --- 12c) Firefox/Safari: ekran paylaşımı, ne seçilirse seçilsin, ses vermez. Ekransız paylaşım seçim
+	// penceresi açmaz; ses bir ses aygıtından alınır (Linux'ta bilgisayarın sesi "Monitor of …"). Ekran
+	// sonradan eklenir (bir kez seçilir); ekranlı paylaşıma ses sonradan eklenir ("Ses ekle").
+	{
+		w.eval('yayinDesteklenmiyor = false'); // önceki bölümde "izin vermiyor" denendi
+		s.oc.ekranSesiYok = true;
+		s.oc.ekranSesiVer = false;
+		const MIK = { kind: 'audioinput', deviceId: 'mik-1', label: 'Dahili Mikrofon', groupId: 'a' };
+		const MONITOR = { kind: 'audioinput', deviceId: 'monitor-1', label: 'Monitor of Built-in Audio Analog Stereo', groupId: 'b' };
+		s.oc.aygitlar = [MIK, MONITOR, { kind: 'audiooutput', deviceId: 'cikis-1', label: 'Built-in Audio Analog Stereo', groupId: 'b' }];
+		const menu = () => d.getElementById('yayin-menu');
+		const menuOgesi = (metin) => [...menu().querySelectorAll('button')].find((b) => b.textContent.includes(metin));
+		const menuyuAc = async () => {
+			if (menu().hidden) d.getElementById('yayin-ac').click();
+			await bekle(20);
+		};
+		const benimKart = () => d.querySelector('#yayinlar .yayin-kart.ben');
+		const kartDugmesi = (kart, metin) => kart && [...kart.querySelectorAll('button')].find((b) => b.textContent === metin);
+		const yayinSesi = (pc) => pc._transceivers[1].sender.track;
+		const goruntusu = (pc) => pc._transceivers[2].sender.track;
+		const pencere = d.getElementById('ses-kaynagi');
+		const secim = d.getElementById('ses-kaynagi-aygit');
+		const yanki = d.getElementById('ses-kaynagi-yanki');
+		const durumMetni = () => d.getElementById('durum').textContent;
+		const kayitliAyar = () => JSON.parse(w.localStorage.getItem('ses-ayarlari') || '{}');
+		const ekransizAc = async () => {
+			await menuyuAc();
+			menuOgesi('Ekransız paylaş').click();
+			await bekle(40);
+		};
+
+		await menuyuAc();
+		denetle(
+			'Firefox: menü ekransız paylaşımın sesini ses aygıtından alacağını ve "Monitor of" aygıtını söylüyor',
+			/ses aygıtından/.test(menuOgesi('Ekransız paylaş').textContent) && /Monitor of/.test(menu().querySelector('.yayin-menu-not').textContent),
+			menu().textContent,
+		);
+		const ekranOnce = s.oc.ekranSayisi;
+		menuOgesi('Ekransız paylaş').click();
+		await bekle(40);
+		denetle('Firefox: ekransız paylaşım seçim penceresi açmaz, ses aygıtı sorar', s.oc.ekranSayisi === ekranOnce && !pencere.hidden);
+		const secenekler = () => [...secim.options].map((o) => o.textContent);
+		denetle(
+			'bilgisayarın sesi (Monitor of …) başta ve seçili; mikrofon da listede, işaretli',
+			secim.options.length === 2 && secim.options[0].value === 'monitor-1' && /^Bilgisayarın sesi · Monitor of/.test(secim.options[0].textContent) && secim.value === 'monitor-1' && /Dahili Mikrofon · mikrofonun/.test(secim.options[1].textContent),
+			secenekler().join(' | '),
+		);
+		denetle('yankı engelleme varsayılan açık, "bulunamadı" ipucu gizli', yanki.checked && d.getElementById('ses-kaynagi-ipucu').hidden);
+		d.getElementById('ses-kaynagi-iptal').click();
+		await bekle(10);
+		denetle('iptal: pencere kapandı, paylaşım başlamadı', pencere.hidden && !w.eval('yayinVar()') && s.oc.aygitKisit === null);
+
+		await ekransizAc();
+		d.getElementById('ses-kaynagi-paylas').click();
+		await bekle(40);
+		const k = s.oc.aygitKisit || {};
+		denetle(
+			'ses seçilen aygıttan: stereo, yankı engelleme açık, gürültü bastırma ve otomatik kazanç kapalı',
+			k.deviceId && k.deviceId.exact === 'monitor-1' && k.echoCancellation === true && k.noiseSuppression === false && k.autoGainControl === false && k.channelCount && k.channelCount.ideal === 2,
+			JSON.stringify(k),
+		);
+		const aIz = s.oc.aygitIzi;
+		denetle('ekransız paylaşım bildirildi: görüntü yok, ses var', pencere.hidden && son('yayin').yayin && son('yayin').yayin.goruntu === false && son('yayin').yayin.ses === true, JSON.stringify(son('yayin')));
+		denetle(
+			'aygıtın sesi herkesin yayın sesi kanalında; görüntü yok; mikrofon kanalı değişmedi',
+			yayinSesi(ilkPc) === aIz && yayinSesi(zPc) === aIz && goruntusu(ilkPc) === null && goruntusu(zPc) === null && ilkPc._transceivers[0].sender.track === s.oc.sonIz,
+		);
+		denetle('seçilen aygıt hatırlandı', kayitliAyar().yayinAygitId === 'monitor-1' && kayitliAyar().yayinYanki === true, JSON.stringify(kayitliAyar()));
+		denetle(
+			'kendi kartım: ekransız, "Ekranı göster" var, "Ses ekle" yok, kaynak aygıt yazıyor',
+			!!benimKart() && benimKart().classList.contains('ekransiz') && !!kartDugmesi(benimKart(), 'Ekranı göster') && kartDugmesi(benimKart(), 'Ses ekle').hidden && /Monitor of/.test(benimKart().querySelector('.yayin-metin').title) && /Monitor of/.test(durumMetni()),
+			benimKart() && benimKart().textContent,
+		);
+		// Ekranı göster: seçim penceresi bir kez açılır, yalnızca görüntü istenir.
+		kartDugmesi(benimKart(), 'Ekranı göster').click();
+		await bekle(40);
+		const gIz = s.oc.ekranIzleri[0];
+		denetle(
+			'ekran eklendi: seçim penceresinden yalnızca görüntü istendi, izleyenlere gidiyor, ses aynı',
+			s.oc.ekranSayisi === ekranOnce + 1 && s.oc.ekranSecenek.audio === false && goruntusu(ilkPc) === gIz && goruntusu(zPc) === gIz && yayinSesi(ilkPc) === aIz && son('yayin').yayin.goruntu === true,
+			JSON.stringify(s.oc.ekranSecenek),
+		);
+		kartDugmesi(benimKart(), 'Ekranı gizle').click();
+		await bekle(30);
+		denetle('ekran gizlendi: görüntü gitmiyor, yakalama ve ses sürüyor', goruntusu(ilkPc) === null && gIz.readyState === 'live' && yayinSesi(ilkPc) === aIz && son('yayin').yayin.goruntu === false);
+		kartDugmesi(benimKart(), 'Ekranı göster').click();
+		await bekle(30);
+		denetle('ekran yeniden göründü, seçim penceresi yeniden açılmadı', goruntusu(ilkPc) === gIz && s.oc.ekranSayisi === ekranOnce + 1);
+		// Tarayıcının "Paylaşımı durdur"u yalnızca ekranı bitirir: ses aygıttan geldiği için sürer.
+		gIz.bitir();
+		await bekle(30);
+		denetle(
+			'ekran bitince paylaşım ekransız sürüyor',
+			son('yayin').yayin && son('yayin').yayin.goruntu === false && son('yayin').yayin.ses === true && goruntusu(ilkPc) === null && yayinSesi(ilkPc) === aIz && aIz.readyState === 'live' && !!benimKart(),
+			JSON.stringify(son('yayin')),
+		);
+		// Aygıt kapandı (çıkarıldı, izin geri alındı): paylaşılacak bir şey kalmadı.
+		aIz.bitir();
+		await bekle(30);
+		denetle('ses aygıtı kapanınca paylaşım bitti, söylendi', son('yayin').yayin === null && yayinSesi(ilkPc) === null && !benimKart() && /Ses aygıtı kapandı/.test(durumMetni()), durumMetni());
+
+		// Ekranlı paylaşım: ses gelmez; "Ses ekle" ile (bu kez yankı engelleme kapalı) aygıttan eklenir.
+		await menuyuAc();
+		menuOgesi('Ekranını paylaş').click();
+		await bekle(40);
+		const gIz2 = s.oc.ekranIzleri[0];
+		denetle(
+			'Firefox: sessiz ekran paylaşımında "Ses ekle" önerilir',
+			son('yayin').yayin.goruntu === true && son('yayin').yayin.ses === false && !!kartDugmesi(benimKart(), 'Ses ekle') && !kartDugmesi(benimKart(), 'Ses ekle').hidden && /Ses ekle/.test(durumMetni()),
+			durumMetni(),
+		);
+		await menuyuAc();
+		denetle('menüde de "Ses ekle" var', !!menuOgesi('Ses ekle'));
+		menuOgesi('Ses ekle').click();
+		await bekle(40);
+		denetle('son seçilen aygıt yine seçili', !pencere.hidden && secim.value === 'monitor-1');
+		yanki.click();
+		d.getElementById('ses-kaynagi-paylas').click();
+		await bekle(40);
+		const aIz2 = s.oc.aygitIzi;
+		denetle(
+			'ekranlı paylaşıma ses eklendi: yankı engelleme kapalı, ekran sürüyor',
+			aIz2 !== aIz && s.oc.aygitKisit.echoCancellation === false && yayinSesi(ilkPc) === aIz2 && goruntusu(ilkPc) === gIz2 && son('yayin').yayin.goruntu === true && son('yayin').yayin.ses === true,
+		);
+		denetle('yankı engelleme seçimi kalıcı, kapalıyken uyarır', kayitliAyar().yayinYanki === false && /kendi sesini geri duyabilir/.test(durumMetni()), durumMetni());
+		denetle('ses eklenince "Ses ekle" kalktı, "Ekranı gizle" geldi', kartDugmesi(benimKart(), 'Ses ekle').hidden && !!kartDugmesi(benimKart(), 'Ekranı gizle') && !kartDugmesi(benimKart(), 'Ekranı gizle').hidden);
+		kartDugmesi(benimKart(), 'Durdur').click();
+		await bekle(20);
+		denetle('durdurunca ekran da aygıt da bırakıldı', son('yayin').yayin === null && gIz2.readyState === 'ended' && aIz2.readyState === 'ended' && !benimKart());
+
+		// İzin verilmezse paylaşım başlamaz.
+		s.oc.aygitHata = 'NotAllowedError';
+		await ekransizAc();
+		denetle('yankı engelleme seçimi pencerede hatırlandı', !pencere.hidden && yanki.checked === false);
+		d.getElementById('ses-kaynagi-paylas').click();
+		await bekle(40);
+		denetle('aygıta izin verilmezse paylaşım başlamaz, söylenir', !w.eval('yayinVar()') && /izin verilmedi/.test(durumMetni()), durumMetni());
+		s.oc.aygitHata = '';
+
+		// Bilgisayarın sesi gibi bir aygıt yoksa ipucu görünür; mikrofon olmayan ilk aygıt seçilir. Adlar
+		// izin verilmeden gizliyse bir kez izin istenir.
+		s.oc.aygitlar = [MIK, { kind: 'audioinput', deviceId: 'usb-1', label: 'USB Ses Kartı', groupId: 'c' }];
+		s.oc.etiketGizli = true;
+		const izinOnce = s.oc.izinIstegi;
+		await ekransizAc();
+		denetle('aygıt adları gizliyse bir kez izin istendi, adlar göründü', s.oc.izinIstegi === izinOnce + 1 && secenekler().includes('USB Ses Kartı'), secenekler().join(' | '));
+		denetle('bilgisayarın sesi yoksa ipucu görünür, mikrofon olmayan aygıt seçilir', !d.getElementById('ses-kaynagi-ipucu').hidden && secim.value === 'usb-1', secim.value);
+		d.dispatchEvent(new w.KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+		await bekle(10);
+		denetle('Escape ses kaynağı penceresini kapattı', pencere.hidden && !w.eval('yayinVar()'));
+
+		s.oc.ekranSesiYok = false;
+		s.oc.ekranSesiVer = true;
+		s.oc.aygitlar = [];
 	}
 
 	// --- 13) sunucu bağlantısı koptu: ses bağlantıları KAPANMAZ, geri gelince kanala devam edilir
