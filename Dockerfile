@@ -26,7 +26,7 @@ RUN useradd --system --uid 1000 --home /nonexistent --shell /usr/sbin/nologin di
 	&& turnserver --version >/dev/null
 
 # Ayarlar ve sohbet veritabanı: sunucudaki /var/lib/chat buraya bağlanır (kalıcı).
-# Sunucu /veri/.env dosyasını okur; yazılı kanallar /veri/sohbet.db, dosyalar /veri/yuklemeler/.
+# Sunucu /veri/.env dosyasını okur; yazılı kanallar /veri/sohbet.db (dosyalar P2P: sunucuda tutulmaz).
 ENV AYAR_DOSYASI=/veri/.env
 VOLUME /veri
 

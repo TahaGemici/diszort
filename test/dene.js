@@ -1,8 +1,8 @@
 // Çalışan bir Diszort sunucusunu dışarıdan dener: beyaz liste (anahtar, kapıyı çalma, kabul/red, atma,
-// giriş freni), web sayfası, sağlık, /api/ice (yalnızca oturumla), yazılı sohbet (gönderme, geçmiş,
+// giriş freni), web sayfası, sağlık, TURN şifresi (yalnızca oturumla), yazılı sohbet (gönderme, geçmiş,
 // hız sınırı), P2P dosya paylaşımı (kayıt, kimin sunduğu, sahiplik, tanışma mesajları; dosya sunucuya
 // gelmez), sesli kanal signaling'i (mesh mesajları, oturum/yenile iletimi, doluluk, aynı ad, kopunca
-// askıda kalma ve geri dönme), yayın (ekran/müzik bayrakları, izle), veritabanı boyutu ve sohbet
+// askıda kalma ve geri dönme), yayın (ekranlı/ekransız paylaşım durumu, izle), veritabanı boyutu ve sohbet
 // temizliği (yalnızca denemenin kendi kanalında), STUN ve TURN (geçici şifreyle aktarım; yanlış
 // şifreyle alamama).
 // Bağımlılık: Node 22+ yerleşik WebSocket'i kullanır; eski Node'da depodaki ws paketini (npm install).
@@ -286,7 +286,6 @@ async function turnAl(port, kullanici, sifre) {
 (async () => {
 	let ice;
 	let turnPort;
-	let jeton = '';
 	const kimlik = 'deneme-' + crypto.randomBytes(4).toString('hex');
 
 
@@ -480,14 +479,13 @@ async function turnAl(port, kullanici, sifre) {
 		onaylananlar.delete('uykucu-' + kimlik); // aradaki temizliklerde atılmasın
 	});
 
-	await dene('/api/ice: TURN şifresi yalnızca oturumu olana verilir', async () => {
-		// Oturumsuz: 401 (TURN sunucusu dışarıdan gelenlere ücretsiz aktarıcı olmasın).
-		const anonim = await fetch(ADRES + '/api/ice');
-		assert.equal(anonim.status, 401, 'oturumsuz istek reddedilmeli');
-		assert.ok(!JSON.stringify(await anonim.json()).includes('credential'), 'oturumsuz yanıtta şifre olmamalı');
-		assert.equal((await fetch(ADRES + '/api/ice', { headers: { Authorization: 'Bearer ' + 'f'.repeat(32) } })).status, 401, 'uydurma jeton');
-		const yetkili = { headers: { Authorization: 'Bearer ' + yonetici.hazir.jeton } };
-		ice = await (await fetch(ADRES + '/api/ice', yetkili)).json();
+	await dene('TURN şifresi yalnızca oturumu olana verilir (hazir içinde, ice-iste ile tazelenir)', async () => {
+		// Oturumsuz bağlantı şifre alamaz (TURN sunucusu dışarıdan gelenlere ücretsiz aktarıcı olmasın).
+		const anonim = await istemci();
+		anonim.yolla({ type: 'ice-iste' });
+		await assert.rejects(anonim.bekle('ice-sunuculari', 800), /mesaj gelmedi/, 'oturumsuz istekte şifre gelmemeli');
+		anonim.close();
+		ice = yonetici.hazir.ice;
 		assert.equal(ice.iceServers.length, 2);
 		const t = ice.iceServers[1];
 		assert.match(t.urls[0], /^turn:.+:\d+\?transport=udp$/);
@@ -495,12 +493,11 @@ async function turnAl(port, kullanici, sifre) {
 		assert.match(t.username, /^\d+:[0-9a-f]+$/);
 		assert.ok(Number(t.username.split(':')[0]) > Date.now() / 1000 + 3600, 'şifre en az bir saat geçerli olmalı');
 		turnPort = Number(t.urls[0].match(/:(\d+)\?/)[1]);
-		const ikinci = await (await fetch(ADRES + '/api/ice', yetkili)).json();
-		assert.notEqual(ikinci.iceServers[1].username, t.username, 'her istekte yeni kullanıcı');
-		// WebSocket üzerinden de tazelenir (uzun açık kalan sekme / sunucu yeniden başladıktan sonra).
+		// Tazelenir (uzun açık kalan sekme / sunucu yeniden başladıktan sonra): her istekte yeni kullanıcı.
 		yonetici.yolla({ type: 'ice-iste' });
-		const ws = await yonetici.bekle('ice-sunuculari');
-		assert.equal(ws.ice.iceServers.length, 2);
+		const ikinci = (await yonetici.bekle('ice-sunuculari')).ice;
+		assert.equal(ikinci.iceServers.length, 2);
+		assert.notEqual(ikinci.iceServers[1].username, t.username, 'her istekte yeni kullanıcı');
 	});
 
 	await dene('STUN yanıt veriyor', async () => {
@@ -531,13 +528,11 @@ async function turnAl(port, kullanici, sifre) {
 		assert.equal(s.tur, 0x0113);
 	});
 
-	await dene('giriş: kanal listesi ve yazma jetonu', async () => {
+	await dene('giriş: kanal listesi', async () => {
 		const a = await gir('ayse-' + kimlik, 'a1');
 		assert.equal(a.hazir.ad, 'ayse-' + kimlik);
 		assert.ok(a.hazir.max >= 2);
 		assert.ok(Array.isArray(a.hazir.sunulanDosyalar), 'hazir.sunulanDosyalar dizi olmalı');
-		jeton = a.hazir.jeton;
-		assert.match(jeton, /^[0-9a-f]{32}$/);
 		const turler = new Map(a.hazir.kanallar.map((k) => [k.id, k.tur]));
 		assert.equal(turler.get(YAZI_KANAL), 'yazi');
 		assert.equal(turler.get(SES_KANAL), 'ses');
@@ -581,16 +576,6 @@ async function turnAl(port, kullanici, sifre) {
 		a.close();
 	});
 
-	await dene('dosya: sunucuya yükleme kapalı (dosyalar P2P)', async () => {
-		const r = await fetch(ADRES + '/api/yukle?kanal=' + YAZI_KANAL, {
-			method: 'POST',
-			headers: { Authorization: 'Bearer ' + yonetici.hazir.jeton, 'Content-Type': 'text/plain', 'X-Dosya-Adi': 'a.txt' },
-			body: 'x',
-		});
-		assert.equal(r.status, 410, 'yükleme ucu kapalı olmalı');
-		assert.equal((await fetch(ADRES + '/dosya/' + 'a'.repeat(18))).status, 404);
-	});
-
 	await dene('dosya (P2P): kaydı sohbete düşer, içeriği sunucuda yok; kimin sunduğu herkese duyurulur', async () => {
 		const a = await gir('p2p-a-' + kimlik, 'p1');
 		const b = await gir('p2p-b-' + kimlik, 'p2');
@@ -605,18 +590,15 @@ async function turnAl(port, kullanici, sifre) {
 		assert.equal(m.mesaj.ad, 'p2p-a-' + kimlik, 'paylaşan adı sunucudan gelir');
 		assert.equal(m.mesaj.dosya.ad, ad);
 		assert.equal(m.mesaj.dosya.boyut, boyut, 'boyut sınırı yok');
-		assert.equal(m.mesaj.dosya.p2p, true, 'P2P işareti');
 		assert.equal(m.mesaj.dosya.tur, 'application/zip');
 		// Paylaşan bağlıyken dosya "sunuluyor" görünür.
 		const durum = await b.bekle((x) => x.type === 'dosya-durum' && x.sunulan.includes(id));
 		assert.ok(durum.sunulan.includes(id));
-		// Dosyanın kendisi sunucuda yok.
-		assert.equal((await fetch(ADRES + '/dosya/' + id)).status, 404);
-		// Geçmişten okununca da P2P işaretli gelir.
+		// Geçmişten okununca da kaydı gelir.
 		b.yolla({ type: 'gecmis', kanal: YAZI_KANAL });
 		const g = await b.bekle('gecmis');
 		const kayit = g.mesajlar.find((x) => x.dosya && x.dosya.id === id);
-		assert.ok(kayit && kayit.dosya.p2p === true && kayit.dosya.boyut === boyut, 'geçmişte P2P dosya kaydı');
+		assert.ok(kayit && kayit.dosya.ad === ad && kayit.dosya.boyut === boyut, 'geçmişte dosya kaydı');
 		// Geçersiz kimlik ve boş dosya reddedilir; aynı kimlik ikinci kez kullanılamaz.
 		a.yolla({ type: 'dosya-paylas', kanal: YAZI_KANAL, id: 'xyz', ad: 'a', boyut: 1 });
 		assert.match((await a.bekle('hata')).message, /kimliği/);
@@ -987,7 +969,7 @@ async function turnAl(port, kullanici, sifre) {
 		b.close();
 	});
 
-	await dene('yayın: ekran/müzik bayrakları kanal durumunda görünür, izle iletilir, kanaldan çıkınca biter, yeniden bağlanınca geri gelir', async () => {
+	await dene('yayın: ekranlı/ekransız paylaşım kanal durumunda görünür, izle iletilir, kanaldan çıkınca biter, yeniden bağlanınca geri gelir', async () => {
 		const yayinci = 'yayinci-' + kimlik;
 		const a = await gir(yayinci, 'w1');
 		const b = await gir('izleyici-' + kimlik, 'w2');
@@ -997,10 +979,13 @@ async function turnAl(port, kullanici, sifre) {
 		await b.bekle('ses-girdi');
 		const kisi = (m, ad) => ((m.kanallar.find((k) => k.id === SES_KANAL) || {}).kisiler || []).find((p) => p.ad === ad);
 		b.topla();
-		a.yolla({ type: 'yayin', ekran: true, ses: true, baslik: 'Şarkı\u0007 adı' });
-		const m1 = await b.bekle((m) => m.type === 'kanallar' && kisi(m, yayinci) && kisi(m, yayinci).ekran);
-		assert.equal(kisi(m1, yayinci).yayinSes, true);
-		assert.equal(kisi(m1, yayinci).yayinBaslik, 'Şarkı adı', 'başlık temizlenmiş olarak duyurulur');
+		a.yolla({ type: 'yayin', yayin: { goruntu: true, ses: true, fazlalik: 'x' } });
+		const m1 = await b.bekle((m) => m.type === 'kanallar' && kisi(m, yayinci) && kisi(m, yayinci).yayin);
+		assert.deepEqual(kisi(m1, yayinci).yayin, { goruntu: true, ses: true }, 'yalnızca görüntü/ses bilgisi duyurulur');
+		// Ekransız: görüntü gitmiyor, yalnızca ses.
+		a.yolla({ type: 'yayin', yayin: { goruntu: false, ses: true } });
+		const m1b = await b.bekle((m) => m.type === 'kanallar' && kisi(m, yayinci) && kisi(m, yayinci).yayin && !kisi(m, yayinci).yayin.goruntu);
+		assert.deepEqual(kisi(m1b, yayinci).yayin, { goruntu: false, ses: true });
 		// İzle/kapat yalnızca aynı sesli kanaldaki yayıncıya iletilir.
 		b.yolla({ type: 'izle', to: yayinci, izle: false });
 		const iz = await a.bekle('izle');
@@ -1008,7 +993,7 @@ async function turnAl(port, kullanici, sifre) {
 		assert.equal(iz.izle, false);
 		// Sesli kanalda olmayan yayın bayrağı koyamaz.
 		const c = await gir('disarida-' + kimlik, 'w3');
-		c.yolla({ type: 'yayin', ekran: true });
+		c.yolla({ type: 'yayin', yayin: { goruntu: true, ses: false } });
 		c.yolla({ type: 'izle', to: yayinci, izle: false });
 		await new Promise((r) => setTimeout(r, 200));
 		assert.ok(!a.topla().some((m) => m.type === 'izle'), 'kanal dışından izle iletilmemeli');
@@ -1019,17 +1004,22 @@ async function turnAl(port, kullanici, sifre) {
 		await girisGonder(a2, { type: 'giris', ad: '', id: 'w1', anahtar: a.anahtar, ses: SES_KANAL });
 		await a2.bekle('hazir');
 		b.topla();
-		a2.yolla({ type: 'ses-gir', kanal: SES_KANAL, devam: true, ekran: true, yayinSes: false });
+		a2.yolla({ type: 'ses-gir', kanal: SES_KANAL, devam: true, yayin: { goruntu: false, ses: true } });
 		await a2.bekle('ses-girdi');
 		const m2 = await b.bekle((m) => m.type === 'kanallar' && kisi(m, yayinci) && !kisi(m, yayinci).askida);
-		assert.equal(kisi(m2, yayinci).ekran, true, 'yeniden bağlanınca ekran paylaşımı sürüyor görünmeli');
-		assert.ok(!kisi(m2, yayinci).yayinSes);
+		assert.deepEqual(kisi(m2, yayinci).yayin, { goruntu: false, ses: true }, 'yeniden bağlanınca ekransız paylaşım sürüyor görünmeli');
+		// Ne görüntü ne ses: paylaşım yok sayılır.
+		a2.yolla({ type: 'yayin', yayin: { goruntu: false, ses: false } });
+		const m2b = await b.bekle((m) => m.type === 'kanallar' && kisi(m, yayinci) && !kisi(m, yayinci).yayin);
+		assert.ok(!kisi(m2b, yayinci).yayin);
+		a2.yolla({ type: 'yayin', yayin: { goruntu: true, ses: false } });
+		await b.bekle((m) => m.type === 'kanallar' && kisi(m, yayinci) && kisi(m, yayinci).yayin);
 		// Kanaldan çıkıp yeniden girince bayrak kalmaz.
 		a2.yolla({ type: 'ses-cik' });
 		a2.yolla({ type: 'ses-gir', kanal: SES_KANAL });
 		await a2.bekle((m) => m.type === 'ses-girdi' && !m.devam);
-		const m3 = await b.bekle((m) => m.type === 'kanallar' && kisi(m, yayinci) && !kisi(m, yayinci).ekran);
-		assert.ok(!kisi(m3, yayinci).yayinSes);
+		const m3 = await b.bekle((m) => m.type === 'kanallar' && kisi(m, yayinci) && !kisi(m, yayinci).yayin);
+		assert.ok(!kisi(m3, yayinci).yayin);
 		assert.ok(m3.kanallar.every((k) => !(k.kisiler || []).some((p) => p.ad === 'disarida-' + kimlik)));
 		for (const w of [a2, b, c]) w.close();
 	});
@@ -1048,7 +1038,7 @@ async function turnAl(port, kullanici, sifre) {
 		a.yolla({ type: 'sunucu-bilgi' });
 		const b1 = await a.bekle('sunucu-bilgi');
 		assert.ok(b1.veritabani > 0, 'veritabanı boyutu');
-		assert.ok(b1.mesaj >= 6 && typeof b1.dosya === 'number' && typeof b1.yuklemeler === 'number');
+		assert.ok(b1.mesaj >= 6 && typeof b1.dosya === 'number' && typeof b1.bosAlan === 'number');
 		a.yolla({ type: 'gecmis', kanal: YAZI_KANAL });
 		const gOnce = await a.bekle((m) => m.type === 'gecmis' && m.kanal === YAZI_KANAL);
 		a.yolla({ type: 'sohbet-temizle', kanal: kanal.id, gun: 3 });

@@ -327,18 +327,7 @@ button:disabled { cursor: not-allowed; }
 .ses-uyesi .durum-ikon { color: var(--tehlike); display: inline-grid; }
 .ses-uyesi .durum-ikon .ikon { width: 15px; height: 15px; }
 
-/* Paylaşılan ses kanalda ayrı bir kişi gibi ("taha - YouTube"): hoparlör simgeli avatar. */
-.sanal-avatar { background: #3b2f5c; color: #d9c8ff; }
-.sanal-avatar .ikon { width: 60%; height: 60%; }
-.ses-uyesi.sanal .ad { color: #d9c8ff; }
-.ses-kisi.sanal { background: rgba(97, 70, 160, 0.18); }
-.ses-kisi.sanal:hover { background: rgba(97, 70, 160, 0.26); }
-.ses-kisi.sanal .ad { color: #ece3ff; }
-.ses-kisi.sanal .ses-istatistik { color: #b9a6e6; }
-.ses-kisi.sanal.ben .seviye-cubuk { width: 56px; flex: none; }
-.ses-kisi.sanal.ben .seviye-cubuk > div { background: #b98aff; }
-
-/* Ekranını paylaşana "CANLI". */
+/* Ekranını paylaşana (ekransız da) "CANLI". */
 .canli {
 	flex: none;
 	padding: 0 5px;
@@ -584,7 +573,6 @@ audio.onizleme { width: min(400px, 100%); }
 .dosya-kart:hover { border-color: #4b4d54; }
 .dosya-kart .dosya-ikon { color: var(--vurgu); }
 .dosya-kart .dosya-ikon .ikon { width: 28px; height: 28px; }
-.dosya-kart .indir-ikon { color: var(--soluk); }
 .dosya-bilgi { display: flex; flex-direction: column; min-width: 0; line-height: 1.3; }
 .dosya-bilgi b { font-size: 14px; font-weight: 500; color: #00a8fc; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .dosya-bilgi small { font-size: 12px; color: var(--soluk); }
@@ -720,12 +708,12 @@ audio.onizleme { width: min(400px, 100%); }
 	min-width: 0;
 	font-size: 13px;
 	color: #c9ead6;
+	transition: box-shadow var(--gecis);
 }
 .yayin-ust { display: flex; align-items: center; gap: 6px; min-width: 0; flex-wrap: wrap; }
 .yayin-ust b { color: var(--parlak); }
 .yayin-aciklama, .yayin-metin { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .yayin-metin b { color: var(--parlak); }
-.yayin-metin i { color: #e8d7ff; }
 .bosluk { flex: 1; }
 .yayin-dugme {
 	flex: none;
@@ -757,6 +745,18 @@ audio.onizleme { width: min(400px, 100%); }
 .yayin-bekle { position: absolute; inset: 0; display: grid; place-items: center; color: var(--soluk); font-size: 13px; pointer-events: none; }
 .yayin-kart.ben { background: rgba(242, 63, 67, 0.08); box-shadow: inset 0 0 0 1px rgba(242, 63, 67, 0.25); }
 .kucuk-onizleme { margin-top: 8px; width: min(240px, 100%); height: auto; aspect-ratio: 16 / 9; border-radius: 6px; }
+/* Paylaşımın sesi (ekransız paylaşımda tek gelen): susturma, ses geldikçe dolan çubuk, seviye.
+   Ses duyuldukça kart, konuşan kişinin halkası gibi yeşil ışır. */
+.yayin-ses { display: flex; align-items: center; gap: 8px; margin-top: 8px; min-width: 0; }
+.yayin-ses .seviye-cubuk { flex: 1; min-width: 40px; }
+.yayin-ses .seviye-cubuk > div { background: #b98aff; }
+.yayin-ses .ses-seviye { width: 96px; height: 18px; margin: 0; padding: 0; border: 0; background: none; accent-color: var(--yesil-acik); flex: none; }
+.yayin-ses .sus.kapali { color: var(--tehlike); }
+.yayin-ses-ikon { display: inline-grid; color: #c9ead6; }
+.yayin-ses-ikon .ikon { width: 18px; height: 18px; }
+.yayin-kart.ses-var { box-shadow: inset 0 0 0 2px var(--yesil-acik); }
+.yayin-kart.ben.ses-var { box-shadow: inset 0 0 0 1px rgba(242, 63, 67, 0.25), inset 0 0 0 2px var(--yesil-acik); }
+.yayin-kart.susturuldu .yayin-ses .seviye-cubuk { opacity: 0.45; }
 
 
 /* Paylaşım menüsü: ses kartının dışına taşabilsin diye ekrana göre konumlanır (JS). */
@@ -774,7 +774,7 @@ audio.onizleme { width: min(400px, 100%); }
 }
 .yayin-menu-oge {
 	display: flex;
-	align-items: center;
+	align-items: flex-start;
 	gap: 10px;
 	width: 100%;
 	padding: 8px 10px;
@@ -785,9 +785,11 @@ audio.onizleme { width: min(400px, 100%); }
 	font-size: 14px;
 	text-align: left;
 }
-.yayin-menu-oge:hover:not(:disabled) { background: var(--vurgu); color: #fff; }
-.yayin-menu-oge:disabled { opacity: 0.4; }
-.yayin-menu-oge .ikon { width: 18px; height: 18px; }
+.yayin-menu-oge:hover { background: var(--vurgu); color: #fff; }
+.yayin-menu-oge .ikon { width: 18px; height: 18px; margin-top: 1px; }
+.yayin-menu-yazi { display: flex; flex-direction: column; min-width: 0; line-height: 1.3; }
+.yayin-menu-yazi small { font-size: 12px; color: var(--soluk); }
+.yayin-menu-oge:hover .yayin-menu-yazi small { color: #e3e5ff; }
 .yayin-menu-not { margin: 6px 4px 2px; padding-top: 8px; border-top: 1px solid var(--cizgi); font-size: 12px; color: var(--soluk); line-height: 1.4; }
 
 /* Mikrofon seviye çubuğu (kendi satırın ve ayarlar). */
@@ -1308,6 +1310,7 @@ audio.onizleme { width: min(400px, 100%); }
 	.dosya-kart.p2p { flex-wrap: wrap; }
 	.dosya-kart.p2p .dosya-dugmeler { width: 100%; justify-content: flex-end; }
 	.yayin-sahne { max-height: 34vh; }
+	.yayin-ses .ses-seviye { width: 80px; }
 	.ses-kisi { padding: 6px 7px; gap: 8px; }
 	.ses-kisi .orta-avatar { width: 36px; height: 36px; font-size: 15px; }
 	.ses-kisi .ses-seviye { width: 64px; }

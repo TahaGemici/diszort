@@ -16,9 +16,6 @@ set -eu
 DEPO=
 
 KONTEYNER=diszort
-# Önceki adıyla (ses-kanali) kurulmuş konteyner güncellemede kaldırılır; ayarlar ve veriler aynı
-# klasörde ($VERI) kaldığı için hiçbir şey kaybolmaz.
-ESKI_KONTEYNER=ses-kanali
 VERI=/var/lib/chat
 ETIKET=latest
 
@@ -186,17 +183,10 @@ Personal access tokens -> yalnızca read:packages):
     echo <token> | sudo docker login ghcr.io -u ${DEPO%%/*} --password-stdin"
 	fi
 
-	# 4) Eski adla (ses-kanali) çalışan konteyner varsa kaldır: aynı portları kullanır. Yeni imaj
-	# yukarıda çekildi; çekilemeseydi buraya gelinmez, eski konteyner çalışmaya devam ederdi.
-	if [ "$ESKI_KONTEYNER" != "$KONTEYNER" ] && docker container inspect "$ESKI_KONTEYNER" >/dev/null 2>&1; then
-		echo "Eski konteyner kaldırılıyor: $ESKI_KONTEYNER (yeni adı $KONTEYNER; ayarlar ve veriler $VERI'de kalır)"
-		docker rm -f "$ESKI_KONTEYNER" >/dev/null || hata "eski konteyner ($ESKI_KONTEYNER) kaldırılamadı."
-	fi
-
-	# 5) Konteyneri aç
+	# 4) Konteyneri aç
 	( cd "$VERI" && docker compose up -d --force-recreate --remove-orphans ) || hata "konteyner açılamadı."
 
-	# 6) Sağlık: sunucu ve coturn ayağa kalkana kadar bekle
+	# 5) Sağlık: sunucu ve coturn ayağa kalkana kadar bekle
 	PORT=$(sed -n 's/^[[:space:]]*PORT[[:space:]]*=[[:space:]]*\([0-9][0-9]*\).*/\1/p' "$VERI/.env" | tail -n 1)
 	PORT=${PORT:-8080}
 	CALISTI=

@@ -99,7 +99,7 @@
 					<button id="kart-mikrofon" class="ikon-dugme" type="button" aria-pressed="false" data-ikon="mik"></button>
 					<button id="kart-sagir" class="ikon-dugme" type="button" aria-pressed="false" data-ikon="kulaklik"></button>
 					<span class="yayin-menu-kap">
-						<button id="yayin-ac" class="ikon-dugme" type="button" title="Paylaş: ekran ya da sekme sesi" aria-label="Paylaşım menüsü" aria-haspopup="menu" aria-expanded="false" data-ikon="yayin"></button>
+						<button id="yayin-ac" class="ikon-dugme" type="button" title="Ekranını paylaş (ekranlı ya da ekransız, yalnızca ses)" aria-label="Paylaşım menüsü" aria-haspopup="menu" aria-expanded="false" data-ikon="yayin"></button>
 						<div id="yayin-menu" class="yayin-menu" role="menu" hidden></div>
 					</span>
 					<button id="kart-ayril" class="ikon-dugme tehlike" type="button" title="Sesli kanaldan ayrıl" aria-label="Sesli kanaldan ayrıl" data-ikon="ayril"></button>
@@ -107,8 +107,8 @@
 				</span>
 			</header>
 			<div id="ses-uyari" class="ses-uyari" hidden></div>
-			<!-- Ekran paylaşımları: izlenen ekranlar ve kendi ekranın. Paylaşılan ses ise aşağıda,
-			     kişiler arasında ayrı bir kişi gibi görünür ("taha - YouTube"). -->
+			<!-- Ekran paylaşımları (kendi paylaşımın ve kanaldakilerinki): ekranlıysa görüntü, sesliyse
+			     ses satırı (seviye, susturma). Ekransız paylaşımda yalnızca ses gelir. -->
 			<div id="yayinlar" class="yayinlar" hidden></div>
 			<div id="ses-kisiler"><div id="ben-ses-satir" class="ses-kisi ben"></div></div>
 		</section>
@@ -163,7 +163,6 @@
 				<dt>Boyut</dt><dd id="vt-boyut">…</dd>
 				<dt>Mesaj</dt><dd id="vt-mesaj">…</dd>
 				<dt>Dosya kaydı</dt><dd id="vt-dosya">…</dd>
-				<dt class="vt-eski" hidden>Eski yüklemeler</dt><dd id="vt-yukleme" class="vt-eski" hidden>…</dd>
 				<dt>Diskte boş</dt><dd id="vt-bos">…</dd>
 				<dt>Sürüm</dt><dd id="vt-surum">…</dd>
 			</dl>

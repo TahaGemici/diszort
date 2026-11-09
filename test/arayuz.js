@@ -4,7 +4,8 @@
 // bağlantılar), kanal ekleme/silme, giriş istekleri (kayıtlı ad uyarısı), atma, kişi limiti, P2P dosya
 // (paylaşma, kartlar, indirme ve gönderme protokolü), sesli kanal (mikrofon kısıtları, teklif/yanıt +
 // oturum kimliği, mikrofon/yayın sesi/görüntü kanalları, m-line başına Opus ayarı, seviye,
-// susturma/sağırlaştırma), yayın (ekran, müzik çalar, izle/kapat), bağlantı kalitesi (kısa kayıp
+// susturma/sağırlaştırma), yayın (ekranlı ve ekransız paylaşım, ekranı göster/gizle, izle/kapat,
+// paylaşımın sesi: susturma/seviye; paylaşamayan tarayıcı), bağlantı kalitesi (kısa kayıp
 // ani uyarı vermez, gerçek bozulma verir), sunucu bağlantısı koparken ses bağlantılarının korunması,
 // giriş freninde uygulamada kalma, sunucu penceresi (veritabanı, sohbeti temizle), oturum devri ve
 // atılma doğrulanır. Gerçek WebRTC için: test/tarayici.js.
@@ -48,7 +49,8 @@ const UC_KANALLI =
 	'm=video 9 UDP/TLS/RTP/SAVPF 96\r\na=mid:2\r\na=rtpmap:96 VP8/90000\r\n';
 
 // Sayfayı kur: DOM + taklitler + ana.js. Birden çok kez çağrılabilir (hash/depo senaryoları).
-function kur({ url = 'https://chat.deneme/', depo = {}, oturumDepo = {} } = {}) {
+// ekranYok: tarayıcı ekran paylaşımı sunmuyor (ör. telefon).
+function kur({ url = 'https://chat.deneme/', depo = {}, oturumDepo = {}, ekranYok = false } = {}) {
 	const dom = new JSDOM(HTML, { url, pretendToBeVisual: true, runScripts: 'dangerously' });
 	const { window } = dom;
 	for (const [k, v] of Object.entries(depo)) window.localStorage.setItem(k, v);
@@ -93,6 +95,10 @@ function kur({ url = 'https://chat.deneme/', depo = {}, oturumDepo = {} } = {}) 
 			stop() {
 				this.readyState = 'ended';
 			},
+			applyConstraints(k) {
+				this.kisit = k;
+				return Promise.resolve();
+			},
 			addEventListener(ad, fn) {
 				(this.dinleyiciler[ad] = this.dinleyiciler[ad] || []).push(fn);
 			},
@@ -120,14 +126,19 @@ function kur({ url = 'https://chat.deneme/', depo = {}, oturumDepo = {} } = {}) 
 				durum.sonIz = iz;
 				return akisYap([iz]);
 			},
-			// Masaüstü ekran paylaşımı: görüntü + (seçildiyse) bilgisayar sesi.
-			getDisplayMedia: async (secenek) => {
-				durum.ekranSecenek = secenek;
-				const izler = [izYap('video')];
-				if (durum.ekranSesiVer) izler.push(izYap('audio'));
-				durum.ekranIzleri = izler;
-				return akisYap(izler);
-			},
+			// Masaüstü ekran paylaşımı: görüntü + (seçildiyse) bilgisayar sesi. ekranReddet: seçim
+			// penceresi açılmadan reddeden tarayıcı.
+			getDisplayMedia: ekranYok
+				? undefined
+				: async (secenek) => {
+						durum.ekranSayisi = (durum.ekranSayisi || 0) + 1;
+						if (durum.ekranReddet) throw Object.assign(new Error('izin yok'), { name: 'NotAllowedError' });
+						durum.ekranSecenek = secenek;
+						const izler = [izYap('video')];
+						if (durum.ekranSesiVer) izler.push(izYap('audio'));
+						durum.ekranIzleri = izler;
+						return akisYap(izler);
+					},
 			getSupportedConstraints: () => ({ restrictOwnAudio: true, suppressLocalAudioPlayback: true }),
 			enumerateDevices: async () => [],
 			addEventListener() {},
@@ -428,7 +439,6 @@ const ICE = { iceServers: [{ urls: ['stun:1.2.3.4:3478'] }, { urls: ['turn:1.2.3
 		beyazListe: 3,
 		beyazListeAdlari: ['taha', 'bora', 'deniz'],
 		sunulanDosyalar: [],
-		jeton: 'a'.repeat(32),
 		anahtar: 'f'.repeat(128),
 		ice: ICE,
 		surum: 'v1',
@@ -455,7 +465,10 @@ const ICE = { iceServers: [{ urls: ['stun:1.2.3.4:3478'] }, { urls: ['turn:1.2.3
 	denetle('geçmiş istendi', s.oc.gonderilen.some((m) => m.type === 'gecmis' && m.kanal === 'genel'));
 	denetle('mikrofon düğmesi sesli kanal dışında da kullanılabilir (kanala susturulmuş girmek için)', d.getElementById('ben-mikrofon').disabled === false);
 
-	// --- 4) geçmiş çizilir (gruplama + gün ayırıcı + bahsetme + resim + bağlantı)
+	// --- 4) geçmiş çizilir (gruplama + gün ayırıcı + bahsetme + resim + bağlantı). Resim P2P dosya:
+	// önizlemesi paylaşandan doğrudan alınmış gibi.
+	const RESIM = 'b'.repeat(24);
+	w.eval(`alinanlar.set('${RESIM}', { dosya: null, url: 'blob:sahte/resim', disk: false, onizleme: true })`);
 	const simdi = Date.now();
 	gelsin({
 		type: 'gecmis',
@@ -465,7 +478,7 @@ const ICE = { iceServers: [{ urls: ['stun:1.2.3.4:3478'] }, { urls: ['turn:1.2.3
 			{ id: 1, ad: 'bora', metin: 'selam', zaman: simdi - 3600000 },
 			{ id: 2, ad: 'bora', metin: 'ikinci mesaj', zaman: simdi - 3500000 },
 			{ id: 3, ad: 'bora', metin: '@taha duyuyor musun https://ornek.com/a?b=1.', zaman: simdi - 60000 },
-			{ id: 4, ad: 'bora', metin: '', zaman: simdi - 50000, dosya: { id: 'b'.repeat(18), ad: 'resim.png', boyut: 2048, tur: 'image/png' } },
+			{ id: 4, ad: 'bora', metin: '', zaman: simdi - 50000, dosya: { id: RESIM, ad: 'resim.png', boyut: 2048, tur: 'image/png' } },
 		],
 	});
 	await bekle(30);
@@ -563,7 +576,7 @@ const ICE = { iceServers: [{ urls: ['stun:1.2.3.4:3478'] }, { urls: ['turn:1.2.3
 		Object.defineProperty(kap, 'clientHeight', { value: 788, configurable: true });
 		bag.dispatchEvent(new w.MouseEvent('click', { bubbles: true, cancelable: true }));
 		await bekle(10);
-		denetle('önizlemeye tıklayınca büyüteç açılır', !b.hidden && /\/dosya\/b{18}$/.test(r.src), r.src);
+		denetle('önizlemeye tıklayınca büyüteç açılır', !b.hidden && r.src === 'blob:sahte/resim', r.src);
 		denetle('büyüteç geçmişe girdi ekler (geri tuşu kapatsın)', !!(w.history.state && w.history.state.buyutec));
 		boyut(600, 4200);
 		r.dispatchEvent(new w.Event('load'));
@@ -593,8 +606,7 @@ const ICE = { iceServers: [{ urls: ['stun:1.2.3.4:3478'] }, { urls: ['turn:1.2.3
 		w.eval('dosyalariPaylas([new File(["merhaba dünya"], "not.txt", { type: "text/plain" })])');
 		const pay = son('dosya-paylas');
 		denetle('dosya paylaşınca yalnızca kaydı gönderildi', pay && /^[0-9a-f]{24}$/.test(pay.id) && pay.ad === 'not.txt' && pay.boyut === 14 && pay.kanal === 'genel', JSON.stringify(pay));
-		denetle('sunucuya yükleme isteği yok', !s.oc.gonderilen.some((m) => m.type === 'yukle'));
-		gelsin({ type: 'yazi', kanal: 'genel', mesaj: { id: 30, ad: 'taha', metin: '', zaman: Date.now(), dosya: { id: pay.id, ad: 'not.txt', boyut: 14, tur: 'text/plain', p2p: true } } });
+		gelsin({ type: 'yazi', kanal: 'genel', mesaj: { id: 30, ad: 'taha', metin: '', zaman: Date.now(), dosya: { id: pay.id, ad: 'not.txt', boyut: 14, tur: 'text/plain' } } });
 		gelsin({ type: 'dosya-durum', sunulan: [pay.id] });
 		await bekle(60);
 		denetle('kendi P2P dosyam: "senin paylaşımın" ve durdur düğmesi', /senin paylaşımın/.test(metin(pay.id)) && /Paylaşımı durdur/.test(metin(pay.id)), metin(pay.id));
@@ -603,7 +615,7 @@ const ICE = { iceServers: [{ urls: ['stun:1.2.3.4:3478'] }, { urls: ['turn:1.2.3
 		const id = 'c'.repeat(24);
 		const icerik = 'P2P içerik: ' + 'x'.repeat(100);
 		const boyut = new w.TextEncoder().encode(icerik).length;
-		gelsin({ type: 'yazi', kanal: 'genel', mesaj: { id: 31, ad: 'bora', metin: '', zaman: Date.now(), dosya: { id, ad: 'rapor.txt', boyut, tur: 'text/plain', p2p: true } } });
+		gelsin({ type: 'yazi', kanal: 'genel', mesaj: { id: 31, ad: 'bora', metin: '', zaman: Date.now(), dosya: { id, ad: 'rapor.txt', boyut, tur: 'text/plain' } } });
 		await bekle(30);
 		const indirDugmesi = () => [...kart(id).querySelectorAll('button')].find((b) => b.textContent === 'İndir');
 		denetle('paylaşan sunmuyorken İndir kapalı', indirDugmesi() && indirDugmesi().disabled && /şu an sunmuyor/.test(metin(id)), metin(id));
@@ -925,107 +937,183 @@ const ICE = { iceServers: [{ urls: ['stun:1.2.3.4:3478'] }, { urls: ['turn:1.2.3
 	await bekle(20);
 	denetle('sağırlık kalktı', [...d.querySelectorAll('#ses-akislari audio')].every((a) => !a.muted) && son('sessiz').sagir === false);
 
-	// --- 12b) yayın: sekme sesi ve ekran paylaşımı. Paylaşılan ses kanalda ayrı bir kişi gibi
-	// görünür ("taha - YouTube"); herkese gider, herkes kendi için susturabilir. Ekran görüntüsü
-	// yalnızca izleyene gider (izle/kapat). İzler önceden açık kanallara takılır (yeniden anlaşma yok).
+	// --- 12b) yayın: ekran paylaşımı, ekranlı ya da ekransız. Ekransız paylaşım da bir ekran
+	// paylaşımıdır: görüntü izi yakalanmaya devam eder ama kimseye gönderilmez, yalnızca sesi gider;
+	// ekran yeniden seçmeden gösterilip gizlenir. Ses herkese gider (herkes yayın kartından kendi için
+	// susturur, kısar); görüntü yalnızca izleyene (izle/kapat). İzler önceden açık kanallara takılır.
 	{
 		const menu = () => d.getElementById('yayin-menu');
 		const menuOgesi = (metin) => [...menu().querySelectorAll('button')].find((b) => b.textContent.includes(metin));
-		const sanalKutu = (ad) => [...d.querySelectorAll('#ses-kisiler .ses-kisi.sanal')].find((e) => e.dataset.yayin === ad);
-		const sanalSatir = (ad) => [...d.querySelectorAll('#ses-kanallari .ses-uyesi.sanal')].find((e) => e.dataset.yayin === ad);
+		const menuyuAc = async () => {
+			if (menu().hidden) d.getElementById('yayin-ac').click();
+			await bekle(20);
+		};
+		const benimKart = () => d.querySelector('#yayinlar .yayin-kart.ben');
+		const esKarti = (ad) => [...d.querySelectorAll('#yayinlar .yayin-kart:not(.ben)')].find((e) => e.dataset.ad === ad);
+		const kartDugmesi = (kart, metin) => kart && [...kart.querySelectorAll('button')].find((b) => b.textContent === metin);
 		const kanalDurumu = (t, z) => kanallar.map((k) => (k.id === 'sesli-sohbet' ? { ...k, kisiler: [{ ad: 'taha', ...t }, { ad: 'bora' }, { ad: 'zeynep', ...z }] } : k));
-		const gonder = () => d.getElementById('pencere-form').dispatchEvent(new w.Event('submit', { cancelable: true, bubbles: true }));
-		d.getElementById('yayin-ac').click();
-		await bekle(20);
-		denetle('paylaşım menüsü: ekran ve sekme sesi (müzik çalar yok)', !menu().hidden && !!menuOgesi('Ekranını paylaş') && !!menuOgesi('Sekme sesini paylaş') && !menuOgesi('Müzik'));
-		// Sekme sesi: önce kanalda görünecek adı sorulur.
-		menuOgesi('Sekme sesini paylaş').click();
-		await bekle(20);
-		denetle('sekme sesi için ad sorulur', !d.getElementById('pencere').hidden && d.getElementById('pencere-baslik').textContent === 'Sekme sesini paylaş' && /YouTube/.test(d.getElementById('pencere-girdi').placeholder));
-		d.getElementById('pencere-girdi').value = 'YouTube';
-		gonder();
+		const yayinSesi = (pc) => pc._transceivers[1].sender.track;
+		const goruntusu = (pc) => pc._transceivers[2].sender.track;
+		const ekransizYayin = { yayin: { goruntu: false, ses: true } };
+
+		await menuyuAc();
+		denetle('paylaşım menüsü: ekranlı ve ekransız (ayrı "sekme sesi" yolu yok)', !menu().hidden && !!menuOgesi('Ekranını paylaş') && !!menuOgesi('Ekransız paylaş') && !menuOgesi('Sekme sesi'));
+		// Ekransız paylaşım: yakalanan sekmenin/bilgisayarın yalnızca sesi gider; ad sorulmaz.
+		menuOgesi('Ekransız paylaş').click();
 		await bekle(40);
+		denetle('ekransız paylaşımda ad sorulmaz', d.getElementById('pencere').hidden);
 		const y1 = son('yayin');
-		denetle('sekme sesi paylaşıldı: ses var, ekran yok, adı YouTube', y1 && y1.ekran === false && y1.ses === true && y1.baslik === 'YouTube', JSON.stringify(y1));
+		denetle('ekransız paylaşım bildirildi: görüntü yok, ses var', y1 && y1.yayin && y1.yayin.goruntu === false && y1.yayin.ses === true, JSON.stringify(y1));
 		const sec = s.oc.ekranSecenek || {};
-		denetle('yakalama: sistem sesi istendi, işleme kapalı, sekmenin kendi sesi hariç', sec.systemAudio === 'include' && sec.audio && sec.audio.echoCancellation === false && sec.audio.restrictOwnAudio === true, JSON.stringify(sec));
-		const [gIz1, sIz] = s.oc.ekranIzleri;
-		denetle('yalnızca ses: görüntü izi durduruldu', gIz1.readyState === 'ended');
-		denetle('ses herkesin yayın sesi kanalına takıldı, görüntü yok', ilkPc._transceivers[1].sender.track === sIz && zPc._transceivers[1].sender.track === sIz && ilkPc._transceivers[2].sender.track === null);
+		denetle(
+			'yakalama: sekme seçimi önde, sistem sesi istendi, işleme kapalı, sekmenin kendi sesi hariç',
+			sec.video && sec.video.displaySurface === 'browser' && sec.systemAudio === 'include' && sec.audio && sec.audio.echoCancellation === false && sec.audio.restrictOwnAudio === true,
+			JSON.stringify(sec),
+		);
+		const [gIz, sIz] = s.oc.ekranIzleri;
+		denetle('görüntü izi durdurulmadı (yakalama sürer), saniyede bir kareye indirildi', gIz.readyState === 'live' && gIz.kisit && gIz.kisit.frameRate.max === 1, JSON.stringify(gIz.kisit));
+		denetle('ses herkesin yayın sesi kanalında, görüntü kimseye gitmiyor', yayinSesi(ilkPc) === sIz && yayinSesi(zPc) === sIz && goruntusu(ilkPc) === null && goruntusu(zPc) === null);
 		denetle('mikrofon kanalı değişmedi', ilkPc._transceivers[0].sender.track === s.oc.sonIz);
-		denetle('verilen ad hatırlandı', w.localStorage.getItem('yayin-ses-adi') === 'YouTube');
-		denetle('kendi paylaşımım ses kartında ayrı kişi: "taha - YouTube (sen)"', !!sanalKutu('taha') && /taha - YouTube \(sen\)/.test(sanalKutu('taha').textContent), sanalKutu('taha') && sanalKutu('taha').textContent);
-		gelsin({ type: 'kanallar', kanallar: kanalDurumu({ yayinSes: true, yayinBaslik: 'YouTube' }, {}) });
+		denetle(
+			'kendi kartım: ekransız, önizleme yok, "Ekranı göster" ve "Durdur" var',
+			!!benimKart() && benimKart().classList.contains('ekransiz') && /Ekransız paylaşıyorsun/.test(benimKart().textContent) && benimKart().querySelector('video').hidden && !!kartDugmesi(benimKart(), 'Ekranı göster') && !!kartDugmesi(benimKart(), 'Durdur'),
+			benimKart() && benimKart().textContent,
+		);
+		denetle('paylaşılan ses kanalda ayrı kişi gibi görünmez', !d.querySelector('.sanal') && d.querySelectorAll('#ses-kisiler .ses-kisi').length === 3);
+		await bekle(250);
+		denetle('kendi kartım ses geldikçe ışır, çubuk dolar', benimKart().classList.contains('ses-var') && parseInt(benimKart().querySelector('.seviye-cubuk > div').style.width, 10) > 0, benimKart().className);
+		gelsin({ type: 'kanallar', kanallar: kanalDurumu(ekransizYayin, {}) });
 		await bekle(20);
-		denetle('kenar çubuğunda "taha - YouTube" kanaldakiler arasında', !!sanalSatir('taha') && sanalSatir('taha').textContent === 'taha - YouTube', sanalSatir('taha') && sanalSatir('taha').textContent);
+		const benimRozet = d.querySelector('#ses-kanallari .ses-uyesi[data-ad="taha"] .canli');
+		denetle('kenar çubuğunda CANLI rozeti (ekransız), ayrı kişi yok', !!benimRozet && /Ekransız/.test(benimRozet.title) && d.querySelectorAll('#ses-kanallari .ses-uyesi').length === 3);
 		const sayac = [...d.querySelectorAll('#ses-kanallari .kanal')].find((b) => b.textContent.includes('Sesli Sohbet')).textContent;
 		denetle('kanal sayacı gerçek kişileri sayar', /3\/10/.test(sayac), sayac);
-		// Görüntüyü kapatmak sesi etkilemez: ses ayrı bir kişi gibi herkese gider.
+		// Görüntüyü kapatmak sesi etkilemez.
 		gelsin({ type: 'izle', from: 'bora', izle: false });
 		await bekle(30);
-		denetle('görüntüyü kapatan da sesi alır', ilkPc._transceivers[1].sender.track === sIz);
+		denetle('görüntüyü kapatan da sesi alır', yayinSesi(ilkPc) === sIz);
 		gelsin({ type: 'izle', from: 'bora', izle: true });
 		await bekle(20);
-		// Ad sonradan değiştirilebilir.
-		[...sanalKutu('taha').querySelectorAll('button')].find((b) => /Adını değiştir/.test(b.title)).click();
-		await bekle(20);
-		d.getElementById('pencere-girdi').value = 'Spotify';
-		gonder();
-		await bekle(20);
-		denetle('ad değişince bildirildi ve göründü', son('yayin').baslik === 'Spotify' && /taha - Spotify/.test(sanalKutu('taha').textContent), JSON.stringify(son('yayin')));
-		// Ekran paylaşımı (sesiyle): yeni yakalamanın sesi sekme sesinin yerine geçer.
-		d.getElementById('yayin-ac').click();
-		await bekle(20);
-		menuOgesi('Ekranını paylaş').click();
-		await bekle(40);
-		const y2 = son('yayin');
-		const [gIz, sIz2] = s.oc.ekranIzleri;
-		denetle('ekran paylaşımı başladı (ekran + ses)', y2 && y2.ekran === true && y2.ses === true, JSON.stringify(y2));
-		denetle('önceki sekme sesi durdu; yeni ses ve görüntü takıldı', sIz.readyState === 'ended' && ilkPc._transceivers[1].sender.track === sIz2 && ilkPc._transceivers[2].sender.track === gIz && zPc._transceivers[2].sender.track === gIz);
-		denetle('ekranla gelen sesin adı türünden (Sekme sesi)', y2.baslik === 'Sekme sesi', y2.baslik);
-		denetle('kendi ekran kartı görünür', !d.getElementById('yayinlar').hidden && /Ekranını paylaşıyorsun/.test(d.getElementById('yayinlar').textContent), d.getElementById('yayinlar').textContent);
+		// Ekranı göster: aynı yakalamanın görüntüsü izleyenlere gider; yeniden seçim yok.
+		const secimSayisi = s.oc.ekranSayisi;
+		kartDugmesi(benimKart(), 'Ekranı göster').click();
+		await bekle(30);
+		denetle('ekran gösterilince görüntü herkese takıldı, yeniden seçim istenmedi', goruntusu(ilkPc) === gIz && goruntusu(zPc) === gIz && s.oc.ekranSayisi === secimSayisi);
+		denetle('görüntü yeniden 30 kareye çıktı', gIz.kisit.frameRate.max === 30, JSON.stringify(gIz.kisit));
+		denetle('bildirildi: görüntü + ses', son('yayin').yayin.goruntu === true && son('yayin').yayin.ses === true, JSON.stringify(son('yayin')));
+		denetle(
+			'kendi kartım: önizleme ve izleyen sayısı',
+			!benimKart().classList.contains('ekransiz') && !benimKart().querySelector('video').hidden && /Ekranını paylaşıyorsun · 2\/2 kişi izliyor/.test(benimKart().textContent),
+			benimKart().textContent,
+		);
 		const vk = ilkPc._transceivers[2].parametreler;
 		denetle('ekran için bit hızı tavanı ve 30 kare', !!vk && vk.encodings[0].maxBitrate > 0 && vk.encodings[0].maxFramerate === 30, JSON.stringify(vk));
 		gelsin({ type: 'izle', from: 'bora', izle: false });
 		await bekle(30);
-		denetle('görüntüyü kapatana görüntü gitmez, ses gider; diğerine ikisi de', ilkPc._transceivers[2].sender.track === null && ilkPc._transceivers[1].sender.track === sIz2 && zPc._transceivers[2].sender.track === gIz);
+		denetle('görüntüyü kapatana görüntü gitmez, ses gider; diğerine ikisi de', goruntusu(ilkPc) === null && yayinSesi(ilkPc) === sIz && goruntusu(zPc) === gIz);
+		denetle('izleyen sayısı düştü', /1\/2 kişi izliyor/.test(benimKart().textContent), benimKart().textContent);
+		// Menüden gizle: görüntü herkesten kalkar, yakalama ve ses sürer.
+		await menuyuAc();
+		menuOgesi('Ekranı gizle').click();
+		await bekle(30);
+		denetle('ekran gizlenince görüntü kimseye gitmiyor, ses ve yakalama sürüyor', goruntusu(ilkPc) === null && goruntusu(zPc) === null && yayinSesi(zPc) === sIz && gIz.readyState === 'live' && son('yayin').yayin.goruntu === false);
 		gelsin({ type: 'izle', from: 'bora', izle: true });
-		await bekle(30);
-		denetle('yeniden izleyince görüntü yine gider', ilkPc._transceivers[2].sender.track === gIz);
-		// Tarayıcının "paylaşımı durdur" çubuğu: görüntü biter, ses ayrı kişi olarak sürer.
-		gIz.bitir();
 		await bekle(20);
-		denetle('ekran bitince ses ayrı kişi olarak sürer', son('yayin').ekran === false && son('yayin').ses === true && ilkPc._transceivers[2].sender.track === null && !!sanalKutu('taha'));
-		// Başkasının paylaşımı: zeynep ekranını ve sekme sesini paylaşıyor.
-		gelsin({ type: 'kanallar', kanallar: kanalDurumu({ yayinSes: true }, { ekran: true, yayinSes: true, yayinBaslik: 'Spotify' }) });
+		denetle('ekransızken izlemeye dönen kişiye de görüntü gitmez', goruntusu(ilkPc) === null);
+
+		// Başkasının paylaşımı: zeynep ekransız (yalnızca ses) paylaşıyor. Bağlantı kurulurken yayın
+		// sesi kanalının izi gelmişti (paylaşım yokken sessiz).
+		zPc.ontrack({ transceiver: zPc._transceivers[1], track: zPc._transceivers[1].receiver.track });
+		gelsin({ type: 'kanallar', kanallar: kanalDurumu(ekransizYayin, ekransizYayin) });
 		await bekle(30);
-		const zKart = () => d.querySelector('#yayinlar .yayin-kart.ekran');
-		denetle('izlenen ekran kutucuğu ve CANLI rozeti', !!zKart() && /zeynep/.test(zKart().textContent) && !!d.querySelector('#ses-kanallari .ses-uyesi[data-ad="zeynep"] .canli'));
-		const zKisi = d.querySelector('#ses-kisiler .ses-kisi[data-ad="zeynep"]');
-		denetle('zeynep\'in sesi kartında ayrı kişi, zeynep\'in hemen arkasında: "zeynep - Spotify"', !!sanalKutu('zeynep') && /zeynep - Spotify/.test(sanalKutu('zeynep').textContent) && zKisi.nextElementSibling === sanalKutu('zeynep'));
-		denetle('kenar çubuğunda "zeynep - Spotify"', !!sanalSatir('zeynep') && sanalSatir('zeynep').textContent === 'zeynep - Spotify');
-		denetle('paylaşılan ses kanala katılmış gibi haber verildi', /zeynep - Spotify kanala katıldı/.test(d.getElementById('durum').textContent), d.getElementById('durum').textContent);
-		// Paylaşılan sesi yalnızca kendim için sustur (kalıcı; yayıncıya bir şey gitmez).
+		const zKart = () => esKarti('zeynep');
+		denetle(
+			"zeynep'in ekransız kartı: görüntü alanı ve izle düğmesi yok, ses satırı var",
+			!!zKart() && zKart().classList.contains('ekransiz') && /ekransız paylaşıyor/.test(zKart().textContent) && zKart().querySelector('.yayin-sahne').hidden && kartDugmesi(zKart(), 'Görüntüyü kapat').hidden && !zKart().querySelector('.yayin-ses').hidden,
+			zKart() && zKart().textContent,
+		);
+		denetle('haber verildi', /zeynep ekransız paylaşıyor/.test(d.getElementById('durum').textContent), d.getElementById('durum').textContent);
+		denetle('zeynep kişi kutusunda CANLI', !!d.querySelector('#ses-kisiler .ses-kisi[data-ad="zeynep"] .canli'));
+		const zOge = w.eval("esler.get('zeynep').yayinSesOgesi");
+		denetle('paylaşımın sesi ayrı bir öğede çalıyor', !!zOge && !zOge.paused && !zOge.muted);
+		await bekle(250);
+		denetle("zeynep'in sesi geldikçe kartı ışır", zKart().classList.contains('ses-var'));
+		// Paylaşılan sesi yalnızca kendim için sustur (kalıcı; yayıncıya bir şey gitmez) ve kıs.
 		const izleSayisi = s.oc.gonderilen.filter((m) => m.type === 'izle').length;
-		sanalKutu('zeynep').querySelector('button.sus').click();
-		await bekle(20);
-		denetle('paylaşılan sesi kendim için susturdum (kalıcı)', w.eval("esler.get('zeynep').yayinSusturuldu") === true && w.localStorage.getItem('yayin-sustur-zeynep') === '1' && sanalKutu('zeynep').classList.contains('susturuldu'));
+		zKart().querySelector('.yayin-ses button.sus').click();
+		await bekle(150);
+		denetle(
+			'paylaşılan sesi kendim için susturdum (kalıcı)',
+			w.eval("esler.get('zeynep').yayinSusturuldu") === true && zOge.muted === true && w.localStorage.getItem('yayin-sustur-zeynep') === '1' && zKart().classList.contains('susturuldu'),
+		);
+		denetle('susturunca kart ışımaz', !zKart().classList.contains('ses-var'));
 		denetle('susturmak yalnızca yerel (izle gitmez)', s.oc.gonderilen.filter((m) => m.type === 'izle').length === izleSayisi);
-		sanalKutu('zeynep').querySelector('button.sus').click();
+		zKart().querySelector('.yayin-ses button.sus').click();
 		await bekle(20);
-		denetle('susturma kalktı', w.eval("esler.get('zeynep').yayinSusturuldu") === false && !w.localStorage.getItem('yayin-sustur-zeynep'));
-		[...zKart().querySelectorAll('button')].find((b) => b.textContent === 'Kapat').click();
+		denetle('susturma kalktı', w.eval("esler.get('zeynep').yayinSusturuldu") === false && !zOge.muted && !w.localStorage.getItem('yayin-sustur-zeynep'));
+		const zSeviye = zKart().querySelector('.yayin-ses input.ses-seviye');
+		zSeviye.value = '40';
+		zSeviye.dispatchEvent(new w.Event('input', { bubbles: true }));
+		denetle('paylaşımın ses seviyesi yalnızca bende, kalıcı', zOge.volume === 0.4 && w.localStorage.getItem('yayin-seviye-zeynep') === '40', String(zOge.volume));
+		// zeynep ekranını gösteriyor: görüntü alanı ve "Görüntüyü kapat".
+		gelsin({ type: 'kanallar', kanallar: kanalDurumu(ekransizYayin, { yayin: { goruntu: true, ses: true } }) });
+		await bekle(30);
+		denetle(
+			'zeynep ekranını gösterince görüntü alanı açıldı',
+			!zKart().classList.contains('ekransiz') && !zKart().querySelector('.yayin-sahne').hidden && !kartDugmesi(zKart(), 'Görüntüyü kapat').hidden && /ekranını gösteriyor/.test(d.getElementById('durum').textContent),
+		);
+		kartDugmesi(zKart(), 'Görüntüyü kapat').click();
 		await bekle(20);
-		denetle('ekranı kapatınca yayıncıya izle:false gider', son('izle') && son('izle').to === 'zeynep' && son('izle').izle === false);
-		denetle('kapatılan ekranın görüntüsü gizlendi, "İzle" düğmesi var', zKart().querySelector('.yayin-sahne').hidden && [...zKart().querySelectorAll('button')].some((b) => b.textContent === 'İzle'));
-		gelsin({ type: 'kanallar', kanallar: kanalDurumu({ yayinSes: true }, {}) });
+		denetle(
+			'görüntüyü kapatınca yayıncıya izle:false gider, ses satırı kalır',
+			son('izle') && son('izle').to === 'zeynep' && son('izle').izle === false && zKart().querySelector('.yayin-sahne').hidden && !zKart().querySelector('.yayin-ses').hidden && !!kartDugmesi(zKart(), 'Görüntüyü aç'),
+		);
+		gelsin({ type: 'kanallar', kanallar: kanalDurumu(ekransizYayin, {}) });
 		await bekle(20);
-		denetle('paylaşım bitince kutucuk ve ayrı kişi kalktı, sonraki ekran yine izlenir', !zKart() && !sanalKutu('zeynep') && !sanalSatir('zeynep') && w.eval("esler.get('zeynep').izliyorum") === true);
-		// Kendi sesimi durdur (ayrı kişinin ✕ düğmesi).
-		[...sanalKutu('taha').querySelectorAll('button')].find((b) => /durdur/i.test(b.title)).click();
+		denetle('paylaşım bitince kart kalktı, ölçer durdu, sonraki paylaşım yine izlenir', !zKart() && w.eval("esler.get('zeynep').izliyorum") === true && !w.eval("esler.get('zeynep').yayinOlcer"));
+		// Kendi paylaşımımı durdur.
+		kartDugmesi(benimKart(), 'Durdur').click();
 		await bekle(20);
-		denetle('sesi durdurunca bildirildi, kanallar boşaldı, ayrı kişi kalktı', son('yayin').ekran === false && son('yayin').ses === false && ilkPc._transceivers[1].sender.track === null && sIz2.readyState === 'ended' && !sanalKutu('taha'));
+		denetle('durdurunca bildirildi, kanallar boşaldı, yakalama bitti', son('yayin').yayin === null && yayinSesi(ilkPc) === null && goruntusu(ilkPc) === null && sIz.readyState === 'ended' && gIz.readyState === 'ended' && !benimKart());
 		denetle('yayın alanı gizlendi', d.getElementById('yayinlar').hidden);
+
+		// Ekranlı paylaşım (sesiyle); tarayıcının "Paylaşımı durdur" çubuğu paylaşımı bütünüyle bitirir.
+		await menuyuAc();
+		menuOgesi('Ekranını paylaş').click();
+		await bekle(40);
+		const [gIz2, sIz2] = s.oc.ekranIzleri;
+		denetle('ekran paylaşımı başladı (ekran + ses)', son('yayin').yayin.goruntu === true && son('yayin').yayin.ses === true && goruntusu(ilkPc) === gIz2 && yayinSesi(ilkPc) === sIz2);
+		denetle('ekranlı paylaşımda seçim penceresi bir türe zorlanmaz', !s.oc.ekranSecenek.video.displaySurface && !gIz2.kisit);
+		gIz2.bitir();
+		await bekle(20);
+		denetle('tarayıcı paylaşımı durdurunca hepsi biter', son('yayin').yayin === null && sIz2.readyState === 'ended' && goruntusu(ilkPc) === null && yayinSesi(ilkPc) === null);
+		// Sesi seçilmeyen ekransız paylaşım başlamaz.
+		s.oc.ekranSesiVer = false;
+		const yayinSayisi = s.oc.gonderilen.filter((m) => m.type === 'yayin').length;
+		await menuyuAc();
+		menuOgesi('Ekransız paylaş').click();
+		await bekle(40);
+		denetle(
+			'sesi seçilmeyen ekransız paylaşım başlamaz, yakalama bırakılır',
+			s.oc.gonderilen.filter((m) => m.type === 'yayin').length === yayinSayisi && s.oc.ekranIzleri[0].readyState === 'ended' && /Ses gelmedi/.test(d.getElementById('durum').textContent),
+			d.getElementById('durum').textContent,
+		);
+		// Sesi olmayan ekranlı paylaşımda "Ekranı gizle" yok (gidecek bir şey kalmazdı).
+		await menuyuAc();
+		menuOgesi('Ekranını paylaş').click();
+		await bekle(40);
+		denetle('sessiz ekran paylaşımında gizle düğmesi yok', son('yayin').yayin.goruntu === true && son('yayin').yayin.ses === false && kartDugmesi(benimKart(), 'Ekranı gizle').hidden);
+		kartDugmesi(benimKart(), 'Durdur').click();
+		await bekle(20);
+		s.oc.ekranSesiVer = true;
+		// Seçim penceresi açılmadan reddeden tarayıcı (ör. "masaüstü sitesi" kipindeki telefon): bir kez
+		// söylenir, paylaş düğmesi gizlenir.
+		s.oc.ekranReddet = true;
+		await menuyuAc();
+		menuOgesi('Ekranını paylaş').click();
+		await bekle(40);
+		denetle('hemen reddedilen paylaşımda düğme gizlenir', d.getElementById('yayin-ac').hidden && /izin vermiyor/.test(d.getElementById('durum').textContent), d.getElementById('durum').textContent);
+		s.oc.ekranReddet = false;
 	}
 
 	// --- 13) sunucu bağlantısı koptu: ses bağlantıları KAPANMAZ, geri gelince kanala devam edilir
@@ -1045,7 +1133,7 @@ const ICE = { iceServers: [{ urls: ['stun:1.2.3.4:3478'] }, { urls: ['turn:1.2.3
 	await bekle(30);
 	denetle('frende uygulama ekranında kalındı', d.getElementById('giris-ekrani').hidden === true && w.eval('esler.size') === 2);
 	await bekle(1500);
-	gelsin({ type: 'hazir', ad: 'taha', kanallar, kimler: [{ ad: 'taha' }], max: 10, maxKullanici: 10, beyazListe: 2, beyazListeAdlari: ['taha', 'bora'], sunulanDosyalar: [], jeton: 'b'.repeat(32), ice: ICE, surum: 'v1', turnNesli: 'n1' });
+	gelsin({ type: 'hazir', ad: 'taha', kanallar, kimler: [{ ad: 'taha' }], max: 10, maxKullanici: 10, beyazListe: 2, beyazListeAdlari: ['taha', 'bora'], sunulanDosyalar: [], ice: ICE, surum: 'v1', turnNesli: 'n1' });
 	await bekle(40);
 	const devamGir = son('ses-gir');
 	denetle('geri gelince kanala devam edildi (devam:true)', devamGir && devamGir.devam === true && devamGir.kanal === 'sesli-sohbet', JSON.stringify(devamGir));
@@ -1074,7 +1162,7 @@ const ICE = { iceServers: [{ urls: ['stun:1.2.3.4:3478'] }, { urls: ['turn:1.2.3
 		denetle('yanıtsız bağlantı ölü sayılır, hemen yeniden bağlanılır', s.oc.wsler.length === once + 1, `${once} → ${s.oc.wsler.length}`);
 		denetle('ölü bağlantıda ses bağlantıları kapanmadı', s.FakePC.hepsi.filter((p) => !p.kapandi).length === pcSayisi && w.eval('esler.size') === 2);
 		denetle('yeniden girişte sesli kanal sürdürülür', son('giris') && son('giris').ses === 'sesli-sohbet', JSON.stringify(son('giris')));
-		gelsin({ type: 'hazir', ad: 'taha', kanallar, kimler: [{ ad: 'taha' }], max: 10, maxKullanici: 10, beyazListe: 2, beyazListeAdlari: ['taha', 'bora'], sunulanDosyalar: [], jeton: 'e'.repeat(32), ice: ICE, surum: 'v1', turnNesli: 'n1' });
+		gelsin({ type: 'hazir', ad: 'taha', kanallar, kimler: [{ ad: 'taha' }], max: 10, maxKullanici: 10, beyazListe: 2, beyazListeAdlari: ['taha', 'bora'], sunulanDosyalar: [], ice: ICE, surum: 'v1', turnNesli: 'n1' });
 		await bekle(40);
 		denetle('ölü bağlantıdan sonra kanala devam edildi (devam:true)', son('ses-gir') && son('ses-gir').devam === true);
 		gelsin({ type: 'ses-girdi', kanal: 'sesli-sohbet', kisiler: ['bora', 'zeynep'], ice: ICE, devam: true });
@@ -1112,10 +1200,9 @@ const ICE = { iceServers: [{ urls: ['stun:1.2.3.4:3478'] }, { urls: ['turn:1.2.3
 		d.getElementById('sunucu-ac').click();
 		await bekle(20);
 		denetle('sunucu penceresi açıldı, bilgi istendi', !d.getElementById('sunucu-pencere').hidden && !!son('sunucu-bilgi'));
-		gelsin({ type: 'sunucu-bilgi', veritabani: 5 * 1048576 + 300000, mesaj: 1234, dosya: 12, yuklemeler: 0, yuklemeAdet: 0, bosAlan: 8 * 1024 ** 3, surum: 'v9' });
+		gelsin({ type: 'sunucu-bilgi', veritabani: 5 * 1048576 + 300000, mesaj: 1234, dosya: 12, bosAlan: 8 * 1024 ** 3, surum: 'v9' });
 		await bekle(20);
 		denetle('veritabanı boyutu ve mesaj sayısı gösterildi', d.getElementById('vt-boyut').textContent === '5,3 MB' && d.getElementById('vt-mesaj').textContent === '1.234' && d.getElementById('vt-bos').textContent === '8 GB', `${d.getElementById('vt-boyut').textContent} ${d.getElementById('vt-mesaj').textContent} ${d.getElementById('vt-bos').textContent}`);
-		denetle('eski yükleme yokken satırı gizli', d.getElementById('vt-yukleme').hidden);
 		const secenekler = [...d.getElementById('temizle-kanal').options].map((o) => o.value).join(',');
 		denetle('temizlik için kanal seçenekleri (tümü + yazılı kanallar)', secenekler === ',genel,muhabbet', secenekler);
 		d.getElementById('temizle-kanal').value = 'genel';
@@ -1154,7 +1241,7 @@ const ICE = { iceServers: [{ urls: ['stun:1.2.3.4:3478'] }, { urls: ['turn:1.2.3
 	d.getElementById('burada-devam').click();
 	await bekle(30);
 	denetle('"Bu sekmede devam et" yeniden bağlanır', s.oc.wsler.length === wsSayisi + 1);
-	gelsin({ type: 'hazir', ad: 'taha', kanallar, kimler: [{ ad: 'taha' }], max: 10, maxKullanici: 10, beyazListe: 2, beyazListeAdlari: ['taha'], sunulanDosyalar: [], jeton: 'c'.repeat(32), ice: ICE, surum: 'v1' });
+	gelsin({ type: 'hazir', ad: 'taha', kanallar, kimler: [{ ad: 'taha' }], max: 10, maxKullanici: 10, beyazListe: 2, beyazListeAdlari: ['taha'], sunulanDosyalar: [], ice: ICE, surum: 'v1' });
 	await bekle(30);
 	denetle('devamdan sonra uygulama açık', d.getElementById('uygulama').hidden === false);
 
@@ -1190,7 +1277,7 @@ const ICE = { iceServers: [{ urls: ['stun:1.2.3.4:3478'] }, { urls: ['turn:1.2.3
 	// --- 20) sesli kanaldayken sayfa arka planda tarayıcı tarafından kapatıldıysa (bellek), geri
 	// dönülünce sesli kanala kendiliğinden girilir; eski (10 dakikadan eski) not yok sayılır.
 	{
-		const yeniHazir = { type: 'hazir', ad: 'taha', kanallar, kimler: [{ ad: 'taha' }], max: 10, maxKullanici: 10, beyazListe: 1, beyazListeAdlari: ['taha'], sunulanDosyalar: [], jeton: 'd'.repeat(32), ice: ICE, surum: 'v1' };
+		const yeniHazir = { type: 'hazir', ad: 'taha', kanallar, kimler: [{ ad: 'taha' }], max: 10, maxKullanici: 10, beyazListe: 1, beyazListeAdlari: ['taha'], sunulanDosyalar: [], ice: ICE, surum: 'v1' };
 		const notla = (dk) => ({ 'ses-devam': JSON.stringify({ kanal: 'sesli-sohbet', zaman: Date.now() - dk * 60000 }) });
 		const t = kur({ depo: { anahtar: 'f'.repeat(128), ad: 'taha' }, oturumDepo: notla(1) });
 		await bekle(40);
@@ -1204,6 +1291,17 @@ const ICE = { iceServers: [{ urls: ['stun:1.2.3.4:3478'] }, { urls: ['turn:1.2.3
 		u.oc.ws.onmessage({ data: JSON.stringify(yeniHazir) });
 		await bekle(600);
 		denetle('10 dakikadan eski not yok sayılır', !u.oc.gonderilen.some((m) => m.type === 'ses-gir'));
+	}
+
+	// --- 21) ekran paylaşımı sunmayan tarayıcı (çoğu telefon): paylaş düğmesi yok; paylaşılanı izler
+	// ve dinler (yukarıdaki yayın kartları her cihazda aynı).
+	{
+		const t = kur({ ekranYok: true });
+		await bekle(20);
+		denetle('ekran paylaşımı olmayan tarayıcıda paylaş düğmesi gizli', t.d.getElementById('yayin-ac').hidden === true);
+		const u = kur();
+		await bekle(20);
+		denetle('ekran paylaşımı olan tarayıcıda paylaş düğmesi görünür', u.d.getElementById('yayin-ac').hidden === false);
 	}
 
 	console.log(process.exitCode ? 'BAŞARISIZ' : `Arayüz denemeleri geçti (${gecen}).`);

@@ -1,11 +1,12 @@
 // Diszort sunucusu — Discord'umsu tek sunucu: yazılı kanallar + sesli kanallar.
 //   - web sayfasını sunar (web/),
 //   - /rtc WebSocket'inde yazılı sohbeti iletir ve kaydeder (SQLite), sesli kanallar için
-//     WebRTC signaling yapar (mesh: ses, ekran ve sekme sesi paylaşımı tarayıcılar arasında P2P akar),
+//     WebRTC signaling yapar (mesh: ses ve ekran paylaşımı, ekranlı ya da ekransız, tarayıcılar
+//     arasında P2P akar),
 //   - dosya paylaşımında yalnızca aracıdır: dosya paylaşanın tarayıcısında kalır, isteyen onu
 //     doğrudan (WebRTC veri kanalıyla) alır; sunucu yalnızca sohbetteki kaydı (ad, boyut) tutar ve
-//     iki tarayıcıyı tanıştırır. Eski sürümün yüklediği dosyalar /dosya/<id> ile sunulmaya devam eder,
-//   - coturn'ü (STUN/TURN) başlatıp izler ve tarayıcılara geçici TURN şifresi verir (/api/ice).
+//     iki tarayıcıyı tanıştırır,
+//   - coturn'ü (STUN/TURN) başlatıp izler ve içeridekilere geçici TURN şifresi verir.
 //
 // Yalnızca yazılı kanallar diske yazılır; ses/görüntü ve dosyaların içeriği sunucuya hiç gelmez.
 // Ayarlar .env'den okunur (sunucuda /var/lib/chat/.env, konteynerde /veri/.env); hepsi isteğe bağlı.
@@ -105,18 +106,6 @@ function disIpBul() {
 	});
 }
 
-function surumBul() {
-	// Docker imajı sürümü SURUM ortam değişkeniyle verir (Dockerfile: ARG SURUM);
-	// kendi bilgisayarında "yerel" görünür.
-	if (process.env.SURUM) return process.env.SURUM;
-	try {
-		const metin = fs.readFileSync('/usr/lib/os-release', 'utf8');
-		const m = metin.match(/^IMAGE_VERSION=["']?([^"'\n]*)/m);
-		if (m && /^IMAGE_ID=["']?chat["']?$/m.test(metin)) return m[1];
-	} catch {}
-	return 'yerel';
-}
-
 const HOST = ayar('HOST', '127.0.0.1');
 const PORT = sayiAyar('PORT', 8080, 1, 65535);
 const MAX_KISI = sayiAyar('MAX_KISI', 10, 2, 50);
@@ -171,10 +160,9 @@ const TURN_IZINLI_IP = ayar('TURN_IZINLI_IP')
 	.split(',')
 	.map((x) => x.trim())
 	.filter(Boolean);
-const SURUM = surumBul();
+// Docker imajı sürümü SURUM ortam değişkeniyle verir (Dockerfile: ARG SURUM); kendi bilgisayarında "yerel".
+const SURUM = process.env.SURUM || 'yerel';
 const VERI_KLASORU = ayar('VERI_KLASORU') || (fs.existsSync('/veri') ? '/veri' : path.join(KOK, 'veri'));
-// Eski sürümün sunucuya yüklediği dosyalar (yeni dosyalar P2P paylaşılır, buraya yazılmaz).
-const YUKLEME_KLASORU = path.join(VERI_KLASORU, 'yuklemeler');
 
 if (ILK_ANAHTAR && !ANAHTAR_KALIBI.test(ILK_ANAHTAR)) {
 	console.error(`Ayar hatası: ILK_ANAHTAR ${ANAHTAR_UZUNLUK} karakterlik hex olmalı (512 bit) ya da boş bırakılmalı.`);
@@ -425,7 +413,7 @@ async function turnHazirBekle() {
 }
 
 // STUN/TURN adresleri + bir günlük geçici TURN şifresi. YALNIZCA içeridekilere (beyaz listedekilere)
-// verilir: 'hazir' ve 'ses-girdi' mesajlarında, ya da jetonla /api/ice'tan. Şifre dışarıya açık olsaydı
+// verilir: 'hazir', 'ses-girdi' ve 'ice-sunuculari' mesajlarında. Şifre dışarıya açık olsaydı
 // herkes sunucuyu ücretsiz aktarıcı (relay) olarak kullanabilirdi.
 // Not: TURN sırrı her açılışta yeniden üretilir; istemci her bağlanışta taze şifre alır (eskiden
 // sayfanın ilk açılışında aldığı şifreyi saklıyordu → her güncellemeden sonra TURN'e ihtiyaç duyan
@@ -466,9 +454,9 @@ function iceSunuculari(host) {
 //   {type:'yazi', kanal, metin}                yazılı kanala mesaj (kişi başı 10 sn'de 12)
 //   {type:'gecmis', kanal, once}               son 50 mesaj; once verilirse ondan eskiler
 //   {type:'yaziyor', kanal}                    "yazıyor" göstergesi
-//   {type:'ses-gir', kanal, devam, sessiz, sagir, ekran, yayinSes, yayinBaslik} / {type:'ses-cik'}
+//   {type:'ses-gir', kanal, devam, sessiz, sagir, yayin} / {type:'ses-cik'}
 //                                              sesli kanala gir/çık (devam: eş bağlantıları ayakta;
-//                                              ekran/yayinSes: süren yayın, yeniden bağlanınca)
+//                                              yayin: süren ekran paylaşımı, yeniden bağlanınca)
 //   {type:'kanal-ekle', tur, ad} / {type:'kanal-sil', kanal}   tur: 'yazi' | 'ses'
 //   {type:'sdp', to, sdp, oturum} / {type:'ice', to, ice, oturum}
 //                                              WebRTC (aynı sesli kanaldaki kişiye). oturum: eş
@@ -476,11 +464,11 @@ function iceSunuculari(host) {
 //   {type:'yenile', to, oturum}                yanıtlayan: "bağlantımız bozuk" → teklif eden ICE'yi
 //                                              yeniler ya da baştan kurar
 //   {type:'sessiz', sessiz, sagir}             mikrofon kapalı / sağırlaştırılmış mı
-//   {type:'yayin', ekran, ses, baslik}         ekranını / sekme (bilgisayar) sesini paylaşıyor mu;
-//                                              baslik: paylaşılan sesin adı (ör. YouTube); kanalda
-//                                              "ad - baslik" diye ayrı bir kişi gibi görünür. Akışlar P2P gider.
-//   {type:'izle', to, izle}                    yayını izle / kapat (aynı sesli kanaldaki yayıncıya;
-//                                              kapatana görüntü ve yayın sesi gönderilmez)
+//   {type:'yayin', yayin}                      ekran paylaşımı: null (yok) ya da {goruntu, ses}.
+//                                              goruntu:false = ekransız (yalnızca ses gider: bilgisayarın
+//                                              ya da sekmenin sesi). Akışlar P2P gider.
+//   {type:'izle', to, izle}                    paylaşılan ekranı izle / kapat (aynı sesli kanaldaki
+//                                              yayıncıya; kapatana görüntü gönderilmez, ses gider)
 //   {type:'dosya-paylas', kanal, id, ad, boyut, tur}
 //                                              P2P dosya: sohbete kaydı yazılır, dosya gönderende kalır.
 //                                              id: istemcinin ürettiği 24 hex
@@ -495,7 +483,7 @@ function iceSunuculari(host) {
 //   {type:'tani', veri}                        ses teşhisi (yalnızca günlüğe yazılır; TANI=0 kapatır)
 //   {type:'ping'}                              canlılık yoklaması (pong döner)
 // Sunucu -> istemci:
-//   {type:'hazir', ad, kanallar, kimler, beyazListeAdlari, max, jeton, ice, surum, turnNesli,
+//   {type:'hazir', ad, kanallar, kimler, beyazListeAdlari, max, ice, surum, turnNesli,
 //    girisAralikMs, girisKova, sunulanDosyalar, anahtar?}
 //                                              giriş kabul edildi (anahtar yalnızca yeni verilince). surum
 //                                              değişirse sekme kendini yeniler; turnNesli değişirse
@@ -510,10 +498,11 @@ function iceSunuculari(host) {
 //   {type:'oturum-devralindi', message}        aynı anahtar başka sekmede açıldı (bu sekme durur)
 //   {type:'beyaz-liste', kisiler, maxKullanici}
 //   {type:'kanallar', kanallar} / {type:'kimler', kimler, beyazListe, beyazListeAdlari, maxKullanici}
-//                                              (kanallar'da bağlantısı kopan kişi askida:true, yayın
-//                                              yapan ekran/yayinSes/yayinBaslik ile görünür)
+//                                              (kanallar'da bağlantısı kopan kişi askida:true, ekran
+//                                              paylaşan yayin:{goruntu, ses} ile görünür)
 //   {type:'yazi', kanal, mesaj} / {type:'gecmis', kanal, mesajlar, bitti}
-//                                              mesaj.dosya.p2p: dosya paylaşanın tarayıcısında
+//                                              mesaj.dosya: {id, ad, boyut, tur}; dosya paylaşanın
+//                                              tarayıcısında (P2P)
 //   {type:'yaziyor', kanal, ad} / {type:'sessiz', ad, sessiz, sagir}
 //   {type:'ses-girdi', kanal, kisiler, ice, devam} / {type:'ses-kisi-girdi', kanal, ad, devam} /
 //   {type:'ses-kisi-cikti', kanal, ad} / {type:'ses-kapatildi', kanal}
@@ -522,8 +511,7 @@ function iceSunuculari(host) {
 //   {type:'dosya-durum', sunulan}              şu an çevrimiçi biri tarafından sunulan dosya id'leri
 //   {type:'dosya-sun', idler}                  dosya-sun yanıtı: geçerli sayılanlar (gerisi bırakılır)
 //   {type:'dosya-sinyal', from, veri}          (hedef çevrimiçi değilse from: hedef, veri.tur:'ulasilamadi')
-//   {type:'sunucu-bilgi', veritabani, mesaj, dosya, yuklemeler, yuklemeAdet, bosAlan, surum}
-//                                              boyutlar bayt; yuklemeler: eski sürümün sunucudaki dosyaları
+//   {type:'sunucu-bilgi', veritabani, mesaj, dosya, bosAlan, surum}   boyutlar bayt
 //   {type:'sohbet-temizlendi', kanal, gun, ad, silinen}
 //   {type:'ice-sunuculari', ice}
 //   {type:'hata', message, kod?}               kod: ses-dolu, ses-kanal-yok, ...
@@ -531,7 +519,6 @@ function iceSunuculari(host) {
 // Her çiftte teklifi adı alfabetik olarak büyük olan yapar (çakışma olmaz). Adlar sunucu genelinde benzersiz.
 
 const sesliKanallar = new Map(); // kanal id -> Map<ad, ws>  (bağlantısı kopan kişi kısa süre askıda kalır)
-const jetonlar = new Map(); // yükleme jetonu -> ws
 const wss = new WebSocketServer({ noServer: true, maxPayload: 64 * 1024 });
 let db = null;
 
@@ -552,9 +539,7 @@ function kanalDurumu() {
 			o.kisiler = [...(sesliKanallar.get(k.id) || new Map()).entries()].map(([ad, ws]) => {
 				const kisi = { ad, sessiz: !!ws.sessiz, sagir: !!ws.sagir };
 				if (ws.askida) kisi.askida = true; // bağlantısı koptu, geri dönmesi bekleniyor
-				if (ws.ekran) kisi.ekran = true; // ekranını paylaşıyor
-				if (ws.yayinSes) kisi.yayinSes = true; // sekme / bilgisayar sesini paylaşıyor
-				if (ws.yayinBaslik) kisi.yayinBaslik = ws.yayinBaslik;
+				if (ws.yayin) kisi.yayin = ws.yayin; // ekranını paylaşıyor ({goruntu, ses}; goruntu:false = ekransız)
 				return kisi;
 			});
 		}
@@ -596,9 +581,7 @@ function durumYayinla() {
 }
 
 function yayinBitir(ws) {
-	ws.ekran = false;
-	ws.yayinSes = false;
-	ws.yayinBaslik = '';
+	ws.yayin = null;
 }
 
 // Sesli kanaldan kalıcı olarak çıkar (kendi isteğiyle, kanal değiştirince ya da askı süresi dolunca).
@@ -663,7 +646,6 @@ function ayril(ws) {
 	}
 	if (ws.sesKanal) sesAskiyaAl(ws);
 	ws.ad = null;
-	if (ws.jeton) jetonlar.delete(ws.jeton);
 	// Sunduğu dosyalar artık alınamaz (aynı sekme geri gelince yeniden bildirir).
 	if (ws.sunulan && ws.sunulan.size) {
 		ws.sunulan = new Set();
@@ -709,10 +691,8 @@ function oturumAc(ws, ad, kimlik, anahtar, sesDevam) {
 	// Aynı adla açık başka bir bağlantı varsa (sekme yenilendi / yeniden onaylandı) onu düşür.
 	const eski = adSahibi(ad);
 	if (eski && eski !== ws) eskiOturumuKapat(eski, kimlik);
-	if (ws.jeton) jetonlar.delete(ws.jeton);
 	ws.ad = ad;
 	ws.kimlik = kimlik || '';
-	ws.jeton = crypto.randomBytes(16).toString('hex');
 	ws.yaziPencere = 0;
 	ws.yaziAdet = 0;
 	ws.sessiz = false;
@@ -720,7 +700,6 @@ function oturumAc(ws, ad, kimlik, anahtar, sesDevam) {
 	yayinBitir(ws);
 	ws.sunulan = new Set(); // istemci 'dosya-sun' ile bildirir
 	ws.dosyaKuyruk = Promise.resolve(); // dosya-paylas / dosya-sun sırayla işlensin
-	jetonlar.set(ws.jeton, ws);
 	// Askıdaki sesli kanal yeri: istemci o kanala devam etmeyecekse hemen bırak (diğerleri boşuna beklemesin).
 	const askida = askidakiKoltuk(ad);
 	if (askida && askida.kanal !== sesDevam && koltukBirak(askida.kanal, ad, askida.ws)) {
@@ -736,7 +715,6 @@ function oturumAc(ws, ad, kimlik, anahtar, sesDevam) {
 		beyazListe: beyazListeSayisi,
 		beyazListeAdlari,
 		sunulanDosyalar: sunulanListesi(),
-		jeton: ws.jeton,
 		anahtar: anahtar || undefined,
 		ice: iceSunuculari(ws.host),
 		turnNesli: TURN_NESLI,
@@ -1086,8 +1064,8 @@ function sesGir(ws, m) {
 	ws.sesKanal = kanal;
 	ws.sessiz = !!m.sessiz;
 	ws.sagir = !!m.sagir;
-	// Yeniden bağlanan kişinin süren yayını (ekran / sekme sesi) bilgisi de geri gelir.
-	yayinAyarla(ws, m.ekran, m.yayinSes, m.yayinBaslik);
+	// Yeniden bağlanan kişinin süren ekran paylaşımı bilgisi de geri gelir.
+	yayinAyarla(ws, m.yayin);
 	console.log(`[ses] ${kanal}: ${ws.ad} ${geriAl ? 'geri döndü (bağlantılar sürüyor)' : devam ? 'devam ediyor' : 'girdi'} (${uyeler.size}/${MAX_KISI})`);
 	gonder(ws, { type: 'ses-girdi', kanal, kisiler: digerleri, ice: iceSunuculari(ws.host), devam });
 	kanalHerkes(kanal, { type: 'ses-kisi-girdi', kanal, ad: ws.ad, devam }, ws);
@@ -1111,32 +1089,24 @@ function sdpIlet(ws, m, tur) {
 	gonder(karsi, ileti);
 }
 
-// --- yayın: ekran paylaşımı ve sekme / bilgisayar sesi. Akışlar eşler arasında P2P gider (sesli
-// kanalın bağlantılarında önceden açılmış görüntü ve ikinci ses kanalı); sunucu yalnızca kimin neyi
-// paylaştığını duyurur.
+// --- yayın: ekran paylaşımı, ekranlı ya da ekransız (yalnızca ses). Akışlar eşler arasında P2P gider
+// (sesli kanalın bağlantılarında önceden açılmış görüntü ve ikinci ses kanalı); sunucu yalnızca kimin
+// paylaştığını ve neyin (görüntü ve/veya ses) gittiğini duyurur.
 
-function yayinAyarla(ws, ekran, ses, baslik) {
-	ws.ekran = !!ekran;
-	ws.yayinSes = !!ses;
-	ws.yayinBaslik = ws.yayinSes
-		? String(baslik ?? '')
-				.replace(/[\u0000-\u001f\u007f]/g, '')
-				.trim()
-				.slice(0, 120)
-		: '';
+function yayinAyarla(ws, y) {
+	const goruntu = !!(y && typeof y === 'object' && y.goruntu);
+	const ses = !!(y && typeof y === 'object' && y.ses);
+	ws.yayin = goruntu || ses ? { goruntu, ses } : null;
 }
+const yayinMetni = (y) => (!y ? 'yok' : y.goruntu ? (y.ses ? 'ekran + ses' : 'ekran') : 'ekransız (yalnızca ses)');
 
 function yayinDurumu(ws, m) {
 	if (!ws.ad || !ws.sesKanal) return;
-	const once = `${ws.ekran}/${ws.yayinSes}/${ws.yayinBaslik}`;
-	const ekranVardi = ws.ekran;
-	const sesVardi = ws.yayinSes;
-	yayinAyarla(ws, m.ekran, m.ses, m.baslik);
-	if (once === `${ws.ekran}/${ws.yayinSes}/${ws.yayinBaslik}`) return;
-	if (ekranVardi !== ws.ekran || sesVardi !== ws.yayinSes) {
-		const ne = [ws.ekran ? 'ekran' : '', ws.yayinSes ? 'ses' : ''].filter(Boolean).join(' + ') || 'yok';
-		console.log(`[ses] ${ws.sesKanal}: ${ws.ad} yayın: ${ne}`);
-	}
+	const once = yayinMetni(ws.yayin);
+	yayinAyarla(ws, m.yayin);
+	const sonra = yayinMetni(ws.yayin);
+	if (once === sonra) return;
+	console.log(`[ses] ${ws.sesKanal}: ${ws.ad} yayın: ${sonra}`);
 	durumYayinla();
 }
 
@@ -1187,10 +1157,10 @@ function dosyaPaylas(ws, m) {
 	if (++ws.dosyaAdet > 20) return gonder(ws, { type: 'hata', message: 'Çok hızlı dosya paylaşıyorsun; birkaç saniye bekle.' });
 	const dosyaAd = guvenliAd(String(m.ad ?? 'dosya'));
 	const hamTur = String(m.tur ?? '').trim().slice(0, 100);
-	const tur = SATIR_ICI[uzanti(dosyaAd)] || (MIME_KALIBI.test(hamTur) ? hamTur.toLowerCase() : 'application/octet-stream');
+	const tur = ONIZLEME_TURLERI[uzanti(dosyaAd)] || (MIME_KALIBI.test(hamTur) ? hamTur.toLowerCase() : 'application/octet-stream');
 	return dosyaSirasi(ws, async () => {
 		if (!ws.ad) return;
-		const kayit = { id, kanal, dosyaAd, boyut, tur, p2p: 1 };
+		const kayit = { id, kanal, dosyaAd, boyut, tur };
 		let mesaj;
 		try {
 			await db.dosyaEkle(kayit);
@@ -1251,34 +1221,9 @@ function dosyaSinyal(ws, m) {
 
 // --- veritabanı bilgisi ve sohbet temizliği
 
-async function klasorBoyutu(klasor) {
-	let toplam = 0;
-	let adet = 0;
-	try {
-		for (const ad of await fs.promises.readdir(klasor)) {
-			try {
-				const s = await fs.promises.stat(path.join(klasor, ad));
-				if (s.isFile()) {
-					toplam += s.size;
-					adet++;
-				}
-			} catch {}
-		}
-	} catch {}
-	return { bayt: toplam, adet };
-}
-
 async function sunucuBilgisi() {
-	const [veritabaniBayt, s, yuklemeler] = await Promise.all([db.boyut(), db.sayilar(), klasorBoyutu(YUKLEME_KLASORU)]);
-	return {
-		veritabani: veritabaniBayt,
-		mesaj: s.mesaj,
-		dosya: s.dosya,
-		yuklemeler: yuklemeler.bayt, // eski sürümün sunucuya yüklediği dosyalar
-		yuklemeAdet: yuklemeler.adet,
-		bosAlan: bosAlan(),
-		surum: SURUM,
-	};
+	const [veritabaniBayt, s] = await Promise.all([db.boyut(), db.sayilar()]);
+	return { veritabani: veritabaniBayt, mesaj: s.mesaj, dosya: s.dosya, bosAlan: bosAlan(), surum: SURUM };
 }
 
 const TEMIZLIK_GUNLERI = [0, 1, 7, 30, 90];
@@ -1303,26 +1248,14 @@ async function sohbetTemizle(ws, m) {
 	} finally {
 		temizlikSuruyor = false;
 	}
-	// Eski sürümün sunucuya yüklediği dosyalar diskten de silinir. Her şey silindiyse klasörde
-	// kalan sahipsiz dosyalar da gider.
-	const silinecek = new Set(sonuc.sunucuDosyalari);
-	if (!kanal && !gun) {
-		try {
-			for (const ad of await fs.promises.readdir(YUKLEME_KLASORU)) if (/^[a-f0-9]{18}$/.test(ad)) silinecek.add(ad);
-		} catch {}
-	}
-	for (const id of silinecek) {
-		dosyaOnbellek.delete(id);
-		await fs.promises.unlink(path.join(YUKLEME_KLASORU, id)).catch(() => {});
-	}
-	// Mesajı silinen P2P dosyalar artık sunulmaz.
-	if (sonuc.p2pDosyalari.length) {
-		const silinen = new Set(sonuc.p2pDosyalari);
+	// Mesajı silinen dosyalar artık sunulmaz.
+	if (sonuc.dosyalar.length) {
+		const silinen = new Set(sonuc.dosyalar);
 		for (const x of wss.clients) if (x.sunulan) for (const id of silinen) x.sunulan.delete(id);
 		sunulanDegisti();
 	}
 	const mb = (n) => (n / 1048576).toFixed(1) + ' MB';
-	console.log(`[veritabanı] ${ws.ad} sohbeti temizledi (${kapsam}): ${sonuc.mesaj} mesaj, ${silinecek.size} eski dosya; veritabanı ${mb(sonuc.onceki)} → ${mb(sonuc.sonraki)}`);
+	console.log(`[veritabanı] ${ws.ad} sohbeti temizledi (${kapsam}): ${sonuc.mesaj} mesaj, ${sonuc.dosyalar.length} dosya kaydı; veritabanı ${mb(sonuc.onceki)} → ${mb(sonuc.sonraki)}`);
 	herkes({ type: 'sohbet-temizlendi', kanal, gun, ad: ws.ad, silinen: sonuc.mesaj });
 	try {
 		gonder(ws, { type: 'sunucu-bilgi', ...(await sunucuBilgisi()) });
@@ -1412,8 +1345,6 @@ async function kanalSilHandler(ws, m) {
 	}
 	let sunulanAzaldi = false;
 	for (const d of silinenDosyalar) {
-		dosyaOnbellek.delete(d);
-		fs.promises.unlink(path.join(YUKLEME_KLASORU, d)).catch(() => {}); // P2P dosyada diskte bir şey yok
 		for (const x of wss.clients) if (x.sunulan && x.sunulan.delete(d)) sunulanAzaldi = true;
 	}
 	if (sunulanAzaldi) sunulanDegisti();
@@ -1574,15 +1505,11 @@ function disIpIzle() {
 	zamanlayici.unref?.();
 }
 
-// ---------------------------------------------------------------- eski yüklemeler (salt okunur)
-//
-// Eski sürümde dosyalar sunucuya yükleniyordu (/veri/yuklemeler). Yenileri P2P paylaşılır; eskiler
-// sohbetteki mesajları durdukça /dosya/<id> ile sunulmaya devam eder ("sohbeti temizle" siler).
+// ---------------------------------------------------------------- yardımcılar
 
-// Yalnızca bu türler tarayıcıda doğrudan gösterilir; geri kalanı indirme olarak sunulur.
-// (HTML/SVG gibi betik çalıştırabilen türler asla satır içi gösterilmez.) P2P dosyaların türü de
-// bu tablodan belirlenir.
-const SATIR_ICI = {
+// Önizlenen dosyaların (resim, ses, video) türü uzantıdan belirlenir, paylaşanın söylediğinden değil:
+// önizlemeli bir adla betik çalıştırabilen bir tür (HTML/SVG) gönderilemez.
+const ONIZLEME_TURLERI = {
 	png: 'image/png',
 	jpg: 'image/jpeg',
 	jpeg: 'image/jpeg',
@@ -1598,7 +1525,6 @@ const SATIR_ICI = {
 };
 
 const uzanti = (ad) => (String(ad).split('.').pop() || '').toLowerCase();
-const dosyaOnbellek = new Map(); // id -> kayıt (her dosya için veritabanına gitmemek adına)
 
 function guvenliAd(ham) {
 	return (
@@ -1621,43 +1547,6 @@ function bosAlan() {
 	}
 }
 
-function jsonYanit(res, kod, nesne) {
-	yanit(res, kod, JSON.stringify(nesne) + '\n', { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
-}
-
-async function dosyaGonder(req, res, id) {
-	let kayit = dosyaOnbellek.get(id);
-	if (!kayit) {
-		try {
-			kayit = await db.dosyaGetir(id);
-		} catch {}
-		if (kayit) dosyaOnbellek.set(id, kayit);
-	}
-	if (!kayit || kayit.p2p) return yanit(res, 404, 'Dosya bulunamadı\n', { 'Content-Type': 'text/plain; charset=utf-8' });
-	const tam = path.join(YUKLEME_KLASORU, kayit.id);
-	let boyut;
-	try {
-		boyut = (await fs.promises.stat(tam)).size;
-	} catch {
-		return yanit(res, 404, 'Dosya bulunamadı\n', { 'Content-Type': 'text/plain; charset=utf-8' });
-	}
-	const satirIci = SATIR_ICI[uzanti(kayit.dosyaAd)];
-	const basliklar = {
-		'Content-Type': satirIci || 'application/octet-stream',
-		'Content-Length': boyut,
-		// İçerik değişmez (id başına tek dosya): uzun süre önbellekte kalabilir.
-		'Cache-Control': 'private, max-age=31536000, immutable',
-		'X-Content-Type-Options': 'nosniff',
-		'Content-Security-Policy': "default-src 'none'; sandbox",
-		'Content-Disposition': `${satirIci ? 'inline' : 'attachment'}; filename*=UTF-8''${encodeURIComponent(kayit.dosyaAd)}`,
-	};
-	res.writeHead(200, { ...GUVENLIK_BASLIKLARI, ...basliklar });
-	if (req.method === 'HEAD') return res.end();
-	const akis = fs.createReadStream(tam);
-	akis.on('error', () => res.destroy());
-	akis.pipe(res);
-}
-
 // ---------------------------------------------------------------- HTTP
 
 const sunucu = http.createServer((req, res) => {
@@ -1670,8 +1559,6 @@ const sunucu = http.createServer((req, res) => {
 		return yanit(res, 400, 'Hatalı istek\n', { 'Content-Type': 'text/plain; charset=utf-8' });
 	}
 
-	// Dosyalar artık sunucuya yüklenmez (P2P); eski istemcilere anlaşılır bir yanıt.
-	if (req.method === 'POST' && yol === '/api/yukle') return jsonYanit(res, 410, { hata: 'Dosyalar artık sunucuya yüklenmiyor; sayfayı yenile.' });
 	if (req.method !== 'GET' && req.method !== 'HEAD') {
 		return yanit(res, 405, 'İzin yok\n', { 'Content-Type': 'text/plain; charset=utf-8', Allow: 'GET, HEAD' });
 	}
@@ -1707,17 +1594,6 @@ const sunucu = http.createServer((req, res) => {
 					'Cache-Control': 'no-store',
 				}),
 		);
-	}
-	if (yol === '/api/ice') {
-		// TURN şifresi yalnızca oturumu olan (beyaz listedeki) kişiye: Authorization: Bearer <jeton>.
-		const sahibi = jetonlar.get(String(req.headers.authorization || '').replace(/^Bearer\s+/i, ''));
-		if (!sahibi || !sahibi.ad) return jsonYanit(res, 401, { hata: 'Oturum gerekli.' });
-		return jsonYanit(res, 200, iceSunuculari(req.headers.host));
-	}
-	if (yol.startsWith('/dosya/')) {
-		const id = yol.slice('/dosya/'.length).replace(/\/$/, '');
-		if (!/^[a-f0-9]{18}$/.test(id)) return yanit(res, 404, 'Bulunamadı\n', { 'Content-Type': 'text/plain; charset=utf-8' });
-		return dosyaGonder(req, res, id).catch(() => yanit(res, 500, 'Dosya okunamadı\n', { 'Content-Type': 'text/plain; charset=utf-8' }));
 	}
 	dosyaSun(req, res, yol);
 });
@@ -1818,13 +1694,6 @@ async function main() {
 		console.error('Beyaz liste hazırlanamadı: ' + e.message);
 		process.exit(1);
 	}
-	try {
-		await fs.promises.mkdir(YUKLEME_KLASORU, { recursive: true });
-	} catch (e) {
-		console.error('Yükleme klasörü açılamadı: ' + e.message);
-		process.exit(1);
-	}
-
 	// Dış IP: .env'de sabitlenmiş değer yoksa bulut meta verisinden (GCP) okunur.
 	const metaIp = await disIpBul();
 	if (!disIp && metaIp) disIp = metaIp;

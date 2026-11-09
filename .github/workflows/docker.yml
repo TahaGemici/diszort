@@ -114,7 +114,6 @@ jobs:
           test "${YENI:-0}" -ge "$ONCE"
           # /var/lib/chat 0700 + sahibi 1000 (kur.sh); runner kullanıcısı içine bakamaz → sudo şart.
           sudo test -f /var/lib/chat/sohbet.db
-          sudo test -d /var/lib/chat/yuklemeler
           # Dikkat: `docker logs | grep -q` pipefail altında 141 (SIGPIPE) verir — grep erken çıkınca
           # docker logs boruyu kırık bulur. Önce dosyaya yaz, sonra grep'le.
           sudo docker logs diszort > diszort.log 2>&1

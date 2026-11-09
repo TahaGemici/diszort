@@ -13,8 +13,9 @@
 //   - sorunsuz bağlantıda yanlış "Bağlantı zayıf" uyarısı çıkmaması
 //   - P2P dosya: resim önizlemesi doğrudan paylaşandan; 24 MB dosya ortada bağlantısı koparılsa da
 //     kaldığı yerden eksiksiz gelir (içerik özeti aynı), iki kişi aynı anda indirir
-//   - sekme sesi: kanalda ayrı bir kişi gibi ("mert - YouTube") görünür, stereo ve yüksek bit hızıyla gider
-//   - ekran paylaşımı (bilgisayar sesiyle): izleyene görüntü gider, yayını kapatana gitmez
+//   - ekransız paylaşım (bilgisayarın sesi): yakalama sürer ama yalnızca ses gider (stereo, yüksek bit
+//     hızı); ekran yeniden seçmeden gösterilip gizlenir; dinleyen kendi için susturur
+//   - ekran paylaşımı (bilgisayar sesiyle): izleyene görüntü gider, görüntüyü kapatana gitmez
 //
 //   node test/tarayici.js                    kendi sunucusunu (node sunucu/sunucu.js) geçici veriyle açar
 //   node test/tarayici.js http://adres:port  çalışan sunucuya bağlanır (ILK_ANAHTAR gerekir;
@@ -596,62 +597,85 @@ async function sidebarKisileri(k, kanal = 'Sesli Sohbet') {
 		for (const k of [taha, mert]) await k.sayfa.evaluate(() => localStorage.removeItem('dosya-yazici'));
 	});
 
-	await dene('sekme sesi: kanalda ayrı kişi gibi ("mert - YouTube") görünür, stereo ve yüksek bit hızıyla gider, mikrofondan ayrı', async () => {
-		// Sahte ekran yakalamanın sesi (test tarayıcısında sahte mikrofonla aynı konuşma kaydı) sekme sesi yerine geçer.
+	await dene('ekransız paylaşım: yakalama sürer ama yalnızca ses gider (stereo, yüksek bit hızı, mikrofondan ayrı); ekran yeniden seçmeden gösterilip gizlenir', async () => {
+		// Sahte ekran yakalamanın sesi (test tarayıcısında sahte mikrofonla aynı konuşma kaydı) bilgisayarın sesi yerine geçer.
 		await mert.sayfa.click('#yayin-ac');
-		await mert.sayfa.locator('#yayin-menu button', { hasText: 'Sekme sesini paylaş' }).click();
-		await mert.sayfa.locator('#pencere-girdi').fill('YouTube');
-		await mert.sayfa.click('#pencere-tamam');
-		await bekleKosul('mert sesi paylaşıyor', () => mert.sayfa.evaluate(() => !!yayin.ekranSesi && !yayin.goruntu), 10000);
-		const sanalAdi = (k, nerede) =>
-			k.sayfa.evaluate((nerede) => {
-				const e = [...document.querySelectorAll(nerede)].find((x) => x.dataset.yayin === 'mert');
-				return e ? e.querySelector('.ad').textContent : null;
-			}, nerede);
+		await mert.sayfa.locator('#yayin-menu button', { hasText: 'Ekransız paylaş' }).click();
+		await bekleKosul('mert ekransız paylaşıyor (görüntü yakalaması sürüyor)', () => mert.sayfa.evaluate(() => !!yayin.ses && yayin.ekransiz && !!yayin.goruntu && yayin.goruntu.readyState === 'live'), 10000);
+		await bekleKosul('ses herkese takıldı, görüntü kimseye', () => mert.sayfa.evaluate(() => [...esler.values()].every((e) => e.trSes.sender.track === yayin.ses && e.trGoruntu.sender.track === null)), 5000, 100);
+		const kart = (k) =>
+			k.sayfa.evaluate(() => {
+				const e = document.querySelector('#yayinlar .yayin-kart[data-ad="mert"]');
+				return e && { ekransiz: e.classList.contains('ekransiz'), sahneGizli: e.querySelector('.yayin-sahne').hidden, sesGizli: e.querySelector('.yayin-ses').hidden, isik: e.classList.contains('ses-var') };
+			});
 		for (const k of [taha, zeynep]) {
-			await bekleKosul(`${k.ad}: ses kartında "mert - YouTube"`, async () => (await sanalAdi(k, '#ses-kisiler .ses-kisi.sanal')) === 'mert - YouTube', 10000);
-			assert.equal(await sanalAdi(k, '#ses-kanallari .ses-uyesi.sanal'), 'mert - YouTube', `${k.ad}: kenar çubuğunda ayrı kişi`);
+			await bekleKosul(`${k.ad}: mert'in ekransız yayın kartı (görüntüsüz, ses satırlı)`, async () => {
+				const x = await kart(k);
+				return x && x.ekransiz && x.sahneGizli && !x.sesGizli;
+			}, 10000);
 		}
-		assert.equal(await sanalAdi(mert, '#ses-kisiler .ses-kisi.sanal'), 'mert - YouTube (sen)');
-		await bekleKosul('taha ← mert sekme sesi akıyor (ayrı kanalda)', async () => {
+		assert.equal(await taha.sayfa.evaluate(() => document.querySelectorAll('#ses-kanallari .ses-uyesi').length), 3, 'kanalda ayrı (sanal) kişi yok');
+		await bekleKosul('taha ← mert paylaşımın sesi akıyor (ayrı kanalda)', async () => {
 			const d1 = await durumu(taha);
 			await bekle(1500);
 			const d2 = await durumu(taha);
 			return d2.esler.mert.yayinEnerji - d1.esler.mert.yayinEnerji > SES_VAR / 2;
 		}, 20000, 100);
-		await bekleKosul('taha\'da "mert - YouTube" konuşuyor görünüyor', () =>
-			taha.sayfa.evaluate(() => !![...document.querySelectorAll('#ses-kisiler .ses-kisi.sanal.konusuyor')].find((x) => x.dataset.yayin === 'mert')),
-		);
+		await bekleKosul("taha'da mert'in kartı ses geldikçe ışıyor", async () => (await kart(taha)).isik, 10000);
 		const bolum = await mert.sayfa.evaluate(() => esler.get('taha').pc.remoteDescription.sdp.split('m=audio').slice(1)[1] || '');
-		assert.match(bolum, /stereo=1/, 'sekme sesi stereo anlaşılmalı');
+		assert.match(bolum, /stereo=1/, 'paylaşımın sesi stereo anlaşılmalı');
 		const d1 = await durumu(mert);
 		await bekle(3000);
 		const d2 = await durumu(mert);
 		const kbps = ((d2.esler.taha.yayinGidenBayt - d1.esler.taha.yayinGidenBayt) * 8) / 3000;
-		console.log(`     sekme sesi mert → taha ${kbps.toFixed(1)} kbps (stereo Opus, tavan 160)`);
-		assert.ok(kbps > 48, 'sekme sesi bit hızı düşük: ' + kbps.toFixed(1));
-		await duyuyor(taha, 'mert', 'sekme sesi paylaşılırken mikrofon da ayrıca duyulmalı');
-		// taha "mert - YouTube"u kendi için susturur: yalnızca onda susar, mert göndermeye devam eder.
-		await taha.sayfa.evaluate(() => [...document.querySelectorAll('#ses-kisiler .ses-kisi.sanal')].find((x) => x.dataset.yayin === 'mert').querySelector('button.sus').click());
-		assert.equal(await taha.sayfa.evaluate(() => esler.get('mert').yayinSesOgesi.muted), true, 'taha\'da susmalı');
+		const kare = d2.esler.taha.goruntuGidenBayt - d1.esler.taha.goruntuGidenBayt;
+		console.log(`     ekransız paylaşımın sesi mert → taha ${kbps.toFixed(1)} kbps (stereo Opus, tavan 160); görüntü ${kare} bayt`);
+		assert.ok(kbps > 48, 'paylaşımın ses bit hızı düşük: ' + kbps.toFixed(1));
+		assert.ok(kare === 0, 'ekransızken görüntü gönderilmemeli: ' + kare + ' bayt');
+		await duyuyor(taha, 'mert', 'paylaşırken mikrofon da ayrıca duyulmalı');
+		// taha paylaşımın sesini kendi için susturur: yalnızca onda susar, mert göndermeye devam eder.
+		const sus = taha.sayfa.locator('#yayinlar .yayin-kart[data-ad="mert"] .yayin-ses button.sus');
+		await sus.click();
+		assert.equal(await taha.sayfa.evaluate(() => esler.get('mert').yayinSesOgesi.muted), true, "taha'da susmalı");
 		assert.ok(await mert.sayfa.evaluate(() => !!esler.get('taha').trSes.sender.track), 'susturmak yalnızca yerel: mert göndermeye devam etmeli');
-		await taha.sayfa.evaluate(() => [...document.querySelectorAll('#ses-kisiler .ses-kisi.sanal')].find((x) => x.dataset.yayin === 'mert').querySelector('button.sus').click());
-		// mert durdurur: ayrı kişi herkeste kalkar.
-		await mert.sayfa.evaluate(() => [...document.querySelectorAll('#ses-kisiler .ses-kisi.sanal')].find((x) => x.dataset.yayin === 'mert').querySelector('button[title="Sesi paylaşmayı durdur"]').click());
-		await bekleKosul('sekme sesi durunca ayrı kişi herkeste kalktı', async () => {
-			for (const k of [taha, zeynep, mert]) if (await k.sayfa.evaluate(() => !!document.querySelector('.ses-kisi.sanal, .ses-uyesi.sanal'))) return false;
+		await sus.click();
+		// Ekranı göster: aynı yakalamanın görüntüsü yeniden seçmeden gider.
+		await mert.sayfa.locator('#yayinlar .yayin-kart.ben button', { hasText: 'Ekranı göster' }).click();
+		for (const k of [taha, zeynep]) {
+			await bekleKosul(`${k.ad} mert'in ekranını görüyor`, () =>
+				k.sayfa.evaluate(() => {
+					const v = document.querySelector('#yayinlar .yayin-kart[data-ad="mert"] video');
+					return !!v && v.videoWidth > 0 && !v.paused;
+				}),
+			);
+		}
+		// Ekranı gizle: görüntü durur, ses ve yakalama sürer.
+		await mert.sayfa.locator('#yayinlar .yayin-kart.ben button', { hasText: 'Ekranı gizle' }).click();
+		await bekleKosul('mert artık görüntü göndermiyor', () => mert.sayfa.evaluate(() => [...esler.values()].every((e) => e.trGoruntu.sender.track === null)), 5000, 100);
+		await bekle(500);
+		const h1 = await durumu(taha);
+		await bekle(1500);
+		const h2 = await durumu(taha);
+		assert.ok(h2.esler.mert.kare - h1.esler.mert.kare <= 2, 'ekran gizlenince kare gelmemeli');
+		assert.ok(h2.esler.mert.yayinEnerji - h1.esler.mert.yayinEnerji > SES_VAR / 2, 'ekran gizlenince ses sürmeli');
+		assert.equal(await mert.sayfa.evaluate(() => yayin.goruntu.readyState), 'live', 'yakalama sürmeli');
+		// Durdur: kart herkesten kalkar, izler çıkar.
+		await mert.sayfa.locator('#yayinlar .yayin-kart.ben button', { hasText: 'Durdur' }).click();
+		await bekleKosul('ekransız paylaşım herkeste kalktı', async () => {
+			for (const k of [taha, zeynep, mert]) if (await k.sayfa.evaluate(() => !!document.querySelector('#yayinlar .yayin-kart'))) return false;
 			return true;
 		}, 10000);
+		await bekleKosul('mert artık ses ve görüntü göndermiyor', () => mert.sayfa.evaluate(() => [...esler.values()].every((e) => !e.trGoruntu.sender.track && !e.trSes.sender.track)), 5000, 100);
 	});
 
-	await dene('ekran paylaşımı: izleyene görüntü gider, yayını kapatana gitmez', async () => {
+	await dene('ekran paylaşımı: izleyene görüntü gider, görüntüyü kapatana gitmez', async () => {
 		await taha.sayfa.click('#yayin-ac');
 		await taha.sayfa.locator('#yayin-menu button', { hasText: 'Ekranını paylaş' }).click();
-		await bekleKosul('taha ekranını paylaşıyor', () => taha.sayfa.evaluate(() => !!yayin.goruntu), 10000);
+		await bekleKosul('taha ekranını paylaşıyor', () => taha.sayfa.evaluate(() => !!yayin.goruntu && !yayin.ekransiz), 10000);
 		for (const k of [zeynep, mert]) {
 			await bekleKosul(`${k.ad} taha'nın ekranını görüyor`, () =>
 				k.sayfa.evaluate(() => {
-					const v = document.querySelector('#yayinlar .yayin-kart.ekran video');
+					const v = document.querySelector('#yayinlar .yayin-kart[data-ad="taha"] video');
 					return !!v && v.videoWidth > 0 && !v.paused;
 				}),
 			);
@@ -661,13 +685,13 @@ async function sidebarKisileri(k, kanal = 'Sesli Sohbet') {
 		const z2 = await durumu(zeynep);
 		assert.ok(z2.esler.taha.kare > z1.esler.taha.kare, 'zeynep kare almalı');
 		console.log(`     ekran ${z2.esler.taha.kareGenislik} px genişlikte; zeynep 1,5 sn'de ${z2.esler.taha.kare - z1.esler.taha.kare} kare aldı`);
-		await mert.sayfa.locator('#yayinlar .yayin-kart.ekran button', { hasText: 'Kapat' }).click();
+		await mert.sayfa.locator('#yayinlar .yayin-kart[data-ad="taha"] button', { hasText: 'Görüntüyü kapat' }).click();
 		await bekleKosul("taha mert'e görüntü göndermiyor", () => taha.sayfa.evaluate(() => esler.get('mert').trGoruntu.sender.track === null), 10000);
 		await bekle(500);
 		const m1 = await durumu(mert);
 		await bekle(1500);
 		const m2 = await durumu(mert);
-		assert.ok(m2.esler.taha.kare - m1.esler.taha.kare <= 2, 'yayını kapatana kare gelmemeli');
+		assert.ok(m2.esler.taha.kare - m1.esler.taha.kare <= 2, 'görüntüyü kapatana kare gelmemeli');
 		const z3 = await durumu(zeynep);
 		await bekle(1500);
 		const z4 = await durumu(zeynep);
