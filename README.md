@@ -23,7 +23,9 @@ da sunucuya yüklenmez, paylaşandan doğrudan alınır. İçeri yalnızca içer
     paylaşımıdır, yalnızca ekran kimseye gönderilmez: ses kanala stereo ve yüksek kalitede gider.
     Paylaşan ekranı sonradan yeniden seçmeden gösterip gizleyebilir. Firefox ve Safari ekran
     paylaşımında ses vermediği için orada ses bir ses aygıtından alınır (Linux'ta bilgisayarın sesi
-    "Monitor of …" aygıtıdır); kanaldakilerin konuşması bu sesten yankı engellemeyle çıkarılır.
+    "Monitor of …" aygıtıdır). Kanaldakilerin konuşması bu sesten çıkarılır: sayfa ne çaldığını
+    bilir, gecikmesini ve seviyesini bulup yakalanan sesten çıkarır (tarayıcının yankı engelleyicisi
+    kullanılmaz, müzik eşiksiz ve kesilmeden gider).
   - Paylaşım, kanaldakilerde bir yayın kartı olarak görünür (CANLI): ekranlıysa görüntü, sesliyse ses
     satırı. Herkes paylaşımın sesini kendi için susturur ya da kısar; ses geldikçe kart ışır.
   - İzlemek ve dinlemek her cihazda olur (telefonda görüntüyü kapatıp yalnızca dinlenebilir).
@@ -94,11 +96,12 @@ make            # node ile çalıştır (node, npm ve coturn gerekir) → http:/
 make docker     # ya da Docker ile
 make test       # sunucu denemeleri (çalışan sunucuya karşı, ILK_ANAHTAR ile)
 make arayuz     # arayüz denemeleri (jsdom)
+make yanki      # paylaşılan sesten kanaldakilerin sesini çıkarma (benzetim)
 make tarayici   # gerçek Chromium'la sesli kanal denemeleri (Playwright)
 ```
 
-`main`'e her gönderimde GitHub Actions imajı derler, üç deneme takımını imaja karşı çalıştırır,
-`ghcr.io`'ya yükler ve sürüm çıkarır.
+`main`'e her gönderimde GitHub Actions arayüz ve ses çıkarma denemelerini çalıştırır, imajı derler,
+sunucu ve tarayıcı denemelerini imaja karşı çalıştırır, `ghcr.io`'ya yükler ve sürüm çıkarır.
 
 Yapı: `sunucu/` (Node: web, sohbet, signaling, coturn yönetimi, SQLite), `web/` (düz HTML/CSS/JS),
 `kurulum/` (kurulum betiği, Caddy örneği), `test/`. WebSocket protokolü `sunucu/sunucu.js` içinde

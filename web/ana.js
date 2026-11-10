@@ -172,9 +172,8 @@ const AYAR_VARSAYILAN = {
 	mikKapali: false, // kendini susturdun (kanala girerken de geçerli)
 	sagir: false, // gelen sesleri kapattın
 	// Ekran paylaşımı ses vermeyen tarayıcıda (Firefox, Safari) paylaşılan sesin alındığı aygıt
-	// ('' = henüz seçilmedi) ve o sesten kanaldakilerin konuşmasının çıkarılması (yankı engelleme).
+	// ('' = henüz seçilmedi).
 	yayinAygitId: '',
-	yayinYanki: true,
 };
 const ayar = { ...AYAR_VARSAYILAN };
 try {
@@ -2942,6 +2941,7 @@ function pcKapat(es) {
 	es.uzakGoruntu = null;
 	es.olcum = es.gidenOlcum = null;
 	es.pencere = [];
+	yankiReferansGuncelle();
 }
 
 function esKapat(ad) {
@@ -2956,6 +2956,7 @@ function esKapat(ad) {
 	konusmaGuncelle(ad, false);
 	sesAcDugmesiGuncelle();
 	yayinlarCiz();
+	yankiReferansGuncelle();
 }
 
 // Eşe yeni bir RTCPeerConnection kur. Teklif eden yeni bir oturum kimliği üretir ve kanalları açar:
@@ -3500,6 +3501,7 @@ function esSesUygula(es) {
 	for (const a of [es.ses, es.yayinSesOgesi]) {
 		if (a && ayar.cikisId && typeof a.setSinkId === 'function' && a.sinkId !== ayar.cikisId) a.setSinkId(ayar.cikisId).catch(() => {});
 	}
+	yankiReferansGuncelle();
 	if (es.kutu) {
 		es.kutu.classList.toggle('susturuldu', es.susturuldu);
 		ikonKoy(es.susDugme, es.susturuldu ? 'hoparlor-kapali' : 'hoparlor');
@@ -3567,8 +3569,10 @@ function sesBaglami() {
 function sesKilidiAc() {
 	sesBaglami();
 }
-// Bağlam durdu → kazanç zincirinden vazgeç (ham iz); yeniden çalıştı → zinciri kur.
+// Bağlam durdu → kazanç zincirinden (ve paylaşımdaki çıkarıcıdan) vazgeç (ham iz); yeniden
+// çalıştı → zinciri kur.
 function baglamDurumuDegisti() {
+	yankiBaglamDegisti();
 	if (!mikrofon || ayar.mikSeviye === 100) return;
 	const calisiyor = baglam && baglam.state === 'running';
 	if (calisiyor !== !!mikIslem) gidenIzKur();
@@ -3850,9 +3854,8 @@ function sesPaneliCiz(ozet) {
 // "Monitor of …" aygıtıdır (Windows'ta "Stereo Karışımı", Mac'te BlackHole gibi sanal bir aygıt).
 // Ekransız paylaşım orada seçim penceresi açmaz, aygıt sorar; ekranlı paylaşıma ses sonradan eklenir,
 // ses aygıtından ekransız paylaşıma ekran sonradan eklenir. Bu aygıt bilgisayarda çalan her şeyi,
-// kanaldakilerin konuşması dahil, duyar: yankı engelleme açıkken tarayıcı bu sayfanın çaldığını
-// yakalanan sesten çıkarır (kimse kendi sesini geri duymaz); başka sekmelerin ve uygulamaların sesi
-// kalır.
+// kanaldakilerin konuşması dahil, duyar: bu sayfanın çaldığı yakalanan sesten çıkarılır (yanki.js;
+// kimse kendi sesini geri duymaz), başka sekmelerin ve uygulamaların sesi olduğu gibi kalır.
 //
 // Sesli kanaldaki her eş bağlantısında mikrofonun yanında iki kanal önceden açıktır: paylaşımın sesi
 // (stereo, müzik kalitesinde) ve görüntüsü. Paylaşım başlayınca/bitince ya da ekran gösterilip
@@ -3865,10 +3868,12 @@ function sesPaneliCiz(ozet) {
 const GORUNTU_KISITI = { frameRate: { ideal: 30, max: 30 }, width: { max: 1920 }, height: { max: 1080 } };
 const EKRANSIZ_KISITI = { ...GORUNTU_KISITI, frameRate: { max: 1 } };
 
-// goruntu/ses: paylaşılan izler (biri yoksa null). aygit: ses bir ses aygıtından alınıyorsa onun kimliği
-// ('' = ekran yakalamasının kendi sesi), aygitAdi: o aygıtın adı. ekransiz: görüntü gönderilmiyor
-// (gizlendi ya da ses aygıtından paylaşımda hiç seçilmedi).
-const yayin = { goruntu: null, ses: null, ekransiz: false, olcer: null, aygit: '', aygitAdi: '' };
+// goruntu/ses: paylaşılan (gönderilen) izler (biri yoksa null). aygit: ses bir ses aygıtından
+// alınıyorsa onun kimliği ('' = ekran yakalamasının kendi sesi), aygitAdi: o aygıtın adı. ekransiz:
+// görüntü gönderilmiyor (gizlendi ya da ses aygıtından paylaşımda hiç seçilmedi). hamSes: yakalanan
+// iz; ses aygıtından alınan sesten kanaldakilerin sesi çıkarılıyorsa (yanki: çıkarıcı) gönderilen
+// iz (ses) çıkarıcının çıkışıdır, değilse ikisi aynıdır.
+const yayin = { goruntu: null, ses: null, hamSes: null, yanki: null, ekransiz: false, olcer: null, aygit: '', aygitAdi: '' };
 const yayinVar = () => !!(yayin.goruntu || yayin.ses);
 // Tarayıcı seçim penceresini açmadan reddetti (ör. "masaüstü sitesi" kipindeki telefon): düğme gizlenir.
 let yayinDesteklenmiyor = false;
@@ -4009,16 +4014,22 @@ function yayinGoruntusuTak(goruntu) {
 }
 
 // Paylaşılan ses izi: ekran yakalamasının sesi ya da (aygit verilirse) bir ses aygıtının sesi.
-function yayinSesiTak(ses, aygit = '', aygitAdi = '') {
+// isleyici: aygıtın sesinden kanaldakilerin sesini çıkaran düzenek (yankiCikariciKur); verilirse
+// gönderilen iz onun çıkışıdır, aygıtın kendi izi isleyici.ham'dır.
+function yayinSesiTak(ses, aygit = '', aygitAdi = '', isleyici = null) {
 	if (yayin.ses && yayin.ses !== ses) yayinSesiniBirak();
+	const ham = isleyici ? isleyici.ham : ses;
 	yayin.ses = ses;
+	yayin.hamSes = ham;
+	yayin.yanki = isleyici;
 	yayin.aygit = aygit;
 	yayin.aygitAdi = aygitAdi;
 	try {
 		ses.contentHint = 'music';
 	} catch {}
-	ses.addEventListener('ended', () => {
-		if (yayin.ses !== ses) return;
+	// Biten, yakalanan izdir (aygıt çıkarıldı, paylaşım durduruldu); çıkarıcının çıkışı kendiliğinden bitmez.
+	ham.addEventListener('ended', () => {
+		if (yayin.hamSes !== ham) return;
 		// Ekransızken paylaşılacak bir şey kalmadı; ekran gösteriliyorsa görüntü sürer.
 		if (yayin.ekransiz || !yayin.goruntu) {
 			yayinDurdur();
@@ -4038,8 +4049,12 @@ function yayinSesiTak(ses, aygit = '', aygitAdi = '') {
 function yayinSesiniBirak() {
 	if (yayin.olcer) yayin.olcer.dur();
 	yayin.olcer = null;
+	if (yayin.yanki) yankiCikariciKapat(yayin.yanki);
+	if (yayin.hamSes) yayin.hamSes.stop();
 	if (yayin.ses) yayin.ses.stop();
 	yayin.ses = null;
+	yayin.hamSes = null;
+	yayin.yanki = null;
 	yayin.aygit = '';
 	yayin.aygitAdi = '';
 }
@@ -4090,9 +4105,10 @@ function yayinDurdur(bildir = true) {
 // --- ses kaynağı: paylaşılan sesin alındığı ses aygıtı (ekran paylaşımı ses vermeyen tarayıcılarda)
 //
 // Bilgisayarın sesi gibi görünen aygıtlar ("Monitor of …", Stereo Mix, BlackHole…) başta gelir ve ilki
-// seçili gelir (en son seçilen hâlâ takılıysa o); mikrofonun işaretlenir. Ses stereo ve gürültü
-// bastırmasız, otomatik kazançsız alınır (ikisi de müziği bozar). Yankı engelleme açıkken (varsayılan)
-// tarayıcı bu sayfanın çaldığını, yani kanaldakilerin sesini, yakalanandan çıkarır.
+// seçili gelir (en son seçilen hâlâ takılıysa o); mikrofonun işaretlenir. Ses stereo ve tarayıcının
+// hiçbir işlemi olmadan alınır: gürültü bastırma ve otomatik kazanç müziği bozar; tarayıcının yankı
+// engelleyicisi de kalan yankıyı bastırırken müziği eşik varmış gibi kesik kesik gönderiyordu.
+// Kanaldakilerin sesi yakalanandan bunun yerine yanki.js'le çıkarılır (aşağıda).
 
 const BILGISAYAR_SESI = /monit|izleyici|stereo ?mix|stereo karı|what ?u ?hear|loopback|blackhole|soundflower|vb-audio|cable output|voicemeeter/i;
 
@@ -4118,7 +4134,6 @@ async function sesKaynagiAc() {
 	secim.disabled = true;
 	$('ses-kaynagi-paylas').disabled = true;
 	$('ses-kaynagi-ipucu').hidden = true;
-	$('ses-kaynagi-yanki').checked = ayar.yayinYanki;
 	$('ses-kaynagi').hidden = false;
 	$('ses-kaynagi-iptal').focus();
 	let aygitlar = await sesAygitlari();
@@ -4181,20 +4196,18 @@ function aygitHataMetni(h) {
 }
 
 // Seçilen aygıtın sesini paylaş: ekranlı bir paylaşım sürüyorsa ona eklenir, yoksa ekransız paylaşım
-// başlar.
+// başlar. Kanaldakilerin sesi bu sesten çıkarılır (kurulamazsa ham ses gider).
 async function sesKaynagiPaylas() {
 	const secim = $('ses-kaynagi-aygit');
 	if (secim.disabled) return;
 	const id = secim.value;
 	const secili = secim.selectedOptions && secim.selectedOptions[0];
 	const ad = (secili && secili.dataset.ad) || '';
-	const yanki = $('ses-kaynagi-yanki').checked;
 	sesKaynagiKapat();
 	if (!sesKanal) return durum('Önce bir sesli kanala gir.', true);
 	ayar.yayinAygitId = id;
-	ayar.yayinYanki = yanki;
 	ayarKaydet();
-	const kisit = { echoCancellation: yanki, noiseSuppression: false, autoGainControl: false, channelCount: { ideal: 2 }, sampleRate: { ideal: 48000 } };
+	const kisit = { echoCancellation: false, noiseSuppression: false, autoGainControl: false, channelCount: { ideal: 2 }, sampleRate: { ideal: 48000 } };
 	if (id) kisit.deviceId = { exact: id };
 	let ses;
 	try {
@@ -4211,18 +4224,212 @@ async function sesKaynagiPaylas() {
 		return durum(aygitHataMetni(h), true);
 	}
 	if (!sesKanal) return ses.stop();
-	// Teşhis: tarayıcının gerçekte uyguladığı (kanal sayısı, yankı engelleme).
+	const isleyici = await yankiCikariciKur(ses);
+	if (!sesKanal || ses.readyState === 'ended') {
+		if (isleyici) yankiCikariciKapat(isleyici);
+		return ses.stop();
+	}
+	// Teşhis: tarayıcının gerçekte uyguladığı (kanal sayısı, işlemler) ve çıkarıcının kurulup kurulmadığı.
 	try {
 		const s = ses.getSettings ? ses.getSettings() : {};
-		taniGonder({ olay: 'yayin-aygit', kanal: s.channelCount ?? null, aec: s.echoCancellation ?? null, ns: s.noiseSuppression ?? null, agc: s.autoGainControl ?? null, ornekHizi: s.sampleRate ?? null });
+		taniGonder({ olay: 'yayin-aygit', kanal: s.channelCount ?? null, aec: s.echoCancellation ?? null, ns: s.noiseSuppression ?? null, agc: s.autoGainControl ?? null, ornekHizi: s.sampleRate ?? null, cikarici: !!isleyici, baglamHizi: isleyici ? isleyici.ac.sampleRate : null });
 	} catch {}
 	const ekle = yayinVar();
 	if (!ekle) yayin.ekransiz = true;
-	yayinSesiTak(ses, id || 'varsayilan', ad);
+	yayinSesiTak(isleyici ? isleyici.iz : ses, id || 'varsayilan', ad, isleyici);
 	yayinDegisti();
 	const kaynak = ad ? ` (${ad})` : '';
-	const not = yanki ? '' : ' Yankı engelleme kapalı: kanaldakiler kendi sesini geri duyabilir.';
-	durum((ekle ? `Ses de paylaşılıyor${kaynak}.` : `Ekransız paylaşıyorsun: yalnızca ses gidiyor${kaynak}.`) + not);
+	const not = isleyici ? '' : ' Bu tarayıcıda kanaldakilerin sesi paylaşımdan çıkarılamıyor: kendi seslerini geri duyabilirler.';
+	durum((ekle ? `Ses de paylaşılıyor${kaynak}.` : `Ekransız paylaşıyorsun: yalnızca ses gidiyor${kaynak}.`) + not, !isleyici);
+}
+
+// --- ses aygıtından paylaşımda kanaldakilerin sesini çıkarma (bkz. yanki.js)
+//
+// Sayfa ne çaldığını bilir: çalınan her akış (kanaldakilerin mikrofonu ve paylaşımları, <audio>'nun
+// seviyesi ve susturmasıyla) AudioWorklet'in ayrı bir girişine (yuva) bağlanır; her birinin gecikmesi
+// ayrı bulunur ve yakalanan sesten çıkarılır. Gecikme ve süzgeçler bir Web Worker'da bulunur (sayfa
+// yorulmasın), sayfa ikisi arasında iletir. Ses bağlamı çalışmıyorsa (ya da tarayıcı
+// AudioWorklet/Worker sunmuyorsa) ham ses gider.
+
+const YANKI_YUVA = 20; // yanki.js ile aynı: worklet'in referans girişi sayısı
+let yankiModulu = null; // { ac, soz }: worklet bağlam başına bir kez yüklenir
+
+async function yankiCikariciKur(ham) {
+	const ac = sesBaglami();
+	if (!ac || !ac.audioWorklet || typeof AudioWorkletNode !== 'function' || typeof Worker !== 'function' || typeof ac.createMediaStreamDestination !== 'function') return null;
+	if (ac.state !== 'running') {
+		try {
+			await Promise.race([ac.resume(), new Promise((r) => setTimeout(r, 1500))]);
+		} catch {}
+		if (ac.state !== 'running') return null;
+	}
+	try {
+		if (!yankiModulu || yankiModulu.ac !== ac) yankiModulu = { ac, soz: ac.audioWorklet.addModule('yanki.js') };
+		await yankiModulu.soz;
+	} catch (h) {
+		yankiModulu = null;
+		console.warn('yankı çıkarıcı yüklenemedi', h);
+		return null;
+	}
+	const y = { ac, ham, referans: new Map(), ozet: null, ozetBekleyen: [], suzgec: null, suzgecler: new Map(), denemeler: [], kapandi: false, t0: Date.now() };
+	try {
+		y.dugum = new AudioWorkletNode(ac, 'yanki-cikarici', { numberOfInputs: 1 + YANKI_YUVA, numberOfOutputs: 1, outputChannelCount: [2], channelCount: 2, channelCountMode: 'explicit', channelInterpretation: 'speakers' });
+		y.kaynak = ac.createMediaStreamSource(new MediaStream([ham]));
+		y.hedef = ac.createMediaStreamDestination();
+		y.kaynak.connect(y.dugum, 0, 0);
+		y.dugum.connect(y.hedef);
+		y.iz = y.hedef.stream.getAudioTracks()[0];
+		y.isci = new Worker('yanki.js');
+		y.isci.postMessage({ tur: 'kur', hiz: ac.sampleRate });
+		y.dugum.port.onmessage = (e) => {
+			const v = e.data || {};
+			if (y.kapandi) return;
+			if (v.tur === 'ornek') y.isci.postMessage(v, [v.m.buffer, ...Object.values(v.r || {}).map((d) => d.buffer)]);
+			else if (v.tur === 'ozet') {
+				y.ozet = v.ozet;
+				for (const f of y.ozetBekleyen.splice(0)) f(v.ozet);
+			}
+		};
+		y.isci.onmessage = (e) => {
+			const v = e.data || {};
+			if (y.kapandi) return;
+			if (v.tur === 'deneme') {
+				// Son tahmin denemeleri (teşhis): ne zaman, hangi yuva, hangi gecikme, ne kadar belirgin, kabul mü.
+				if (v.etkin === false) return;
+				y.denemeler.push({ sn: Math.round((Date.now() - y.t0) / 100) / 10, yuva: v.yuva, D: v.D, guven: v.guven, anlamli: v.anlamli, kabul: v.kabul });
+				if (y.denemeler.length > 12) y.denemeler.shift();
+				return;
+			}
+			if (v.tur !== 'suzgec') return;
+			y.dugum.port.postMessage(v);
+			const ilk = !y.suzgec && v.w;
+			const bilgi = v.w ? { yuva: v.yuva, gecikmeMs: Math.round(((v.D0 + v.w.length / 2) / ac.sampleRate) * 10000) / 10, azalmaDb: Math.round(v.azalmaDb * 10) / 10, guven: Math.round(v.guven) } : null;
+			if (bilgi) {
+				y.suzgecler.set(v.yuva, bilgi);
+				y.suzgec = bilgi; // en son kurulan (teşhis ve denemeler için)
+			} else y.suzgecler.delete(v.yuva);
+			if (ilk) taniGonder({ olay: 'yayin-yanki', ...bilgi });
+		};
+		y.isci.onerror = (h) => console.warn('yankı tahmini durdu', h && h.message);
+	} catch (h) {
+		console.warn('yankı çıkarıcı kurulamadı', h);
+		yankiCikariciKapat(y);
+		return null;
+	}
+	yankiReferansGuncelle(y);
+	return y;
+}
+
+function yankiCikariciKapat(y) {
+	if (!y || y.kapandi) return;
+	y.kapandi = true;
+	for (const f of y.ozetBekleyen.splice(0)) f(null);
+	try {
+		if (y.dugum) {
+			y.dugum.port.postMessage({ tur: 'bitir' });
+			y.dugum.port.onmessage = null;
+		}
+	} catch {}
+	for (const r of y.referans.values()) {
+		try {
+			r.kaynak.disconnect();
+			r.kazanc.disconnect();
+		} catch {}
+	}
+	y.referans.clear();
+	for (const d of [y.kaynak, y.dugum]) {
+		try {
+			if (d) d.disconnect();
+		} catch {}
+	}
+	try {
+		if (y.iz) y.iz.stop();
+	} catch {}
+	try {
+		if (y.isci) y.isci.terminate();
+	} catch {}
+}
+
+// Yuvaları çalınanlara uydur: her eşin mikrofonu ve paylaşımı kendi yuvasında, <audio>'su ne
+// çalıyorsa o seviyede (susturulmuş, sağırlaştırılmış ya da henüz çalmayan: 0). Seviye/susturma
+// değişince, eş gelip gidince ve gözcüde (saniyede bir) çağrılır.
+function yankiReferansGuncelle(y = yayin.yanki) {
+	if (!y || y.kapandi) return;
+	const gorulen = new Set();
+	for (const es of esler.values()) {
+		for (const a of [es.ses, es.yayinSesOgesi]) {
+			// Öğe çalmaya başlayınca / durunca / seviyesi değişince referans hemen uysun.
+			if (a && !a.yankiDinleniyor) {
+				a.yankiDinleniyor = true;
+				for (const olay of ['playing', 'pause', 'volumechange', 'emptied']) a.addEventListener(olay, () => yankiReferansGuncelle());
+			}
+			const akis = a && a.srcObject;
+			if (!akis || typeof akis.getAudioTracks !== 'function' || !akis.getAudioTracks().length) continue;
+			gorulen.add(akis);
+			let r = y.referans.get(akis);
+			if (!r) {
+				const dolu = new Set([...y.referans.values()].map((x) => x.yuva));
+				let yuva = 0;
+				while (dolu.has(yuva)) yuva++;
+				if (yuva >= YANKI_YUVA) continue;
+				try {
+					const kaynak = y.ac.createMediaStreamSource(akis);
+					// Stereo (tek kanallı mikrofon iki yana eşit gider), <audio>'nun seviyesiyle.
+					const kazanc = y.ac.createGain();
+					kazanc.channelCount = 2;
+					kazanc.channelCountMode = 'explicit';
+					kazanc.channelInterpretation = 'speakers';
+					kaynak.connect(kazanc);
+					kazanc.connect(y.dugum, 0, 1 + yuva);
+					r = { kaynak, kazanc, yuva };
+					y.referans.set(akis, r);
+				} catch {
+					continue;
+				}
+			}
+			const g = a.muted || a.paused ? 0 : a.volume;
+			if (r.kazanc.gain.value !== g) r.kazanc.gain.value = g;
+		}
+	}
+	for (const [akis, r] of y.referans) {
+		if (gorulen.has(akis)) continue;
+		try {
+			r.kaynak.disconnect();
+			r.kazanc.disconnect();
+		} catch {}
+		y.referans.delete(akis);
+		// Yuva boşaldı: worklet de tahmin de o yuvanın geçmişini unutsun (yeni akış temiz başlar).
+		y.suzgecler.delete(r.yuva);
+		try {
+			y.dugum.port.postMessage({ tur: 'yuva-bos', yuva: r.yuva });
+			y.isci.postMessage({ tur: 'yuva-bos', yuva: r.yuva });
+		} catch {}
+	}
+}
+
+// Ses bağlamı durdu (ör. sistem askıya aldı): çıkarıcının çıkışı sessizleşir, paylaşımın ham sesi
+// gider; bağlam yeniden çalışınca çıkarıcıya dönülür.
+function yankiBaglamDegisti() {
+	const y = yayin.yanki;
+	if (!y || y.kapandi) return;
+	const iz = baglam === y.ac && baglam.state === 'running' ? y.iz : y.ham;
+	if (yayin.ses === iz) return;
+	yayin.ses = iz;
+	yayinDegisti();
+}
+
+// Çıkarıcının durumu (worklet'ten): gecikme, ölçek, yakalananla çıkanın oranı, yakalamadaki kopukluklar.
+function yankiOzeti(y = yayin.yanki) {
+	if (!y || y.kapandi) return Promise.resolve(null);
+	return new Promise((tamam) => {
+		y.ozetBekleyen.push(tamam);
+		try {
+			y.dugum.port.postMessage({ tur: 'ozet' });
+		} catch {
+			tamam(null);
+		}
+		setTimeout(() => tamam(null), 2000);
+	});
 }
 
 $('ses-kaynagi-paylas').addEventListener('click', sesKaynagiPaylas);
@@ -4585,6 +4792,7 @@ function sesGozcuBaslat() {
 	if (sesGozcu) return;
 	sesGozcu = setInterval(() => {
 		if (!sesKanal) return;
+		yankiReferansGuncelle(); // çalmaya başlayan / duran <audio>'lar
 		let bekleyen = 0;
 		for (const es of esler.values()) {
 			const bekleyenler = gelenSesler(es).filter((a) => !a.muted && a.paused);
@@ -4878,19 +5086,26 @@ async function taniVeri() {
 		sesBaglami: baglam ? baglam.state : null,
 		iceSunucu: (ice.iceServers || []).map((s) => [].concat(s.urls || []).join('+')).join(',').slice(0, 200),
 		yayin: yayinBilgisi(),
-		yayinSes: yayinSesiOzeti(),
+		yayinSes: await yayinSesiOzeti(),
 		esler: liste,
 	};
 }
 
-// Paylaşılan ses: kaynağı (ses aygıtı ya da ekran yakalaması) ve tarayıcının gerçekte uyguladığı.
-function yayinSesiOzeti() {
-	if (!yayin.ses) return null;
+// Paylaşılan ses: kaynağı (ses aygıtı ya da ekran yakalaması), tarayıcının gerçekte uyguladığı ve
+// (ses aygıtından paylaşımda) kanaldakilerin sesini çıkaranın durumu.
+async function yayinSesiOzeti() {
+	const iz = yayin.hamSes || yayin.ses;
+	if (!iz) return null;
 	let s = {};
 	try {
-		s = yayin.ses.getSettings ? yayin.ses.getSettings() : {};
+		s = iz.getSettings ? iz.getSettings() : {};
 	} catch {}
-	return { kaynak: yayin.aygit ? 'aygit' : 'ekran', durum: yayin.ses.readyState, kanal: s.channelCount ?? null, aec: s.echoCancellation ?? null };
+	const o = { kaynak: yayin.aygit ? 'aygit' : 'ekran', durum: iz.readyState, kanal: s.channelCount ?? null, aec: s.echoCancellation ?? null };
+	if (yayin.aygit) {
+		const y = yayin.yanki;
+		o.cikarici = y ? { gidiyor: yayin.ses === y.iz, yuva: y.referans.size, suzgecler: [...y.suzgecler.values()], ...((await yankiOzeti(y)) || {}), denemeler: y.denemeler.slice(-4) } : null;
+	}
+	return o;
 }
 
 function taniBaslat() {

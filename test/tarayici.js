@@ -1,7 +1,8 @@
 // Gerçek tarayıcı denemesi: Playwright + Chromium, sahte mikrofon (konuşmaya benzeyen sentetik ses).
 // Arayüzün kendisiyle (tıklayarak) girer, sesli kanalda gerçek WebRTC bağlantılarını ölçer:
 //   - beyaz liste: anahtar bağlantısıyla giriş, kapıyı çalma + kabul
-//   - üç kişilik mesh: herkes herkesi duyuyor mu (gelen sesin ENERJİSİ artıyor mu, yalnızca bayt değil)
+//   - üç kişilik mesh: herkes herkesi duyuyor mu (gelen sesin ENERJİSİ artıyor mu, yalnızca bayt değil);
+//     mert ayrı bir tarayıcıda başka bir sesle konuşur
 //   - gönderilen bit hızı (Opus tavanı), susturma / sağırlaştırma, çık-gir, sayfa yenileme
 //   - mikrofon izi biterse (aygıt çıkarıldı) kendiliğinden yeniden bağlanma
 //   - sohbette dipte kalma (ses kartı açıkken, ekran/klavye küçülünce) ve uzun resim büyüteci
@@ -16,12 +17,16 @@
 //   - ekransız paylaşım (bilgisayarın sesi): yakalama sürer ama yalnızca ses gider (stereo, yüksek bit
 //     hızı); ekran yeniden seçmeden gösterilip gizlenir; dinleyen kendi için susturur
 //   - ekran paylaşımı ses vermeyen tarayıcı (Firefox gibi): ekransız paylaşımın sesi bir ses aygıtından
-//     (mikrofonla aynı anda); ekran sonradan eklenir, ekran bitince ses sürer
+//     (mikrofonla aynı anda, tarayıcının ses işlemleri kapalı); ekran sonradan eklenir, ekran bitince ses sürer
+//   - ses aygıtından paylaşımda kanaldakilerin konuşması paylaşılan sesten çıkarılır (geri döngü taklidi:
+//     müzik + çalınanın gecikmiş kopyası): konuşma ≥25 dB azalır, müzik bozulmaz, gecikme sıçrayınca
+//     süzgeç yeni yere geçer, kimse konuşmuyorken ses olduğu gibi gider
 //   - ekran paylaşımı (bilgisayar sesiyle): izleyene görüntü gider, görüntüyü kapatana gitmez
 //
 //   node test/tarayici.js                    kendi sunucusunu (node sunucu/sunucu.js) geçici veriyle açar
 //   node test/tarayici.js http://adres:port  çalışan sunucuya bağlanır (ILK_ANAHTAR gerekir;
 //                                            YENIDEN_BASLAT='komut' verilirse yeniden başlatma denenir)
+//   DENEME='giriş|üç kişilik|...' node test/tarayici.js   yalnızca adı uyan denemeler
 //
 // Gerekenler: playwright (npm install --no-save playwright && npx playwright install chromium),
 // coturn (yoksa TURN denemeleri atlanır). Sunucu başlatırken TURN_ADRESI makinenin IP'si olmalı:
@@ -151,7 +156,11 @@ function sunucuyuCoz() {
 
 let gecen = 0;
 let atlanan = 0;
+// DENEME='giriş|üç kişilik|konuşması' gibi bir düzenli ifade verilirse yalnızca adı uyan denemeler
+// çalışır (geliştirirken; sonrakiler öncekilerin kurduğu duruma dayandığı için kurulumu da seç).
+const SECILI = process.env.DENEME ? new RegExp(process.env.DENEME) : null;
 async function dene(ad, fn) {
+	if (SECILI && !SECILI.test(ad)) return atla(ad, 'DENEME süzgeci');
 	const t0 = Date.now();
 	try {
 		await fn();
@@ -190,16 +199,17 @@ async function bekleKosul(aciklama, fn, ms = 20000, aralik = 250) {
 // ---------------------------------------------------------------- sahte mikrofon sesi
 
 // Konuşmaya benzeyen sinyal (48 kHz mono): değişen perdede harmonikler, hece ritmi, kısa duraklamalar.
-function konusmaWav(dosya, saniye = 12) {
+// ses: { perde (Hz), hece (Hz), tohum } — ikinci tarayıcıdaki kişi başka bir sesle konuşur.
+function konusmaWav(dosya, saniye = 12, { perde: perdeTaban = 140, hece: heceHizi = 3.7, tohum: ilkTohum = 7 } = {}) {
 	const HIZ = 48000;
 	const N = HIZ * saniye;
 	const v = Buffer.alloc(44 + N * 2);
 	let faz = 0;
-	let tohum = 7;
-	const rastgele = () => ((tohum = (tohum * 1103515245 + 12345) & 0x7fffffff) / 0x7fffffff) * 2 - 1;
+	let tohum = ilkTohum;
+	const rastgele = () => ((tohum = (Math.imul(tohum, 1103515245) + 12345) & 0x7fffffff) / 0x7fffffff) * 2 - 1;
 	for (let i = 0; i < N; i++) {
 		const t = i / HIZ;
-		const perde = 140 + 45 * Math.sin(2 * Math.PI * 0.37 * t) + 20 * Math.sin(2 * Math.PI * 2.3 * t);
+		const perde = perdeTaban + 45 * Math.sin(2 * Math.PI * 0.37 * t) + 20 * Math.sin(2 * Math.PI * 2.3 * t);
 		faz += (2 * Math.PI * perde) / HIZ;
 		let s = 0;
 		for (let h = 1; h <= 24; h++) {
@@ -207,7 +217,7 @@ function konusmaWav(dosya, saniye = 12) {
 			const formant = Math.exp(-(((f - 500) / 300) ** 2)) + 0.6 * Math.exp(-(((f - 1500) / 400) ** 2)) + 0.35 * Math.exp(-(((f - 2600) / 500) ** 2));
 			s += (Math.sin(h * faz) / h) * (0.25 + formant);
 		}
-		const hece = Math.max(0, Math.sin(2 * Math.PI * 3.7 * t)) ** 0.6;
+		const hece = Math.max(0, Math.sin(2 * Math.PI * heceHizi * t)) ** 0.6;
 		const cumle = t % 4 < 3.4 ? 1 : 0.02;
 		s = s * hece * cumle * 0.35 + rastgele() * 0.01;
 		v.writeInt16LE(Math.max(-32767, Math.min(32767, Math.round(s * 32767))), 44 + i * 2);
@@ -230,10 +240,11 @@ function konusmaWav(dosya, saniye = 12) {
 // ---------------------------------------------------------------- tarayıcı yardımcıları
 
 let tarayici;
+let tarayici2; // mert başka bir sesle konuşsun diye ayrı tarayıcı (sahte mikrofon tarayıcı başına tek kayıt)
 const kisiler = [];
 
-async function kisiAc(ad, { zorlaTurn = false } = {}) {
-	const ctx = await tarayici.newContext({ permissions: ['microphone'] });
+async function kisiAc(ad, { zorlaTurn = false, ikinci = false } = {}) {
+	const ctx = await (ikinci ? tarayici2 : tarayici).newContext({ permissions: ['microphone'] });
 	const sayfa = await ctx.newPage();
 	const k = { ad, ctx, sayfa, hatalar: [] };
 	sayfa.on('pageerror', (e) => k.hatalar.push(e.message));
@@ -387,23 +398,30 @@ async function sidebarKisileri(k, kanal = 'Sesli Sohbet') {
 (async () => {
 	const wav = path.join(os.tmpdir(), `diszort-konusma-${process.pid}.wav`);
 	konusmaWav(wav);
+	// İkinci ses (mert): başka perde ve hece hızı. Herkes aynı kaydı çalınca kanaldakilerin sesini
+	// çıkarma denemesinde bir kişinin referansı ötekinin yankısıyla da ilintili olurdu (gerçekte olmaz).
+	const wav2 = path.join(os.tmpdir(), `diszort-konusma2-${process.pid}.wav`);
+	konusmaWav(wav2, 12, { perde: 205, hece: 4.3, tohum: 99 });
 	await sunucuBaslat();
-	tarayici = await chromium.launch({
-		executablePath: process.env.CHROMIUM_YOLU || undefined,
-		args: [
-			'--use-fake-ui-for-media-stream',
-			'--use-fake-device-for-media-stream',
-			'--use-file-for-fake-audio-capture=' + wav,
-			'--autoplay-policy=no-user-gesture-required',
-			// Ekran paylaşımı: seçim penceresi yerine sahte ekran (ve sahte sistem sesi).
-			'--auto-select-desktop-capture-source=Entire screen',
-		],
-	});
+	const ac = (dosya) =>
+		chromium.launch({
+			executablePath: process.env.CHROMIUM_YOLU || undefined,
+			args: [
+				'--use-fake-ui-for-media-stream',
+				'--use-fake-device-for-media-stream',
+				'--use-file-for-fake-audio-capture=' + dosya,
+				'--autoplay-policy=no-user-gesture-required',
+				// Ekran paylaşımı: seçim penceresi yerine sahte ekran (ve sahte sistem sesi).
+				'--auto-select-desktop-capture-source=Entire screen',
+			],
+		});
+	tarayici = await ac(wav);
+	tarayici2 = await ac(wav2);
 	console.log(`tarayıcı denemesi: ${ADRES} (${tarayici.version()})`);
 
 	const taha = await kisiAc('taha');
 	const zeynep = await kisiAc('zeynep');
-	const mert = await kisiAc('mert');
+	const mert = await kisiAc('mert', { ikinci: true });
 
 	await dene('giriş: anahtar bağlantısı ve kapıyı çalma (arayüzden)', async () => {
 		await yoneticiGir(taha);
@@ -692,13 +710,22 @@ async function sidebarKisileri(k, kanal = 'Sesli Sohbet') {
 		const aygit = secenekler.find((o) => /Fake Audio Input 1/.test(o.ad));
 		assert.ok(aygit, 'sahte ses aygıtı listelenmeli: ' + secenekler.map((o) => o.ad).join(' | '));
 		await zeynep.sayfa.selectOption('#ses-kaynagi-aygit', aygit.id);
-		// Denemede herkesin mikrofonu aynı konuşma kaydını çalıyor: yankı engelleme onu da çıkarabilirdi.
-		await zeynep.sayfa.uncheck('#ses-kaynagi-yanki');
+		assert.equal(await zeynep.sayfa.locator('#ses-kaynagi input[type=checkbox]').count(), 0, 'paylaşım penceresinde yankı engelleme seçeneği olmamalı');
+		// Denemede herkesin mikrofonu ve sahte ses aygıtı aynı konuşma kaydını çalıyor: kaydırmaları
+		// birbirine yakın düşerse çıkarıcı onu "yankı" sanabilirdi. zeynep taha ile mert'i kendi için
+		// sustursun (çalmadığı ses çıkarılmaz); çıkarmanın kendisi bir sonraki denemede.
+		await zeynep.sayfa.evaluate(() => {
+			for (const ad of ['taha', 'mert']) {
+				esler.get(ad).susturuldu = true;
+				esSesUygula(esler.get(ad));
+			}
+		});
 		await zeynep.sayfa.click('#ses-kaynagi-paylas');
 		await bekleKosul('zeynep ses aygıtından ekransız paylaşıyor', () => zeynep.sayfa.evaluate((id) => !!yayin.ses && yayin.aygit === id && !yayin.goruntu && yayin.ekransiz && yayin.ses.readyState === 'live', aygit.id), 10000);
-		const ayarlari = await zeynep.sayfa.evaluate(() => yayin.ses.getSettings());
+		assert.equal(await zeynep.sayfa.evaluate(() => !!yayin.yanki && yayin.ses === yayin.yanki.iz && yayin.hamSes === yayin.yanki.ham), true, 'giden iz kanaldakilerin sesini çıkaranın çıkışı olmalı');
+		const ayarlari = await zeynep.sayfa.evaluate(() => yayin.hamSes.getSettings());
 		assert.equal(ayarlari.deviceId, aygit.id, 'ses seçilen aygıttan alınmalı');
-		assert.equal(ayarlari.echoCancellation, false, 'yankı engelleme kapalı istendi');
+		assert.equal(ayarlari.echoCancellation, false, 'tarayıcının yankı engellemesi kapalı olmalı (müziği eşikle kesiyordu)');
 		assert.equal(ayarlari.noiseSuppression, false, 'gürültü bastırma müziği bozar');
 		assert.equal(ayarlari.autoGainControl, false, 'otomatik kazanç müziği bozar');
 		assert.notEqual(await zeynep.sayfa.evaluate(() => mikrofon.getAudioTracks()[0].readyState), 'ended', 'mikrofon sürmeli');
@@ -765,7 +792,197 @@ async function sidebarKisileri(k, kanal = 'Sesli Sohbet') {
 		await duyuyor(taha, 'zeynep', 'paylaşım bitince mikrofon sürmeli');
 		await zeynep.sayfa.evaluate(() => {
 			navigator.mediaDevices.getSupportedConstraints = window.asilKisitlar;
+			for (const ad of ['taha', 'mert']) {
+				esler.get(ad).susturuldu = false;
+				esSesUygula(esler.get(ad));
+			}
 		});
+	});
+
+	await dene('ses aygıtından paylaşım: kanaldakilerin konuşması paylaşılan sesten çıkarılır, müzik eşiksiz ve kesilmeden gider', async () => {
+		// zeynep yine Firefox gibi. Bilgisayarın sesi ("Monitor of …") yerine sayfada kurulan sahte bir
+		// aygıt: müzik + zeynep'in çaldığı seslerin (taha ile mert'in konuşması) gecikmiş, 0,8'le
+		// ölçeklenmiş kopyası — gerçek geri döngü gibi. Her akışın gecikmesi ayrı (taha 73,1 ms, mert
+		// 75,8 ms): tarayıcı her akışı kendi tamponundan çalar (Chromium + PulseAudio'da iki kişinin sesi
+		// 128 örnek farkla geliyordu). Hepsi tek WebAudio grafiğinde: sahte aygıtın izi çıkarıcıya düğüm
+		// olarak bağlanır, uzak akışların kaynak düğümleri ortaktır (Chrome'un MediaStream tamponları
+		// gecikmeyi kendiliğinden oynatıp denemeyi rastlantıya bağlamasın; gecikme sıçraması aşağıda
+		// bilerek denenir).
+		await zeynep.sayfa.evaluate(() => {
+			const ac = sesBaglami();
+			const asilKaynak = ac.createMediaStreamSource.bind(ac);
+			const ortak = new Map();
+			window.asilKaynak = asilKaynak;
+			ac.createMediaStreamSource = (akis) => {
+				const iz = akis.getAudioTracks()[0];
+				if (window.sahte && iz === window.sahte.iz) return window.sahte.cikis;
+				if (!iz) return asilKaynak(akis);
+				if (!ortak.has(iz.id)) ortak.set(iz.id, asilKaynak(akis));
+				return ortak.get(iz.id);
+			};
+			const asil = navigator.mediaDevices.getSupportedConstraints.bind(navigator.mediaDevices);
+			window.asilKisitlar = asil;
+			navigator.mediaDevices.getSupportedConstraints = () => {
+				const d = { ...asil() };
+				delete d.suppressLocalAudioPlayback;
+				delete d.restrictOwnAudio;
+				return d;
+			};
+			window.asilGum = navigator.mediaDevices.getUserMedia.bind(navigator.mediaDevices);
+			navigator.mediaDevices.getUserMedia = async (k) => {
+				const a = k && k.audio;
+				if (!a || !a.deviceId || a.echoCancellation !== false) return window.asilGum(k);
+				const muzik = ac.createGain();
+				muzik.gain.value = 0; // önce yalnızca yankı
+				const birlesik = ac.createChannelMerger(2);
+				for (const [f, kanal] of [[196, 0], [293.66, 1], [440, 0], [329.63, 1], [523.25, 0]]) {
+					const o = ac.createOscillator();
+					o.type = 'triangle';
+					o.frequency.value = f;
+					const g = ac.createGain();
+					g.gain.value = 0.05;
+					o.connect(g);
+					g.connect(birlesik, 0, kanal);
+					o.start();
+				}
+				birlesik.connect(muzik);
+				const yanki = ac.createGain();
+				yanki.gain.value = 0.8;
+				const gecikmeler = {};
+				for (const [ad, sn] of [['taha', 0.0731], ['mert', 0.0758]]) {
+					const es = esler.get(ad);
+					const gecikme = ac.createDelay(1);
+					gecikme.delayTime.value = sn;
+					gecikme.connect(yanki);
+					for (const o of [es.ses, es.yayinSesOgesi]) if (o && o.srcObject && !o.muted) ac.createMediaStreamSource(o.srcObject).connect(gecikme);
+					gecikmeler[ad] = gecikme;
+				}
+				const cikis = ac.createGain();
+				muzik.connect(cikis);
+				yanki.connect(cikis);
+				const hedef = ac.createMediaStreamDestination();
+				cikis.connect(hedef);
+				window.sahte = { muzik, gecikmeler, cikis, iz: hedef.stream.getAudioTracks()[0] };
+				return hedef.stream;
+			};
+			// Düğümlerin ms boyunca ortalama gücü (AnalyserNode, tek kanala indirilmiş).
+			window.gucOlc = async (dugumler, ms) => {
+				const olcer = dugumler.map((d) => {
+					const a = ac.createAnalyser();
+					a.fftSize = 2048;
+					d.connect(a);
+					return { d, a, top: 0, say: 0 };
+				});
+				const veri = new Float32Array(2048);
+				const son = performance.now() + ms;
+				while (performance.now() < son) {
+					await new Promise((r) => setTimeout(r, 40));
+					for (const x of olcer) {
+						x.a.getFloatTimeDomainData(veri);
+						let t = 0;
+						for (const v of veri) t += v * v;
+						x.top += t / veri.length;
+						x.say++;
+					}
+				}
+				for (const x of olcer) x.d.disconnect(x.a);
+				return olcer.map((x) => x.top / Math.max(1, x.say));
+			};
+		});
+		await zeynep.sayfa.click('#yayin-ac');
+		await zeynep.sayfa.locator('#yayin-menu button', { hasText: 'Ekransız paylaş' }).click();
+		await goruneneKadar(zeynep, '#ses-kaynagi');
+		await bekleKosul('ses aygıtları listelendi', () => zeynep.sayfa.evaluate(() => !document.getElementById('ses-kaynagi-aygit').disabled), 10000);
+		await zeynep.sayfa.click('#ses-kaynagi-paylas');
+		try {
+			await bekleKosul('zeynep sahte aygıttan, çıkarıcıyla paylaşıyor', () => zeynep.sayfa.evaluate(() => !!window.sahte && !!yayin.yanki && yayin.ses === yayin.yanki.iz && yayin.hamSes === window.sahte.iz), 10000);
+			const t0 = Date.now();
+			// İki kişinin mikrofon akışının yuvası: ikisinin de süzgeci kendi gecikmesinde kurulmalı.
+			const yuvaGecikmeleri = () =>
+				zeynep.sayfa.evaluate(() => {
+					const o = {};
+					for (const ad of ['taha', 'mert']) {
+						const r = yayin.yanki.referans.get(esler.get(ad).ses.srcObject);
+						const s = r && yayin.yanki.suzgecler.get(r.yuva);
+						o[ad] = s ? s.gecikmeMs : null;
+					}
+					return o;
+				});
+			const kilit = await bekleKosul('iki kişinin de gecikmesi bulundu, süzgeçleri kuruldu', async () => {
+				const g = await yuvaGecikmeleri();
+				return g.taha && g.mert ? g : false;
+			}, 20000, 200);
+			const kilitSn = (Date.now() - t0) / 1000;
+			const db = (a, b) => 10 * Math.log10(a / b);
+			// Ölçülenler: yakalanan (sahte aygıt), giden (çıkarıcının çıkışı), müzik.
+			const olc = (ms) => zeynep.sayfa.evaluate((ms) => gucOlc([window.sahte.cikis, yayin.yanki.dugum, window.sahte.muzik], ms), ms);
+			// 1) Yalnızca yankı (müzik yok): giden seste kanaldakilerin konuşması kalmamalı.
+			await bekle(1500);
+			const [yakalananA, gidenA] = await olc(3000);
+			const azalmaA = db(yakalananA, gidenA);
+			// 2) Müzik + yankı (müzik yankıyla aynı güçte): giden ≈ müzik (yankı çıkarılmış, müzik bozulmamış).
+			await zeynep.sayfa.evaluate(() => (window.sahte.muzik.gain.value = 1));
+			const [, , birim] = await olc(600);
+			await zeynep.sayfa.evaluate((g) => (window.sahte.muzik.gain.value = g), Math.sqrt(yakalananA / birim));
+			await bekle(1500);
+			const [yakalananB, gidenB, muzikB] = await olc(3000);
+			// 3) taha'nın gecikmesi sıçrıyor (ör. tarayıcı o akışın tamponunu büyüttü): onun süzgeci birkaç
+			// saniyede yeni yere geçer, mert'inki yerinde kalır.
+			await zeynep.sayfa.evaluate(() => (window.sahte.gecikmeler.taha.delayTime.value = 0.0853));
+			const t1 = Date.now();
+			const sicrama = await bekleKosul('sıçramadan sonra taha\'nın süzgeci yeni gecikmede', async () => {
+				const g = await yuvaGecikmeleri();
+				return g.taha > 83 && g.taha < 88 ? g : false;
+			}, 15000, 200);
+			const sicramaSn = (Date.now() - t1) / 1000;
+			await bekle(1500);
+			const [yakalananD, gidenD, muzikD] = await olc(3000);
+			// 4) Kimse konuşmuyor: giden, yakalananın ta kendisi (eşik yok, işlem yok).
+			for (const k of [taha, mert]) await k.sayfa.evaluate(() => mikDegistir());
+			await bekle(1500);
+			const [yakalananC, gidenC] = await olc(2500);
+			for (const k of [taha, mert]) await k.sayfa.evaluate(() => mikDegistir());
+			const ozet = await zeynep.sayfa.evaluate(() => yankiOzeti());
+			const denemeler = await zeynep.sayfa.evaluate(() => yayin.yanki.denemeler);
+			console.log(
+				`     süzgeçler ${kilitSn.toFixed(1)} sn'de: gecikme taha ${kilit.taha} ms, mert ${kilit.mert} ms; yalnızca yankı: ${azalmaA.toFixed(1)} dB azaldı; ` +
+					`müzik+yankı: yakalanan müziğin ${db(yakalananB, muzikB).toFixed(1)} dB üstünde, giden ${db(gidenB, muzikB).toFixed(2)} dB; ` +
+					`taha'nınki 85,3 ms'ye sıçrayınca ${sicramaSn.toFixed(1)} sn'de yeniden (mert ${sicrama.mert} ms), sonra giden ${db(gidenD, muzikD).toFixed(2)} dB (yakalanan ${db(yakalananD, muzikD).toFixed(1)} dB); ` +
+					`kimse konuşmuyorken giden/yakalanan ${db(gidenC, yakalananC).toFixed(2)} dB; özet ${JSON.stringify(ozet)}`,
+			);
+			if (process.env.AYRINTI) console.log('     tahmin denemeleri: ' + JSON.stringify(denemeler));
+			assert.ok(kilitSn < 8, 'süzgeç birkaç saniyede kurulmalı: ' + kilitSn.toFixed(1) + ' sn; ' + JSON.stringify(denemeler));
+			assert.ok(Math.abs(kilit.taha - 73.1) < 0.5 && Math.abs(kilit.mert - 75.8) < 0.5, 'her kişinin gecikmesi ayrı bulunmalı (73,1 / 75,8 ms): ' + JSON.stringify(kilit));
+			assert.ok(Math.abs(sicrama.mert - 75.8) < 0.5, 'sıçrama yalnızca taha\'nın süzgecini taşımalı: ' + JSON.stringify(sicrama));
+			assert.ok(azalmaA > 25, 'kanaldakilerin konuşması en az 25 dB azalmalı: ' + azalmaA.toFixed(1));
+			assert.ok(db(yakalananB, muzikB) > 2, 'denemenin kendisi: yakalanan seste yankı müzik kadar güçlü olmalı');
+			assert.ok(Math.abs(db(gidenB, muzikB)) < 0.5, 'müzik çalarken giden ≈ müzik olmalı (yankı çıkmış, müzik bozulmamış): ' + db(gidenB, muzikB).toFixed(2));
+			assert.ok(sicramaSn < 8, 'gecikme sıçrayınca süzgeç birkaç saniyede yeni yere geçmeli: ' + sicramaSn.toFixed(1));
+			assert.ok(Math.abs(db(gidenD, muzikD)) < 0.5, 'sıçramadan sonra da giden ≈ müzik olmalı: ' + db(gidenD, muzikD).toFixed(2));
+			assert.ok(Math.abs(db(gidenC, yakalananC)) < 0.1, 'kimse konuşmuyorken ses olduğu gibi gitmeli: ' + db(gidenC, yakalananC).toFixed(2));
+			// Dinleyen paylaşımın sesini (müziği) alıyor.
+			await bekleKosul('taha ← zeynep paylaşımın sesi akıyor', async () => {
+				const d1 = await durumu(taha);
+				await bekle(1500);
+				const d2 = await durumu(taha);
+				return d2.esler.zeynep.yayinEnerji - d1.esler.zeynep.yayinEnerji > SES_VAR / 2;
+			}, 15000, 100);
+		} finally {
+			// Başarısız olsa da paylaşım kapansın (sonraki denemeler kartsız başlar).
+			await zeynep.sayfa.evaluate(() => {
+				if (yayinVar()) yayinDurdur();
+				navigator.mediaDevices.getSupportedConstraints = window.asilKisitlar;
+				navigator.mediaDevices.getUserMedia = window.asilGum;
+				delete sesBaglami().createMediaStreamSource;
+				if (window.sahte) window.sahte.cikis.disconnect();
+			});
+			for (const k of [taha, mert]) await k.sayfa.evaluate(() => ayar.mikKapali && mikDegistir());
+		}
+		await bekleKosul('paylaşım bitti, çıkarıcı kapandı', () => zeynep.sayfa.evaluate(() => !yayinVar() && yayin.yanki === null && window.sahte.iz.readyState === 'ended'), 10000);
+		await bekleKosul('kart herkesten kalktı', async () => {
+			for (const k of [taha, zeynep, mert]) if (await k.sayfa.evaluate(() => !!document.querySelector('#yayinlar .yayin-kart'))) return false;
+			return true;
+		}, 10000);
 	});
 
 	await dene('ekran paylaşımı: izleyene görüntü gider, görüntüyü kapatana gitmez', async () => {
@@ -964,8 +1181,10 @@ async function sidebarKisileri(k, kanal = 'Sesli Sohbet') {
 	});
 
 	await tarayici.close();
+	await tarayici2.close();
 	await sunucuDurdur();
 	fs.rmSync(wav, { force: true });
+	fs.rmSync(wav2, { force: true });
 	if (veriKlasoru) fs.rmSync(veriKlasoru, { recursive: true, force: true });
 	console.log(process.exitCode ? 'BAŞARISIZ' : `Tarayıcı denemeleri geçti (${gecen}${atlanan ? `, ${atlanan} atlandı` : ''}).`);
 	process.exit(process.exitCode || 0);

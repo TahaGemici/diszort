@@ -7,6 +7,7 @@
     "start": "node sunucu/sunucu.js",
     "test": "node test/dene.js",
     "test:arayuz": "node test/arayuz.js",
+    "test:yanki": "node test/yanki.js",
     "test:tarayici": "node test/tarayici.js"
   },
   "dependencies": {

@@ -189,11 +189,15 @@ function kur({ url = 'https://chat.deneme/', depo = {}, oturumDepo = {}, ekranYo
 		}
 	};
 	window.HTMLMediaElement.prototype.play = function () {
+		const once = this._caliyor;
 		this._caliyor = true;
+		if (!once) this.dispatchEvent(new window.Event('playing'));
 		return Promise.resolve();
 	};
 	window.HTMLMediaElement.prototype.pause = function () {
+		const once = this._caliyor;
 		this._caliyor = false;
+		if (once) this.dispatchEvent(new window.Event('pause'));
 	};
 	window.HTMLMediaElement.prototype.load = function () {};
 	Object.defineProperty(window.HTMLMediaElement.prototype, 'paused', {
@@ -357,11 +361,65 @@ function kur({ url = 'https://chat.deneme/', depo = {}, oturumDepo = {}, ekranYo
 	FakePC.kayipHizi = 0;
 	FakePC.gizlemeOrani = 0;
 	window.RTCPeerConnection = FakePC;
+	// Paylaşılan sesten kanaldakilerin sesini çıkaran düzenek (AudioWorklet + Worker) taklidi.
+	// workletYok: tarayıcı AudioWorklet sunmuyor. hedefIzleri: çıkarıcının çıkışları (gönderilen iz).
+	durum.workletYok = false;
+	durum.workletModulu = null;
+	durum.workletDugumleri = [];
+	durum.isciler = [];
+	durum.hedefIzleri = [];
+	window.AudioWorkletNode = class {
+		constructor(ac, ad, secenek) {
+			this.ad = ad;
+			this.secenek = secenek;
+			this.baglar = [];
+			this.giden = [];
+			const dugum = this;
+			this.port = {
+				onmessage: null,
+				postMessage(v) {
+					dugum.giden.push(v);
+				},
+			};
+			durum.workletDugumleri.push(this);
+		}
+		connect(h) {
+			this.baglar.push(h);
+		}
+		disconnect() {
+			this.koptu = true;
+		}
+	};
+	window.Worker = class {
+		constructor(adres) {
+			this.adres = adres;
+			this.gelen = [];
+			durum.isciler.push(this);
+		}
+		postMessage(v) {
+			this.gelen.push(v);
+		}
+		terminate() {
+			this.bitti = true;
+		}
+	};
 	window.AudioContext = class {
 		constructor() {
 			this.state = 'running';
+			this.sampleRate = 48000;
 			this.currentTime = 0;
 			this.destination = { connect() {} };
+			this.audioWorklet = {
+				addModule: async (adres) => {
+					if (durum.workletYok) throw new Error('AudioWorklet yok');
+					durum.workletModulu = adres;
+				},
+			};
+		}
+		createMediaStreamDestination() {
+			const iz = izYap();
+			durum.hedefIzleri.push(iz);
+			return { stream: akisYap([iz]), connect() {}, disconnect() {} };
 		}
 		createAnalyser() {
 			return { fftSize: 1024, getFloatTimeDomainData(v) { v.fill(0.1); } };
@@ -373,7 +431,15 @@ function kur({ url = 'https://chat.deneme/', depo = {}, oturumDepo = {}, ekranYo
 			return { frequency: {}, connect() {}, start() {}, stop() {} };
 		}
 		createGain() {
-			return { gain: { value: 1, setValueAtTime() {}, linearRampToValueAtTime() {}, exponentialRampToValueAtTime() {} }, connect() {}, disconnect() {} };
+			return {
+				gain: { value: 1, setValueAtTime() {}, linearRampToValueAtTime() {}, exponentialRampToValueAtTime() {} },
+				connect(hedef, cikis, giris) {
+					this.baglanti = [hedef, cikis, giris];
+				},
+				disconnect() {
+					this.baglanti = null;
+				},
+			};
 		}
 		resume() {
 			return Promise.resolve();
@@ -1166,7 +1232,6 @@ const ICE = { iceServers: [{ urls: ['stun:1.2.3.4:3478'] }, { urls: ['turn:1.2.3
 		const goruntusu = (pc) => pc._transceivers[2].sender.track;
 		const pencere = d.getElementById('ses-kaynagi');
 		const secim = d.getElementById('ses-kaynagi-aygit');
-		const yanki = d.getElementById('ses-kaynagi-yanki');
 		const durumMetni = () => d.getElementById('durum').textContent;
 		const kayitliAyar = () => JSON.parse(w.localStorage.getItem('ses-ayarlari') || '{}');
 		const ekransizAc = async () => {
@@ -1191,7 +1256,10 @@ const ICE = { iceServers: [{ urls: ['stun:1.2.3.4:3478'] }, { urls: ['turn:1.2.3
 			secim.options.length === 2 && secim.options[0].value === 'monitor-1' && /^Bilgisayarın sesi · Monitor of/.test(secim.options[0].textContent) && secim.value === 'monitor-1' && /Dahili Mikrofon · mikrofonun/.test(secim.options[1].textContent),
 			secenekler().join(' | '),
 		);
-		denetle('yankı engelleme varsayılan açık, "bulunamadı" ipucu gizli', yanki.checked && d.getElementById('ses-kaynagi-ipucu').hidden);
+		denetle(
+			'pencerede yankı engelleme seçeneği yok (kanaldakilerin sesi hep çıkarılır), "bulunamadı" ipucu gizli',
+			!d.getElementById('ses-kaynagi-yanki') && !pencere.querySelector('input[type=checkbox]') && /kendiliğinden çıkarılır/.test(pencere.textContent) && d.getElementById('ses-kaynagi-ipucu').hidden,
+		);
 		d.getElementById('ses-kaynagi-iptal').click();
 		await bekle(10);
 		denetle('iptal: pencere kapandı, paylaşım başlamadı', pencere.hidden && !w.eval('yayinVar()') && s.oc.aygitKisit === null);
@@ -1201,17 +1269,97 @@ const ICE = { iceServers: [{ urls: ['stun:1.2.3.4:3478'] }, { urls: ['turn:1.2.3
 		await bekle(40);
 		const k = s.oc.aygitKisit || {};
 		denetle(
-			'ses seçilen aygıttan: stereo, yankı engelleme açık, gürültü bastırma ve otomatik kazanç kapalı',
-			k.deviceId && k.deviceId.exact === 'monitor-1' && k.echoCancellation === true && k.noiseSuppression === false && k.autoGainControl === false && k.channelCount && k.channelCount.ideal === 2,
+			'ses seçilen aygıttan: stereo, tarayıcının yankı engelleme, gürültü bastırma ve otomatik kazancı kapalı',
+			k.deviceId && k.deviceId.exact === 'monitor-1' && k.echoCancellation === false && k.noiseSuppression === false && k.autoGainControl === false && k.channelCount && k.channelCount.ideal === 2,
 			JSON.stringify(k),
 		);
 		const aIz = s.oc.aygitIzi;
 		denetle('ekransız paylaşım bildirildi: görüntü yok, ses var', pencere.hidden && son('yayin').yayin && son('yayin').yayin.goruntu === false && son('yayin').yayin.ses === true, JSON.stringify(son('yayin')));
+		// Kanaldakilerin sesini çıkaran düzenek: worklet + worker; giden iz onun çıkışı.
+		const cDugum = s.oc.workletDugumleri.at(-1);
+		const cIsci = s.oc.isciler.at(-1);
+		const cIz = s.oc.hedefIzleri.at(-1);
 		denetle(
-			'aygıtın sesi herkesin yayın sesi kanalında; görüntü yok; mikrofon kanalı değişmedi',
-			yayinSesi(ilkPc) === aIz && yayinSesi(zPc) === aIz && goruntusu(ilkPc) === null && goruntusu(zPc) === null && ilkPc._transceivers[0].sender.track === s.oc.sonIz,
+			'çıkarıcı kuruldu: worklet (yakalanan + 20 yuva, stereo çıkış) ve tahmin işçisi yanki.js\'ten',
+			s.oc.workletModulu === 'yanki.js' && cDugum && cDugum.ad === 'yanki-cikarici' && cDugum.secenek.numberOfInputs === 21 && cDugum.secenek.outputChannelCount[0] === 2 && cIsci && cIsci.adres === 'yanki.js' && cIsci.gelen[0].tur === 'kur' && cIsci.gelen[0].hiz === 48000,
 		);
-		denetle('seçilen aygıt hatırlandı', kayitliAyar().yayinAygitId === 'monitor-1' && kayitliAyar().yayinYanki === true, JSON.stringify(kayitliAyar()));
+		denetle(
+			'herkese çıkarıcının çıkışı gidiyor (aygıtın ham sesi değil); görüntü yok; mikrofon kanalı değişmedi',
+			cIz && yayinSesi(ilkPc) === cIz && yayinSesi(zPc) === cIz && w.eval('yayin.hamSes') === aIz && goruntusu(ilkPc) === null && goruntusu(zPc) === null && ilkPc._transceivers[0].sender.track === s.oc.sonIz,
+		);
+		denetle('çıkarılamıyor uyarısı yok', !/çıkarılamıyor/.test(durumMetni()) && /Monitor of/.test(durumMetni()), durumMetni());
+		// Referans: kanaldakilerin çalınan sesleri, <audio>'su ne çalıyorsa o seviyede (bora'yı %37'ye
+		// kısmıştık; zeynep'in paylaşımının sesi de çalıyor). Mikrofon izleri şimdi gelsin.
+		for (const pc of [ilkPc, zPc]) pc.ontrack({ transceiver: pc._transceivers[0], track: pc._transceivers[0].receiver.track });
+		await bekle(10);
+		const referans = () => w.eval('[...yayin.yanki.referans.entries()].map(([a, r]) => ({ akis: a, g: r.kazanc.gain.value }))');
+		const ogeler = () => w.eval('[...esler.values()].flatMap((e) => [e.ses, e.yayinSesOgesi]).filter((a) => a && a.srcObject)');
+		const uyuyor = () => {
+			const r = referans();
+			const o = ogeler();
+			return r.length === o.length && o.every((a) => {
+				const x = r.find((y) => y.akis === a.srcObject);
+				return x && Math.abs(x.g - (a.muted || a.paused ? 0 : a.volume)) < 1e-9;
+			});
+		};
+		const refKazanc = (ad) => (referans().find((r) => r.akis === w.eval(`esler.get('${ad}').ses.srcObject`)) || {}).g;
+		denetle(
+			'referans: çalınan her ses (iki mikrofon, bir paylaşım), <audio>\'su ne çalıyorsa o seviyede',
+			referans().length === 3 && uyuyor() && Math.abs(refKazanc('bora') - 0.37) < 1e-9,
+			JSON.stringify({ referans: referans().map((r) => r.g), ogeler: ogeler().map((a) => [a.volume, a.muted, a.paused]) }),
+		);
+		w.eval("esler.get('zeynep').seviye = 40; esSesUygula(esler.get('zeynep'))");
+		denetle('referans seviyeyi izler', Math.abs(refKazanc('zeynep') - 0.4) < 1e-9 && uyuyor(), String(refKazanc('zeynep')));
+		w.eval("esler.get('zeynep').susturuldu = true; esSesUygula(esler.get('zeynep'))");
+		denetle('susturulan eş referansta 0 (çalınmıyor)', refKazanc('zeynep') === 0 && uyuyor(), String(refKazanc('zeynep')));
+		w.eval("esler.get('zeynep').susturuldu = false; esler.get('zeynep').seviye = 100; esSesUygula(esler.get('zeynep'))");
+		denetle('susturma kalkınca referans geri geldi', refKazanc('zeynep') === 1 && uyuyor(), String(refKazanc('zeynep')));
+		w.eval("esler.get('bora').ses.pause()");
+		denetle('duran <audio> referansta hemen 0', refKazanc('bora') === 0, String(refKazanc('bora')));
+		w.eval("esler.get('bora').ses.play()");
+		denetle('yeniden çalınca referansa döndü', Math.abs(refKazanc('bora') - 0.37) < 1e-9 && uyuyor(), String(refKazanc('bora')));
+		// Sayfa worklet ile işçi arasında iletir: örnekler işçiye, süzgeç worklet'e (ve teşhise).
+		// Her çalınan akış kendi yuvasında (gecikmeleri ayrı olabilir): worklet'in 1 + yuva girişine bağlı.
+		const yuvalar = () => w.eval('[...yayin.yanki.referans.values()]');
+		denetle(
+			'her akış ayrı yuvada, worklet\'in kendi girişine bağlı',
+			yuvalar().length === 3 && new Set(yuvalar().map((r) => r.yuva)).size === 3 && yuvalar().every((r) => r.yuva >= 0 && r.yuva < 20 && r.kazanc.baglanti && r.kazanc.baglanti[0] === cDugum && r.kazanc.baglanti[2] === 1 + r.yuva),
+			JSON.stringify(yuvalar().map((r) => [r.yuva, r.kazanc.baglanti && r.kazanc.baglanti[2]])),
+		);
+		const ornek = { tur: 'ornek', m: new w.Float32Array(8), r: { 0: new w.Float32Array(8), 2: new w.Float32Array(8) } };
+		cDugum.port.onmessage({ data: ornek });
+		denetle('worklet örnekleri (yakalanan + sesi olan yuvalar) işçiye iletildi', cIsci.gelen.at(-1) === ornek);
+		const taniOnce = s.oc.gonderilen.filter((m) => m.type === 'tani').length;
+		const suzgec = { tur: 'suzgec', yuva: 2, D0: 3500, w: new w.Float32Array(48), azalmaDb: 21.3, guven: 80, kazanc: 0.9 };
+		cIsci.onmessage({ data: suzgec });
+		const tani = s.oc.gonderilen.filter((m) => m.type === 'tani').slice(taniOnce);
+		denetle(
+			'işçinin süzgeci (yuvasıyla) worklet\'e iletildi; ilk süzgeç teşhise yazıldı (gecikme)',
+			cDugum.giden.at(-1) === suzgec && tani.length === 1 && tani[0].veri.olay === 'yayin-yanki' && tani[0].veri.gecikmeMs === 73.4 && tani[0].veri.yuva === 2,
+			JSON.stringify(tani),
+		);
+		// Akış gidince (bağlantı yeniden kuruldu, kişi çıktı) yuvası boşalır: worklet de işçi de unutur.
+		const boraYuva = w.eval("yayin.yanki.referans.get(esler.get('bora').ses.srcObject).yuva");
+		const boraKazanc = w.eval("yayin.yanki.referans.get(esler.get('bora').ses.srcObject).kazanc");
+		const boraAkis = w.eval("esler.get('bora').ses.srcObject");
+		w.eval("esler.get('bora').ses.srcObject = null; yankiReferansGuncelle()");
+		denetle(
+			'giden akışın yuvası boşaldı, worklet\'e ve işçiye bildirildi',
+			yuvalar().length === 2 && !boraKazanc.baglanti && cDugum.giden.some((v) => v.tur === 'yuva-bos' && v.yuva === boraYuva) && cIsci.gelen.some((v) => v.tur === 'yuva-bos' && v.yuva === boraYuva),
+		);
+		w.eval('(a) => { esler.get("bora").ses.srcObject = a; yankiReferansGuncelle(); }')(boraAkis);
+		denetle('yeniden gelen akışa boş yuva verildi', yuvalar().length === 3 && new Set(yuvalar().map((r) => r.yuva)).size === 3);
+		// Ses bağlamı durursa çıkarıcının çıkışı sessizleşir: ham ses gider; bağlam dönünce çıkarıcıya dönülür.
+		const bag = w.eval('baglam');
+		bag.state = 'suspended';
+		bag.onstatechange();
+		await bekle(10);
+		denetle('ses bağlamı durunca aygıtın ham sesi gidiyor', yayinSesi(ilkPc) === aIz && yayinSesi(zPc) === aIz);
+		bag.state = 'running';
+		bag.onstatechange();
+		await bekle(10);
+		denetle('bağlam dönünce yeniden çıkarıcının çıkışı', yayinSesi(ilkPc) === cIz && yayinSesi(zPc) === cIz);
+		denetle('seçilen aygıt hatırlandı (yankı engelleme seçimi artık yok)', kayitliAyar().yayinAygitId === 'monitor-1' && !('yayinYanki' in kayitliAyar()), JSON.stringify(kayitliAyar()));
 		denetle(
 			'kendi kartım: ekransız, "Ekranı göster" var, "Ses ekle" yok, kaynak aygıt yazıyor',
 			!!benimKart() && benimKart().classList.contains('ekransiz') && !!kartDugmesi(benimKart(), 'Ekranı göster') && kartDugmesi(benimKart(), 'Ses ekle').hidden && /Monitor of/.test(benimKart().querySelector('.yayin-metin').title) && /Monitor of/.test(durumMetni()),
@@ -1223,12 +1371,12 @@ const ICE = { iceServers: [{ urls: ['stun:1.2.3.4:3478'] }, { urls: ['turn:1.2.3
 		const gIz = s.oc.ekranIzleri[0];
 		denetle(
 			'ekran eklendi: seçim penceresinden yalnızca görüntü istendi, izleyenlere gidiyor, ses aynı',
-			s.oc.ekranSayisi === ekranOnce + 1 && s.oc.ekranSecenek.audio === false && goruntusu(ilkPc) === gIz && goruntusu(zPc) === gIz && yayinSesi(ilkPc) === aIz && son('yayin').yayin.goruntu === true,
+			s.oc.ekranSayisi === ekranOnce + 1 && s.oc.ekranSecenek.audio === false && goruntusu(ilkPc) === gIz && goruntusu(zPc) === gIz && yayinSesi(ilkPc) === cIz && son('yayin').yayin.goruntu === true,
 			JSON.stringify(s.oc.ekranSecenek),
 		);
 		kartDugmesi(benimKart(), 'Ekranı gizle').click();
 		await bekle(30);
-		denetle('ekran gizlendi: görüntü gitmiyor, yakalama ve ses sürüyor', goruntusu(ilkPc) === null && gIz.readyState === 'live' && yayinSesi(ilkPc) === aIz && son('yayin').yayin.goruntu === false);
+		denetle('ekran gizlendi: görüntü gitmiyor, yakalama ve ses sürüyor', goruntusu(ilkPc) === null && gIz.readyState === 'live' && yayinSesi(ilkPc) === cIz && son('yayin').yayin.goruntu === false);
 		kartDugmesi(benimKart(), 'Ekranı göster').click();
 		await bekle(30);
 		denetle('ekran yeniden göründü, seçim penceresi yeniden açılmadı', goruntusu(ilkPc) === gIz && s.oc.ekranSayisi === ekranOnce + 1);
@@ -1237,15 +1385,20 @@ const ICE = { iceServers: [{ urls: ['stun:1.2.3.4:3478'] }, { urls: ['turn:1.2.3
 		await bekle(30);
 		denetle(
 			'ekran bitince paylaşım ekransız sürüyor',
-			son('yayin').yayin && son('yayin').yayin.goruntu === false && son('yayin').yayin.ses === true && goruntusu(ilkPc) === null && yayinSesi(ilkPc) === aIz && aIz.readyState === 'live' && !!benimKart(),
+			son('yayin').yayin && son('yayin').yayin.goruntu === false && son('yayin').yayin.ses === true && goruntusu(ilkPc) === null && yayinSesi(ilkPc) === cIz && aIz.readyState === 'live' && !!benimKart(),
 			JSON.stringify(son('yayin')),
 		);
 		// Aygıt kapandı (çıkarıldı, izin geri alındı): paylaşılacak bir şey kalmadı.
 		aIz.bitir();
 		await bekle(30);
 		denetle('ses aygıtı kapanınca paylaşım bitti, söylendi', son('yayin').yayin === null && yayinSesi(ilkPc) === null && !benimKart() && /Ses aygıtı kapandı/.test(durumMetni()), durumMetni());
+		denetle(
+			'paylaşım bitince çıkarıcı kapandı: işçi durdu, worklet bitti, çıkış izi bırakıldı',
+			cIsci.bitti === true && cDugum.koptu === true && cDugum.giden.some((v) => v.tur === 'bitir') && cIz.readyState === 'ended' && w.eval('yayin.yanki') === null && w.eval('yayin.hamSes') === null,
+		);
 
-		// Ekranlı paylaşım: ses gelmez; "Ses ekle" ile (bu kez yankı engelleme kapalı) aygıttan eklenir.
+		// Ekranlı paylaşım: ses gelmez; "Ses ekle" ile aygıttan eklenir. Bu kez tarayıcı AudioWorklet
+		// sunmuyor: aygıtın ham sesi gider, kanaldakilerin sesinin çıkarılamadığı söylenir.
 		await menuyuAc();
 		menuOgesi('Ekranını paylaş').click();
 		await bekle(40);
@@ -1260,15 +1413,19 @@ const ICE = { iceServers: [{ urls: ['stun:1.2.3.4:3478'] }, { urls: ['turn:1.2.3
 		menuOgesi('Ses ekle').click();
 		await bekle(40);
 		denetle('son seçilen aygıt yine seçili', !pencere.hidden && secim.value === 'monitor-1');
-		yanki.click();
+		s.oc.workletYok = true;
+		w.eval('yankiModulu = null');
+		const isciOnce = s.oc.isciler.length;
 		d.getElementById('ses-kaynagi-paylas').click();
 		await bekle(40);
 		const aIz2 = s.oc.aygitIzi;
 		denetle(
-			'ekranlı paylaşıma ses eklendi: yankı engelleme kapalı, ekran sürüyor',
-			aIz2 !== aIz && s.oc.aygitKisit.echoCancellation === false && yayinSesi(ilkPc) === aIz2 && goruntusu(ilkPc) === gIz2 && son('yayin').yayin.goruntu === true && son('yayin').yayin.ses === true,
+			'ekranlı paylaşıma ses eklendi (AudioWorklet yok: ham ses), ekran sürüyor',
+			aIz2 !== aIz && s.oc.aygitKisit.echoCancellation === false && yayinSesi(ilkPc) === aIz2 && goruntusu(ilkPc) === gIz2 && son('yayin').yayin.goruntu === true && son('yayin').yayin.ses === true && s.oc.isciler.length === isciOnce && w.eval('yayin.yanki') === null,
 		);
-		denetle('yankı engelleme seçimi kalıcı, kapalıyken uyarır', kayitliAyar().yayinYanki === false && /kendi sesini geri duyabilir/.test(durumMetni()), durumMetni());
+		denetle('kanaldakilerin sesi çıkarılamıyorsa söylenir', /çıkarılamıyor/.test(durumMetni()) && d.getElementById('durum').classList.contains('hata'), durumMetni());
+		s.oc.workletYok = false;
+		w.eval('yankiModulu = null');
 		denetle('ses eklenince "Ses ekle" kalktı, "Ekranı gizle" geldi', kartDugmesi(benimKart(), 'Ses ekle').hidden && !!kartDugmesi(benimKart(), 'Ekranı gizle') && !kartDugmesi(benimKart(), 'Ekranı gizle').hidden);
 		kartDugmesi(benimKart(), 'Durdur').click();
 		await bekle(20);
@@ -1277,7 +1434,6 @@ const ICE = { iceServers: [{ urls: ['stun:1.2.3.4:3478'] }, { urls: ['turn:1.2.3
 		// İzin verilmezse paylaşım başlamaz.
 		s.oc.aygitHata = 'NotAllowedError';
 		await ekransizAc();
-		denetle('yankı engelleme seçimi pencerede hatırlandı', !pencere.hidden && yanki.checked === false);
 		d.getElementById('ses-kaynagi-paylas').click();
 		await bekle(40);
 		denetle('aygıta izin verilmezse paylaşım başlamaz, söylenir', !w.eval('yayinVar()') && /izin verilmedi/.test(durumMetni()), durumMetni());

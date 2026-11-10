@@ -2,6 +2,7 @@
 #   make           kendi bilgisayarında node ile çalıştırır (node, npm ve coturn gerekir) -> http://127.0.0.1:8080
 #   make test      çalışan sunucuyu dener (ADRES=http://... ile başka bir adres)
 #   make arayuz    arayüzü tarayıcısız dener (jsdom; DOM, kanal seçimi, sesli kanal satırları)
+#   make yanki     paylaşılan sesten kanaldakilerin sesini çıkarmayı benzetimle dener (bağımlılık yok)
 #   make tarayici  gerçek Chromium'la sesli kanalı dener (Playwright; kendi sunucusunu açar, coturn gerekir)
 #   make docker    Docker imajını derleyip çalıştırır -> http://127.0.0.1:8080
 #   make durdur    Docker konteynerini durdurur
@@ -23,6 +24,9 @@ arayuz: node_modules
 	npm install --no-save --no-audit --no-fund jsdom
 	node test/arayuz.js
 
+yanki:
+	node test/yanki.js
+
 # Gerçek tarayıcı: CI'da (GitHub Actions) her push'ta çalışır; sunucuda (VPS) çalıştırmak gerekmez.
 tarayici: node_modules
 	npm install --no-save --no-audit --no-fund playwright
@@ -38,4 +42,4 @@ durdur:
 temizle:
 	rm -rf node_modules veri
 
-.PHONY: calistir test arayuz tarayici docker durdur temizle
+.PHONY: calistir test arayuz yanki tarayici docker durdur temizle
