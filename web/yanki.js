@@ -66,6 +66,7 @@ class YankiCikarici {
 		this.sifirDizi = 0;
 		this.kopukluk = 0;
 		this.kopuklukOrnek = 0;
+		this.uzunSessizlik = []; // son uzun (>200 ms) tam sıfır dizilerinin süreleri (ms)
 		this.sesVardi = false;
 	}
 
@@ -159,13 +160,17 @@ class YankiCikarici {
 			this.monL[ma] = ml;
 			this.monR[ma] = mr;
 			this.monYaz = (ma + 1) & monMaske;
-			// Kopukluk teşhisi: sesin ortasında 2-200 ms tam sıfır (yakalamada düşen örnekler; şarkı
-			// aralarındaki uzun dijital sessizlik sayılmaz).
+			// Kopukluk teşhisi: sesin ortasında 2-200 ms tam sıfır (yakalamada düşen örnekler). Daha uzun
+			// tam sessizlikler ayrıca (son beşinin süresi) tutulur: şarkı arası da olabilir.
 			if (ml === 0 && mr === 0) this.sifirDizi++;
 			else {
 				if (this.sesVardi && this.sifirDizi >= this.hiz / 500 && this.sifirDizi <= this.hiz / 5) {
 					this.kopukluk++;
 					this.kopuklukOrnek += this.sifirDizi;
+				} else if (this.sesVardi && this.sifirDizi > this.hiz / 5) {
+					// Uzun tam sessizlik: şarkı arası olabilir; müzik sürerken olduysa yakalama durmuştur.
+					this.uzunSessizlik.push(Math.round((this.sifirDizi / this.hiz) * 1000));
+					if (this.uzunSessizlik.length > 5) this.uzunSessizlik.shift();
 				}
 				this.sifirDizi = 0;
 				this.sesVardi = true;
@@ -280,6 +285,7 @@ class YankiCikarici {
 			azalmaDb: azalma === null ? null : Math.round(azalma * 10) / 10,
 			kopukluk: this.kopukluk,
 			kopuklukMs: Math.round((this.kopuklukOrnek / this.hiz) * 1000),
+			uzunSessizlikMs: this.uzunSessizlik.slice(),
 		};
 		this.olcYakalanan = this.olcCikan = 0;
 		return o;

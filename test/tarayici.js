@@ -3,7 +3,8 @@
 //   - beyaz liste: anahtar bağlantısıyla giriş, kapıyı çalma + kabul
 //   - üç kişilik mesh: herkes herkesi duyuyor mu (gelen sesin ENERJİSİ artıyor mu, yalnızca bayt değil);
 //     mert ayrı bir tarayıcıda başka bir sesle konuşur
-//   - gönderilen bit hızı (Opus tavanı), susturma / sağırlaştırma, çık-gir, sayfa yenileme
+//   - gönderilen bit hızı (Opus tavanı), kayıplara karşı yedek (RED: mikrofon ve paylaşım kanalında, iki
+//     yönde, teklif eden de yanıtlayan da), susturma / sağırlaştırma, çık-gir, sayfa yenileme
 //   - mikrofon izi biterse (aygıt çıkarıldı) kendiliğinden yeniden bağlanma
 //   - sohbette dipte kalma (ses kartı açıkken, ekran/klavye küçülünce) ve uzun resim büyüteci
 //   - ölü bağlantı: sunucu yanıt vermezken (dondurulmuş) sayfa öne gelince fark edilmesi, P2P sesin
@@ -521,6 +522,36 @@ async function sidebarKisileri(k, kanal = 'Sesli Sohbet') {
 		const fmtp = await taha.sayfa.evaluate(() => esler.get('zeynep').pc.remoteDescription.sdp.match(/a=fmtp:\d+ .*maxaveragebitrate=\d+.*/)?.[0] || '');
 		assert.match(fmtp, /useinbandfec=1/);
 		assert.match(fmtp, /maxaveragebitrate=96000/);
+	});
+
+	await dene('kayıplara karşı yedek (RED): mikrofon ve paylaşım kanalında iki yönde de anlaşılıyor, her paket bir öncekinin kopyasını taşıyor', async () => {
+		// Teklif eden (taha > mert, zeynep > taha) ve yanıtlayan taraf: gönderilen kodek RED, SDP'de RED önde.
+		const durumlar = await Promise.all(
+			[taha, zeynep, mert].map((k) =>
+				k.sayfa.evaluate(() =>
+					[...esler.values()].map((e) => ({
+						ad: e.ad,
+						teklifci: e.teklifci,
+						mik: e.tr.sender.getParameters().codecs.map((c) => c.mimeType)[0],
+						yayin: e.trSes.sender.getParameters().codecs.map((c) => c.mimeType)[0],
+						sira: (e.pc.remoteDescription.sdp.match(/m=audio \d+ \S+ (\d+)/g) || []).map((m) => m.split(' ').pop()),
+						red: (e.pc.remoteDescription.sdp.match(/a=rtpmap:(\d+) red\/48000/) || [])[1],
+					})),
+				),
+			),
+		);
+		for (const [i, liste] of durumlar.entries()) {
+			for (const x of liste) {
+				const kim = `${['taha', 'zeynep', 'mert'][i]} → ${x.ad} (${x.teklifci ? 'teklif eden' : 'yanıtlayan'})`;
+				assert.equal(x.mik, 'audio/red', `${kim}: mikrofon RED'le gitmeli`);
+				assert.equal(x.yayin, 'audio/red', `${kim}: paylaşımın sesi RED'le gitmeli`);
+				assert.ok(x.red && x.sira.length === 2 && x.sira.every((pt) => pt === x.red), `${kim}: karşının SDP'sinde RED önde olmalı: ${JSON.stringify(x)}`);
+			}
+		}
+		// Hatta giden: Opus'un (~96 kbps) yaklaşık iki katı.
+		const o = await sesOlc(taha, 'zeynep', 4000);
+		console.log(`     RED'le taha → zeynep giden ${o.gidenKbps.toFixed(1)} kbps, gelen ${o.gelenKbps.toFixed(1)} kbps`);
+		assert.ok(o.gidenKbps > 130 && o.gelenKbps > 130, 'RED yedeği gitmiyor gibi: ' + o.gidenKbps.toFixed(1) + ' / ' + o.gelenKbps.toFixed(1));
 	});
 
 	await dene('susturma ve sağırlaştırma: ses gerçekten kesiliyor, diğerlerine simge gidiyor', async () => {

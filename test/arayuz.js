@@ -7,7 +7,8 @@
 // susturma/sağırlaştırma), yayın (ekranlı ve ekransız paylaşım, ekranı göster/gizle, izle/kapat,
 // paylaşımın sesi: susturma/seviye; paylaşamayan tarayıcı; ekran paylaşımı ses vermeyen Firefox/Safari'de
 // sesin ses aygıtından, "Monitor of …", alınması), bağlantı kalitesi (kısa kayıp
-// ani uyarı vermez, gerçek bozulma verir), sunucu bağlantısı koparken ses bağlantılarının korunması,
+// ani uyarı vermez, gerçek bozulma verir), kayıplara karşı yedek (RED önde; çözülemeyen RED'in o eşte
+// bırakılması), sunucu bağlantısı koparken ses bağlantılarının korunması,
 // giriş freninde uygulamada kalma, sunucu penceresi (veritabanı, sohbeti temizle), oturum devri ve
 // atılma doğrulanır. Gerçek WebRTC için: test/tarayici.js.
 //
@@ -50,8 +51,9 @@ const UC_KANALLI =
 	'm=video 9 UDP/TLS/RTP/SAVPF 96\r\na=mid:2\r\na=rtpmap:96 VP8/90000\r\n';
 
 // Sayfayı kur: DOM + taklitler + ana.js. Birden çok kez çağrılabilir (hash/depo senaryoları).
-// ekranYok: tarayıcı ekran paylaşımı sunmuyor (ör. telefon).
-function kur({ url = 'https://chat.deneme/', depo = {}, oturumDepo = {}, ekranYok = false } = {}) {
+// ekranYok: tarayıcı ekran paylaşımı sunmuyor (ör. telefon). red: tarayıcı RED'i (RFC 2198) biliyor
+// (RTCRtpReceiver.getCapabilities onu da listeler; yoksa RTCRtpReceiver hiç yok).
+function kur({ url = 'https://chat.deneme/', depo = {}, oturumDepo = {}, ekranYok = false, red = false } = {}) {
 	const dom = new JSDOM(HTML, { url, pretendToBeVisual: true, runScripts: 'dangerously' });
 	const { window } = dom;
 	for (const [k, v] of Object.entries(depo)) window.localStorage.setItem(k, v);
@@ -228,13 +230,20 @@ function kur({ url = 'https://chat.deneme/', depo = {}, oturumDepo = {}, ekranYo
 				mid: mid ?? null,
 				direction: yon,
 				currentDirection: null,
-				receiver: { track: { kind: tur } },
+				// setCodecPreferences ile verilen sıra; anlaşılan: yanıttan sonra (taklit: karşı taraf
+				// bizim sıramızı kabul eder) gönderilen/alınan kodekler.
+				kodekler: null,
+				anlasilan: [],
+				setCodecPreferences(k) {
+					tr.kodekler = k;
+				},
+				receiver: { track: { kind: tur }, getParameters: () => ({ codecs: tr.anlasilan }) },
 				sender: {
 					track,
 					async replaceTrack(t) {
 						this.track = t;
 					},
-					getParameters: () => ({ encodings: [{}] }),
+					getParameters: () => ({ encodings: [{}], codecs: tr.anlasilan }),
 					async setParameters(p) {
 						tr.parametreler = p;
 					},
@@ -298,15 +307,22 @@ function kur({ url = 'https://chat.deneme/', depo = {}, oturumDepo = {}, ekranYo
 			return { type: 'offer', sdp: OPUS_TEKLIF };
 		}
 		async createAnswer() {
+			// Yanıt üretilirken kanalların kodek sırası (RED önde mi?).
+			this.yanitKodekleri = this._transceivers.map((t) => (t.kodekler && t.kodekler[0] ? t.kodekler[0].mimeType : null));
 			return { type: 'answer', sdp: OPUS_TEKLIF };
+		}
+		_anlas() {
+			for (const t of this._transceivers) t.anlasilan = t.kodekler ? [...t.kodekler] : [];
 		}
 		async setLocalDescription(d) {
 			this.localDescription = d;
 			this.signalingState = d.type === 'offer' ? 'have-local-offer' : 'stable';
+			if (d.type === 'answer') this._anlas();
 		}
 		async setRemoteDescription(d) {
 			this.remoteDescription = d;
 			FakePC.uzaklar.push(d);
+			if (d.type === 'answer') this._anlas();
 			if (d.type === 'offer') {
 				this.signalingState = 'have-remote-offer';
 				// Tarayıcı gibi: teklifteki her m-line için transceiver oluşur, varsayılan yön recvonly.
@@ -361,6 +377,15 @@ function kur({ url = 'https://chat.deneme/', depo = {}, oturumDepo = {}, ekranYo
 	FakePC.kayipHizi = 0;
 	FakePC.gizlemeOrani = 0;
 	window.RTCPeerConnection = FakePC;
+	if (red) {
+		// Chrome'un sırası: Opus, RED, sonra ötekiler.
+		window.RTCRtpReceiver = {
+			getCapabilities: (tur) =>
+				tur === 'audio'
+					? { codecs: ['audio/opus', 'audio/red', 'audio/G722', 'audio/PCMU', 'audio/telephone-event'].map((mimeType) => ({ mimeType, clockRate: 48000 })) }
+					: { codecs: [] },
+		};
+	}
 	// Paylaşılan sesten kanaldakilerin sesini çıkaran düzenek (AudioWorklet + Worker) taklidi.
 	// workletYok: tarayıcı AudioWorklet sunmuyor. hedefIzleri: çıkarıcının çıkışları (gönderilen iz).
 	durum.workletYok = false;
@@ -915,6 +940,7 @@ const ICE = { iceServers: [{ urls: ['stun:1.2.3.4:3478'] }, { urls: ['turn:1.2.3
 	const turler = ilkPc ? ilkPc._transceivers.map((t) => t.receiver.track.kind).join(',') : '';
 	denetle('mikrofon + yayın sesi + görüntü kanalları açıldı', turler === 'audio,audio,video', turler);
 	denetle('yayın yokken yayın kanalları boş, sendrecv', ilkPc._transceivers.slice(1).every((t) => t.sender.track === null && t.direction === 'sendrecv'));
+	denetle('RED bilmeyen tarayıcıda kodek sırasına dokunulmaz', ilkPc._transceivers.every((t) => t.kodekler === null));
 	denetle('TURN sunucuları bağlantıya verildi', ilkPc && ilkPc.ayar.iceServers.length === 2);
 	const teklif = son('sdp');
 	denetle('teklif gönderildi, oturum kimliği var', teklif && teklif.to === 'bora' && teklif.sdp.type === 'offer' && /^[a-z0-9]{12}$/.test(teklif.oturum || ''), JSON.stringify(teklif));
@@ -1642,6 +1668,70 @@ const ICE = { iceServers: [{ urls: ['stun:1.2.3.4:3478'] }, { urls: ['turn:1.2.3
 		const u = kur();
 		await bekle(20);
 		denetle('ekran paylaşımı olan tarayıcıda paylaş düğmesi görünür', u.d.getElementById('yayin-ac').hidden === false);
+	}
+
+	// --- 22) kayıplara karşı yedek (RED): tarayıcı RED biliyorsa iki ses kanalında (mikrofon, paylaşımın
+	// sesi) RED Opus'un önünde (teklifte de yanıtta da; görüntüye dokunulmaz). Bir eşten gelen ses
+	// RED'le çözülemiyorsa (paket geliyor, ses hep uyduruluyor) o eşte RED bırakılır ve yeniden anlaşılır.
+	{
+		const t = kur({ red: true, depo: { anahtar: 'f'.repeat(128), ad: 'taha' } });
+		const tw = t.window;
+		const tgel = (m) => t.oc.ws.onmessage({ data: JSON.stringify(m) });
+		const tson = (tur) => t.oc.gonderilen.filter((m) => m.type === tur).at(-1);
+		await bekle(40);
+		tgel({ type: 'hazir', ad: 'taha', kanallar, kimler: [{ ad: 'taha' }, { ad: 'bora' }, { ad: 'zeynep' }], max: 10, maxKullanici: 10, beyazListe: 3, beyazListeAdlari: ['taha', 'bora', 'zeynep'], sunulanDosyalar: [], ice: ICE, surum: 'v1' });
+		await bekle(40);
+		tw.eval("sesAc('sesli-sohbet')");
+		await bekle(60);
+		tgel({ type: 'ses-girdi', kanal: 'sesli-sohbet', kisiler: ['bora'], ice: ICE, devam: false });
+		await bekle(60);
+		const bPc = t.FakePC.hepsi.at(-1);
+		const ilk = (tr) => (tr.kodekler && tr.kodekler[0] ? tr.kodekler[0].mimeType : null);
+		denetle('RED: teklifte iki ses kanalında RED önde, görüntüye dokunulmadı', bPc && ilk(bPc._transceivers[0]) === 'audio/red' && ilk(bPc._transceivers[1]) === 'audio/red' && bPc._transceivers[2].kodekler === null, bPc && bPc._transceivers.map(ilk).join(','));
+		denetle('RED: Opus hemen ardında, ötekiler korunur', bPc._transceivers[0].kodekler.map((k) => k.mimeType).join(',') === 'audio/red,audio/opus,audio/G722,audio/PCMU,audio/telephone-event', bPc._transceivers[0].kodekler.map((k) => k.mimeType).join(','));
+		const bTeklif = tson('sdp');
+		tgel({ type: 'sdp', from: 'bora', sdp: { type: 'answer', sdp: UC_KANALLI }, oturum: bTeklif.oturum });
+		await bekle(40);
+		// Yanıtlayan taraf: teklifin kanalları kurulunca, yanıt üretilmeden RED öne alınır.
+		tgel({ type: 'ses-kisi-girdi', kanal: 'sesli-sohbet', ad: 'zeynep', devam: false });
+		await bekle(30);
+		tgel({ type: 'sdp', from: 'zeynep', sdp: { type: 'offer', sdp: UC_KANALLI }, oturum: 'zoturum12345' });
+		await bekle(60);
+		const zPc = t.FakePC.hepsi.at(-1);
+		denetle('RED: yanıt üretilirken iki ses kanalında RED önde', zPc !== bPc && zPc.yanitKodekleri && zPc.yanitKodekleri.join(',') === 'audio/red,audio/red,', zPc.yanitKodekleri && zPc.yanitKodekleri.join(','));
+		denetle('RED: anlaşıldığı görülür (giden ve gelen)', tw.eval("redAnlasildi(esler.get('bora').tr, 'giden') && redAnlasildi(esler.get('bora').tr, 'gelen')"));
+		// bora'dan gelen ses çözülemiyor: paket geliyor (~96 kbps), sesin %97'si uyduruluyor.
+		const nabiz = setInterval(() => tgel({ type: 'pong' }), 2000);
+		for (const pc of t.FakePC.hepsi) pc.connectionState = 'connected';
+		bPc.gizlemeOrani = 0.97;
+		const teklifSayisi = t.oc.gonderilen.filter((m) => m.type === 'sdp' && m.to === 'bora' && m.sdp.type === 'offer').length;
+		await bekle(9000);
+		clearInterval(nabiz);
+		const tani = t.oc.gonderilen.filter((m) => m.type === 'tani').map((m) => m.veri);
+		const coz = tani.find((v) => v.olay === 'cozulemiyor' && v.es === 'bora');
+		denetle('çözülemeyen ses teşhise yazıldı (RED anlaşılmıştı)', coz && coz.kanal === 'mik' && coz.red === true, JSON.stringify(coz));
+		denetle('o eşte RED bırakıldı', tw.eval("esler.get('bora').redKapali === true") && tani.some((v) => v.olay === 'red-birakildi' && v.es === 'bora'));
+		denetle('RED bırakılınca kodek sırasında RED yok, Opus önde', bPc._transceivers.slice(0, 2).every((tr) => tr.kodekler && tr.kodekler[0].mimeType === 'audio/opus' && !tr.kodekler.some((k) => k.mimeType === 'audio/red')), bPc._transceivers.map(ilk).join(','));
+		denetle('RED bırakılınca teklif eden yeniden teklif verdi', t.oc.gonderilen.filter((m) => m.type === 'sdp' && m.to === 'bora' && m.sdp.type === 'offer').length === teklifSayisi + 1);
+		denetle('öteki eşte RED sürüyor', tw.eval("!esler.get('zeynep').redKapali") && ilk(zPc._transceivers[0]) === 'audio/red');
+		const zKutu = t.d.querySelector('#ses-kisiler .ses-kisi[data-ad="zeynep"] .ses-istatistik');
+		denetle('RED: kişinin ipucunda yedekli olduğu yazar', zKutu && /yedekli \(RED\)/.test(zKutu.title), zKutu && zKutu.title);
+		// Çözülebilen ama kayıplı ses (uydurma %30) RED'i bırakmaz.
+		zPc.gizlemeOrani = 0.3;
+		const nabiz2 = setInterval(() => tgel({ type: 'pong' }), 2000);
+		await bekle(9000);
+		clearInterval(nabiz2);
+		denetle('kayıplı ama çözülen seste RED bırakılmaz', tw.eval("!esler.get('zeynep').redKapali"));
+		// Yanıtlayan tarafta çözülemezse teklif edenden yeni teklif istenir (yanıttaki sıra RED'siz olur).
+		zPc.gizlemeOrani = 0.97;
+		const nabiz3 = setInterval(() => tgel({ type: 'pong' }), 2000);
+		await bekle(9000);
+		clearInterval(nabiz3);
+		denetle('yanıtlayan tarafta RED bırakılınca yeni teklif istendi', tw.eval("esler.get('zeynep').redKapali === true") && t.oc.gonderilen.some((m) => m.type === 'yenile' && m.to === 'zeynep'));
+		const sonTani = tani.concat(t.oc.gonderilen.filter((m) => m.type === 'tani').map((m) => m.veri)).filter((v) => v.esler).at(-1);
+		const boraTani = sonTani && sonTani.esler.find((e) => e.ad === 'bora');
+		denetle('tanıda RED durumu', boraTani && boraTani.red && boraTani.red.birakildi === true, JSON.stringify(boraTani && boraTani.red));
+		tw.eval('sesKapat()');
 	}
 
 	console.log(process.exitCode ? 'BAŞARISIZ' : `Arayüz denemeleri geçti (${gecen}).`);

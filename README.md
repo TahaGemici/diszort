@@ -16,6 +16,10 @@ da sunucuya yüklenmez, paylaşandan doğrudan alınır. İçeri yalnızca içer
   sürer; büyük dosyalar belleğe değil doğrudan diske yazılır. Küçük resimler sohbette önizlenir.
 - **Sesli kanallar:** kanal başına 10 kişiye kadar, yüksek kaliteli Opus (~96 kbps), konuşma göstergesi,
   kişi başı ses seviyesi, susturma ve sağırlaştırma, mikrofon/hoparlör seçimi, gürültü bastırma.
+- **Kayıplara karşı yedek (RED):** her ses paketi (konuşma da paylaşılan ses de) bir öncekinin kopyasını
+  da taşır; tek tük kaybolan paket bir sonrakinden yerine konur. Alıcının uydurmak zorunda kaldığı ses
+  %5 rastgele paket kaybında ~%5'ten ~%0,2'ye, %10'da ~%6'dan ~%1'e iner; bedeli bit hızının iki katı.
+  RED gönderemeyen tarayıcı (ör. Firefox) düz Opus gönderir (Opus'un kendi, daha zayıf yedeğiyle).
 - **Ekran paylaşımı ve birlikte dinleme** (ses kartındaki paylaş düğmesi):
   - *Ekranını paylaş*: ekran, pencere ya da sekme; istenirse sesiyle. İstemeyen görüntüyü kapatır
     (ona hiç gönderilmez, ses yine gelir).
@@ -98,10 +102,12 @@ make test       # sunucu denemeleri (çalışan sunucuya karşı, ILK_ANAHTAR il
 make arayuz     # arayüz denemeleri (jsdom)
 make yanki      # paylaşılan sesten kanaldakilerin sesini çıkarma (benzetim)
 make tarayici   # gerçek Chromium'la sesli kanal denemeleri (Playwright)
+make kayip      # paket kaybında RED'in etkisi (gerçek Chromium, araya paket düşüren UDP aracısı)
 ```
 
-`main`'e her gönderimde GitHub Actions arayüz ve ses çıkarma denemelerini çalıştırır, imajı derler,
-sunucu ve tarayıcı denemelerini imaja karşı çalıştırır, `ghcr.io`'ya yükler ve sürüm çıkarır.
+`main`'e her gönderimde GitHub Actions arayüz, ses çıkarma ve paket kaybı denemelerini çalıştırır,
+imajı derler, sunucu ve tarayıcı denemelerini imaja karşı çalıştırır, `ghcr.io`'ya yükler ve sürüm
+çıkarır.
 
 Yapı: `sunucu/` (Node: web, sohbet, signaling, coturn yönetimi, SQLite), `web/` (düz HTML/CSS/JS),
 `kurulum/` (kurulum betiği, Caddy örneği), `test/`. WebSocket protokolü `sunucu/sunucu.js` içinde
@@ -120,8 +126,9 @@ açıklanmıştır.
 
 - Ses ve yayın mesh ile taşınır: herkes kanaldaki herkese ayrı akış gönderir, bu yüzden kanal başına
   ~10 kişi. Ekran paylaşan, izleyen her kişiye ayrı görüntü gönderir (kişi başı en fazla 2,5 Mbit/s,
-  toplam ~6 Mbit/s); görüntüyü kapatana ve ekransız paylaşımda kimseye gönderilmez (paylaşımın sesi
-  kişi başı ~160 kbps). Daha kalabalık odalar için SFU gerekir.
+  toplam ~6 Mbit/s); görüntüyü kapatana ve ekransız paylaşımda kimseye gönderilmez. Ses RED'le hatta
+  iki katıdır: konuşma kişi başı ~190 kbps, paylaşımın sesi ~320 kbps (kalabalık kanalda kişi başı
+  düşer). Daha kalabalık odalar için SFU gerekir.
 - Ekran ve ses paylaşımı tarayıcıya bağlıdır: Chrome/Edge'de en iyisi (sekmenin sesi her işletim
   sisteminde, tüm bilgisayarın sesi Windows'ta "Tüm ekran" seçilince). Firefox ve Safari ekranla
   birlikte ses vermez: ses bir ses aygıtından alınır (Linux'ta "Monitor of …"; Windows'ta "Stereo
@@ -130,5 +137,5 @@ açıklanmıştır.
   kulaklık önerilir.
 - P2P dosya, paylaşanın sayfası açıkken alınabilir. Chrome/Edge (masaüstü) büyük dosyayı doğrudan seçilen
   yere yazar; diğer tarayıcılar önce tarayıcının dosya alanına (kotası diskin bir kısmı) yazar.
-- TURN'den geçen ses sunucunun bant genişliğini kullanır (kişi başı ~100 kbps); TURN'den geçen dosya
+- TURN'den geçen ses sunucunun bant genişliğini kullanır (kişi başı ~200 kbps); TURN'den geçen dosya
   aktarımı ~0,5 MB/sn ile sınırlıdır (doğrudan bağlanabilenler sınırsız). Yalnızca IPv4.

@@ -2939,8 +2939,10 @@ function pcKapat(es) {
 	if (es.yayinSesOgesi) es.yayinSesOgesi.srcObject = null;
 	if (es.goruntuOgesi) es.goruntuOgesi.srcObject = null;
 	es.uzakGoruntu = null;
-	es.olcum = es.gidenOlcum = null;
+	es.olcum = es.gidenOlcum = es.yayinOlcum = null;
 	es.pencere = [];
+	es.yayinPencere = [];
+	es.cozulemeyen = {};
 	yankiReferansGuncelle();
 }
 
@@ -3005,6 +3007,7 @@ function pcKur(es, oturum) {
 			es.tr = pc.addTransceiver(gidenIz || 'audio', { direction: 'sendrecv' });
 			es.trSes = pc.addTransceiver(yayin.ses || 'audio', { direction: 'sendrecv' });
 			es.trGoruntu = pc.addTransceiver(gidenGoruntu(es) || 'video', { direction: 'sendrecv' });
+			kodekSirasiAyarla(es);
 		} catch (h) {
 			console.warn('ses kanalı açılamadı', h);
 		}
@@ -3109,6 +3112,8 @@ async function sdpIsle(es, sdp, oturum) {
 		es.tr = k.mik;
 		es.trSes = k.ses;
 		es.trGoruntu = k.goruntu;
+		// Yanıttaki kodek sırası: karşı taraf bize bu sırayla gönderir (RED önde: kayıplara karşı yedek).
+		kodekSirasiAyarla(es);
 		await bagla(k.mik, gidenIz);
 		await bagla(k.ses, yayin.ses);
 		await bagla(k.goruntu, gidenGoruntu(es));
@@ -3325,17 +3330,82 @@ function kurtarmaTuru() {
 // ---------------------------------------------------------------- ses kalitesi
 
 // Gönderilen Opus bit hızı (kbps): ayardaki tavan; kalabalık kanalda (mesh: herkese ayrı akış)
-// toplam ~640 kbps'yi geçmesin diye kişi başına düşürülür (en az 40).
+// toplam ~640 kbps'yi geçmesin diye kişi başına düşürülür (en az 40). Bunlar Opus'un hızıdır: RED
+// (aşağıda) her çerçeveyi bir kez daha taşıdığı için hatta giden ~iki katıdır.
 function gonderimHizi() {
 	const n = Math.max(1, esSayisi());
 	return Math.round(Math.min(ayar.kalite, Math.max(40, 640 / n)));
 }
 
 // Yayın bit hızları (kbps), alan kişi sayısına göre (mesh: herkese ayrı akış). Paylaşılan ses
-// (stereo) herkese gider: ~160 kbps; ekran yalnızca izleyene, en fazla 2,5 Mbit/s, toplam ~6 Mbit/s.
+// (stereo) herkese gider: ~160 kbps (RED'le hatta ~320; altı kişiden kalabalıkta kişi başı düşer);
+// ekran yalnızca izleyene, en fazla 2,5 Mbit/s, toplam ~6 Mbit/s.
 const izleyiciSayisi = () => Math.max(1, [...esler.values()].filter((e) => !e.bekleniyor && e.izliyor).length);
-const yayinSesHizi = () => Math.round(Math.min(160, Math.max(64, 1280 / Math.max(1, esSayisi()))));
+const yayinSesHizi = () => Math.round(Math.min(160, Math.max(64, 960 / Math.max(1, esSayisi()))));
 const goruntuHizi = () => Math.round(Math.min(2500, Math.max(400, 6000 / izleyiciSayisi())));
+
+// --- kayıplara karşı yedek (RED, RFC 2198)
+//
+// Her ses paketi bir önceki Opus çerçevesinin kopyasını da taşır: tek tük düşen paket bir sonrakinden
+// yerine konur, alıcı ses uydurmak zorunda kalmaz. Opus'un kendi yedeği (FEC) bunu ancak kodlayıcı
+// kaybı öğrendikten sonra ve düşük kalitede yapar (müzikte çoğu zaman hiç). Ölçüm (gerçek Chromium,
+// iki bağlantı arasında paketlerin bir kısmını düşüren UDP aracısı; test/kayip.js): %10 rastgele
+// kayıpta uydurulan ses konuşmada %5,4 → %0,9, müzikte %5,7 → %0,7; %5'te ~%5 → ~%0,2; %20'de %12 → %5.
+// Bedeli bit hızının ~iki katı. Art arda iki-üç paket düşerse (patlama) kopyası da gider: orada kazanç
+// az (%10 kayıp, ortalama 2,5 paketlik patlamalar: %5,8 → %4,8). Alıcının tamponunu büyütmek
+// (jitterBufferTarget 60-120 ms) ne düz Opus'ta ne RED'de uydurmayı azalttı: tampon gecikmeye
+// karşıdır, kayba değil.
+// SDP'mizde RED'i Opus'un önüne yazarız; karşı taraf bize o sırayla gönderir: RED gönderebilen
+// tarayıcı (Chrome/Edge) RED, gönderemeyen düz Opus gönderir, RED'i hiç bilmeyenle anlaşma düz Opus'a
+// iner (eski sürümler de böyle anlaşır). Bir eşten gelen ses RED'le çözülemiyorsa (istatistikTuru:
+// paket geliyor, ses hep uyduruluyor) o eşte RED bırakılır.
+function kodekSirasi(red) {
+	try {
+		if (typeof RTCRtpReceiver === 'undefined' || typeof RTCRtpReceiver.getCapabilities !== 'function') return null;
+		const hepsi = (RTCRtpReceiver.getCapabilities('audio') || {}).codecs || [];
+		const tur = (c, ad) => String(c.mimeType || '').toLowerCase() === ad;
+		const redler = hepsi.filter((c) => tur(c, 'audio/red'));
+		const opuslar = hepsi.filter((c) => tur(c, 'audio/opus'));
+		if (!redler.length || !opuslar.length) return null; // RED yok: tarayıcının sırası kalır
+		const digerleri = hepsi.filter((c) => !redler.includes(c) && !opuslar.includes(c));
+		return red ? [...redler, ...opuslar, ...digerleri] : [...opuslar, ...digerleri];
+	} catch {
+		return null;
+	}
+}
+function kodekSirasiAyarla(es) {
+	const sira = kodekSirasi(!es.redKapali);
+	if (!sira) return;
+	for (const tr of [es.tr, es.trSes]) {
+		if (!tr || typeof tr.setCodecPreferences !== 'function') continue;
+		try {
+			tr.setCodecPreferences(sira);
+		} catch (h) {
+			console.warn('kodek sırası', es.ad, h);
+		}
+	}
+}
+// Bu kanalda RED anlaşıldı mı: giden (bizim gönderdiğimiz) ve alınabilen kodeklerin başı.
+function redAnlasildi(tr, yon) {
+	try {
+		const p = yon === 'giden' ? tr.sender.getParameters() : tr.receiver.getParameters();
+		const k = (p && p.codecs) || [];
+		return yon === 'giden' ? !!k[0] && /red/i.test(k[0].mimeType) : k.some((c) => /red/i.test(c.mimeType));
+	} catch {
+		return false;
+	}
+}
+// RED'le gelen ses çözülemiyor (paket geliyor, ses hep uyduruluyor): o eşte RED'i bırak ve yeniden
+// anlaş. Teklif eden yeni teklif verir; yanıtlayan teklif edenden yenisini ister (yanıtındaki sıra
+// RED'siz olur).
+function redBirak(es, neden) {
+	if (es.redKapali) return;
+	es.redKapali = true;
+	taniGonder({ olay: 'red-birakildi', es: es.ad, neden });
+	kodekSirasiAyarla(es);
+	if (es.teklifci) teklifVer(es);
+	else yenileIste(es, true);
+}
 
 // Uzak SDP'deki Opus parametreleri: karşı tarafın "şöyle gönder" dediği değerler bizim
 // kodlayıcımızı ayarlar. maxaveragebitrate olmadan tarayıcılar ~32 kbps'de kalıyor (ölçüm: 28 kbps);
@@ -4898,6 +4968,47 @@ function kaliteHesapla(pencere) {
 }
 const yuzdeYaz = (x) => '%' + (Math.round(x * 1000) / 10).toLocaleString('tr-TR');
 
+// Gelen bir ses kanalının (inbound-rtp kaydı) önceki ölçümden farkı; ölçüm es[olcumAd]'da tutulur.
+// İlk ölçümde (ya da çok yakın iki ölçümde) null. gizli: sessiz olmayan uydurulan örnekler (duyulan
+// bozulma), gizliTum: hepsi (çözülemeyen akışta uydurulan ses kısa sürede sessizleşir).
+function gelenFark(es, olcumAd, gelen, simdi) {
+	const onceki = es[olcumAd];
+	const o = {
+		zaman: simdi,
+		alinan: gelen.packetsReceived || 0,
+		kayip: gelen.packetsLost || 0,
+		bayt: gelen.bytesReceived || 0,
+		ornek: gelen.totalSamplesReceived,
+		gizli: gelen.concealedSamples != null ? gelen.concealedSamples - (gelen.silentConcealedSamples || 0) : null,
+		gizliTum: gelen.concealedSamples,
+	};
+	es[olcumAd] = o;
+	if (!onceki || simdi - onceki.zaman <= 400) return null;
+	const fark = (a) => (o[a] != null && onceki[a] != null ? Math.max(0, o[a] - onceki[a]) : null);
+	return {
+		alinan: o.alinan - onceki.alinan,
+		kayip: Math.max(0, o.kayip - onceki.kayip),
+		ornek: o.ornek != null && onceki.ornek != null ? o.ornek - onceki.ornek : null,
+		gizli: fark('gizli'),
+		gizliTum: fark('gizliTum'),
+		kbps: Math.max(0, Math.round(((o.bayt - onceki.bayt) * 8) / (simdi - onceki.zaman))),
+		// Bağlantı yeni kurulduysa (alıcı tamponu dolarken biraz ses uydurulur) sayılmaz.
+		erken: simdi - (es.baglandiZaman || 0) < 6000,
+	};
+}
+
+// Paket geliyor ama ses hep uyduruluyor (alıcı çözemiyor): üç ölçüm (~6 sn) üst üste sürerse teşhise
+// yazılır; o kanalda RED anlaşılmışsa o eşte RED bırakılır (düz Opus'la yeniden anlaşılır).
+function cozumGozcusu(es, kanal, tr, d) {
+	if (!es.cozulemeyen) es.cozulemeyen = {};
+	const bozuk = !d.erken && d.kbps >= 8 && d.ornek > 0 && d.gizliTum != null && d.gizliTum / d.ornek > 0.9;
+	es.cozulemeyen[kanal] = bozuk ? (es.cozulemeyen[kanal] || 0) + 1 : 0;
+	if (es.cozulemeyen[kanal] !== 3) return;
+	const red = !!tr && redAnlasildi(tr, 'gelen');
+	taniGonder({ olay: 'cozulemiyor', es: es.ad, kanal, kbps: d.kbps, red });
+	if (red) redBirak(es, kanal);
+}
+
 async function istatistikTuru() {
 	const ozet = { olculen: 0, kotu: [], orta: [], mikSorun: false, metin: '' };
 	let enIyiRtt = null;
@@ -4907,8 +5018,15 @@ async function istatistikTuru() {
 		if (!pc || pc.connectionState !== 'connected') continue;
 		let gelenRapor;
 		let gidenRapor;
+		let yayinRapor = null;
+		// Paylaşımın sesi yalnızca o kişi sesli bir paylaşım yaparken ölçülür (kanal ayrı).
+		const yayinSesVar = !!((sesDurumlari.get(es.ad) || {}).yayin || {}).ses && !!es.trSes;
 		try {
-			[gelenRapor, gidenRapor] = await Promise.all([kanalRaporu(es.tr && es.tr.receiver, pc), kanalRaporu(es.tr && es.tr.sender, pc)]);
+			[gelenRapor, gidenRapor, yayinRapor] = await Promise.all([
+				kanalRaporu(es.tr && es.tr.receiver, pc),
+				kanalRaporu(es.tr && es.tr.sender, pc),
+				yayinSesVar ? kanalRaporu(es.trSes.receiver, pc) : null,
+			]);
 		} catch {
 			continue;
 		}
@@ -4916,6 +5034,23 @@ async function istatistikTuru() {
 		const simdi = Date.now();
 		const gelen = sesKaydi(gelenRapor, 'inbound-rtp', es.tr && es.tr.receiver && es.tr.receiver.track);
 		const giden = sesKaydi(gidenRapor, 'outbound-rtp', es.tr && es.tr.sender && es.tr.sender.track);
+		// Paylaşımın sesi: kendi penceresinde kayıp ve uydurulan ses (teşhis ve ipucu için).
+		const yayinGelen = yayinRapor ? sesKaydi(yayinRapor, 'inbound-rtp', es.trSes.receiver.track) : null;
+		if (yayinGelen) {
+			const d = gelenFark(es, 'yayinOlcum', yayinGelen, simdi);
+			if (d) {
+				es.yayinPencere = (es.yayinPencere || []).concat([d]).slice(-KALITE_PENCERESI);
+				const k = kaliteHesapla(es.yayinPencere);
+				es.yayinSonKbps = d.kbps;
+				es.yayinSonKayip = k.kayip != null ? Math.round(k.kayip * 1000) / 10 : null;
+				es.yayinSonGizleme = k.gizleme != null ? Math.round(k.gizleme * 1000) / 10 : null;
+				cozumGozcusu(es, 'yayin', es.trSes, d);
+			}
+		} else {
+			es.yayinOlcum = null;
+			es.yayinPencere = [];
+			es.yayinSonKbps = es.yayinSonKayip = es.yayinSonGizleme = null;
+		}
 		const secili = seciliCift(gelenRapor) || seciliCift(gidenRapor);
 		const parcalar = []; // görünen kısa özet: tür · gecikme (· kayıp · sorun)
 		const ayrinti = []; // ipucu: bit hızları, titreşim, kayıp, gizleme
@@ -4937,30 +5072,14 @@ async function istatistikTuru() {
 			}
 		}
 		if (gelen) {
-			const onceki = es.olcum;
-			const o = {
-				zaman: simdi,
-				alinan: gelen.packetsReceived || 0,
-				kayip: gelen.packetsLost || 0,
-				bayt: gelen.bytesReceived || 0,
-				ornek: gelen.totalSamplesReceived,
-				gizli: gelen.concealedSamples != null ? gelen.concealedSamples - (gelen.silentConcealedSamples || 0) : null,
-			};
 			if (gelen.jitter != null) es.jitter = Math.round(gelen.jitter * 1000);
-			if (onceki && simdi - onceki.zaman > 400) {
-				const d = {
-					alinan: o.alinan - onceki.alinan,
-					kayip: Math.max(0, o.kayip - onceki.kayip),
-					ornek: o.ornek != null && onceki.ornek != null ? o.ornek - onceki.ornek : null,
-					gizli: o.gizli != null && onceki.gizli != null ? Math.max(0, o.gizli - onceki.gizli) : null,
-					// Bağlantı yeni kurulduysa (alıcı tamponu dolarken biraz ses uydurulur) sayılmaz.
-					erken: simdi - (es.baglandiZaman || 0) < 6000,
-				};
-				const dBayt = o.bayt - onceki.bayt;
-				if (dBayt > 0) {
-					es.sonKbps = Math.round((dBayt * 8) / (simdi - onceki.zaman));
+			const d = gelenFark(es, 'olcum', gelen, simdi);
+			if (d) {
+				if (d.kbps > 0) {
+					es.sonKbps = d.kbps;
 					ayrinti.push('gelen ' + es.sonKbps + ' kbps');
 				}
+				cozumGozcusu(es, 'mik', es.tr, d);
 				es.pencere = (es.pencere || []).concat([d]).slice(-KALITE_PENCERESI);
 				const k = kaliteHesapla(es.pencere);
 				es.sonKayip = k.kayip != null ? Math.round(k.kayip * 1000) / 10 : null;
@@ -4978,8 +5097,13 @@ async function istatistikTuru() {
 					else if (sinif !== 'kotu') sinif = 'orta';
 				}
 			}
-			es.olcum = o;
 		}
+		if (es.yayinSonKbps != null) {
+			ayrinti.push(
+				'paylaşım ' + es.yayinSonKbps + ' kbps' + (es.yayinSonKayip != null ? ', ' + yuzdeYaz(es.yayinSonKayip / 100) + ' kayıp' : '') + (es.yayinSonGizleme != null ? ', ' + yuzdeYaz(es.yayinSonGizleme / 100) + ' ses uyduruldu' : ''),
+			);
+		}
+		if (es.tr && redAnlasildi(es.tr, 'giden')) ayrinti.push('kayıplara karşı yedekli (RED)');
 		// Giden ses: mikrofon gerçekten karşıya gidiyor mu? (Tek yönlü ses şüphesinde kanıt.)
 		if (giden) {
 			const onceki = es.gidenOlcum;
@@ -5062,6 +5186,10 @@ async function taniVeri() {
 			tip: es.sonTip || null,
 			rtt: es.sonRtt ?? null,
 			kurtarma: es.kurtarma,
+			// Kayıplara karşı yedek: bizim gönderdiğimiz mikrofon/paylaşım RED'li mi; bu eşte bırakıldı mı.
+			red: { mik: !!es.tr && redAnlasildi(es.tr, 'giden'), yayin: !!es.trSes && redAnlasildi(es.trSes, 'giden'), birakildi: !!es.redKapali },
+			// Onun paylaşımının sesi (paylaşıyorsa): gelen bit hızı, kayıp, uydurulan ses.
+			yayinGelen: es.yayinSonKbps != null ? { kbps: es.yayinSonKbps, kayip: es.yayinSonKayip ?? null, gizleme: es.yayinSonGizleme ?? null } : null,
 			yayinKanali: !!(es.trSes && es.trGoruntu),
 			izliyor: es.izliyor,
 			izliyorum: es.izliyorum,

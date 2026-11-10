@@ -333,4 +333,26 @@ dene('44,1 kHz ses bağlamında da çalışır', () => {
 	return `azalma ${a.toFixed(1)} dB`;
 });
 
+dene('teşhis: yakalanan seste kısa kopukluklar ve uzun tam sessizlikler ayrı sayılır', () => {
+	// Ses, 50 ms sıfır (kopukluk), ses, 3,2 sn sıfır (yakalama durdu ya da şarkı arası), ses.
+	const hiz = 48000;
+	const c = new YankiCikarici(hiz);
+	const parcalar = [[0.5, true], [0.05, false], [0.5, true], [3.2, false], [0.5, true]];
+	const cik = [new Float32Array(128), new Float32Array(128)];
+	let faz = 0;
+	for (const [sn, ses] of parcalar) {
+		for (let b = 0; b < Math.round((sn * hiz) / 128); b++) {
+			const L = new Float32Array(128);
+			if (ses) for (let i = 0; i < 128; i++) L[i] = 0.2 * Math.sin((faz += (2 * Math.PI * 440) / hiz));
+			c.isle(L, L, [], cik[0], cik[1]);
+		}
+	}
+	const o = c.ozet();
+	assert.equal(o.kopukluk, 1, JSON.stringify(o));
+	assert.ok(Math.abs(o.kopuklukMs - 50) <= 3, JSON.stringify(o));
+	assert.equal(o.uzunSessizlikMs.length, 1, JSON.stringify(o));
+	assert.ok(Math.abs(o.uzunSessizlikMs[0] - 3200) <= 3, JSON.stringify(o));
+	return `kopukluk ${o.kopukluk} (${o.kopuklukMs} ms), uzun sessizlik ${o.uzunSessizlikMs.join(', ')} ms`;
+});
+
 console.log(process.exitCode ? 'BAŞARISIZ' : `Yankı çıkarma denemeleri geçti (${gecen}).`);

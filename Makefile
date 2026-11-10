@@ -4,6 +4,7 @@
 #   make arayuz    arayüzü tarayıcısız dener (jsdom; DOM, kanal seçimi, sesli kanal satırları)
 #   make yanki     paylaşılan sesten kanaldakilerin sesini çıkarmayı benzetimle dener (bağımlılık yok)
 #   make tarayici  gerçek Chromium'la sesli kanalı dener (Playwright; kendi sunucusunu açar, coturn gerekir)
+#   make kayip     paket kaybında RED'in (yedekli ses) etkisini gerçek Chromium'la ölçer (sunucusuz)
 #   make docker    Docker imajını derleyip çalıştırır -> http://127.0.0.1:8080
 #   make durdur    Docker konteynerini durdurur
 #   make temizle   node_modules ve yerel veri/ çıktısını siler
@@ -33,6 +34,11 @@ tarayici: node_modules
 	npx playwright install chromium
 	node test/tarayici.js
 
+kayip:
+	npm install --no-save --no-audit --no-fund playwright
+	npx playwright install chromium
+	node test/kayip.js
+
 docker:
 	docker compose up --build -d
 
@@ -42,4 +48,4 @@ durdur:
 temizle:
 	rm -rf node_modules veri
 
-.PHONY: calistir test arayuz yanki tarayici docker durdur temizle
+.PHONY: calistir test arayuz yanki tarayici kayip docker durdur temizle

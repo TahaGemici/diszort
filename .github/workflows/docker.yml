@@ -53,6 +53,7 @@ jobs:
           node --check web/yanki.js
           node --check test/dene.js
           node --check test/yanki.js
+          node --check test/kayip.js
           node --check test/arayuz.js
           node --check test/tarayici.js
           sh -n kurulum/kur.sh
@@ -69,6 +70,11 @@ jobs:
 
       - name: Paylaşılan sesten kanaldakilerin sesini çıkarma (benzetim)
         run: node test/yanki.js
+
+      - name: Paket kaybında yedekli ses (RED), gerçek Chromium
+        env:
+          TARAYICI_ZORUNLU: '1'
+        run: node test/kayip.js
 
       - name: İmajı derle
         # source etiketi: ghcr.io paketi bu depoya bağlansın (depo sayfasında görünsün).
