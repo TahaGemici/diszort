@@ -904,17 +904,21 @@ async function girisKarari(ws, m) {
 	console.log(`[kapı] ${kayit.ad} kabul edildi (${ws.ad}) → anahtar verildi${mevcut ? ' (eski anahtar iptal)' : ''}`);
 }
 
-// İstemcinin ses teşhisi: istemci 10 saniyede bir (ve önemli olaylarda) gönderir; bağlantı başına en
-// fazla 1,5 saniyede 1 kez günlüğe yazılır. Yalnızca hata ayıklama içindir; DB'ye yazmaz, başka
-// istemciye göndermez.
+// İstemcinin ses teşhisi: istemci 10 saniyede bir (ve önemli olaylarda: arka plana geçiş/dönüş,
+// bağlantı durumu, çalmayan ses...) gönderir. Bağlantı başına saniyede 1 satır yazılır; olaylar
+// art arda gelirse 8 satıra kadar birikebilir (hepsi görünsün). Satır en çok 6000 karakter. Yalnızca
+// hata ayıklama içindir; DB'ye yazmaz, başka istemciye göndermez. Okumak:
+//   sudo docker logs diszort 2>&1 | grep -a '\[tanı\]' | tail -20
 function taniKaydet(ws, m) {
 	if (!ws.ad || !TANI) return;
 	const simdi = Date.now();
-	if (simdi - (ws.taniZaman || 0) < 1500) return;
+	ws.taniJeton = Math.min(8, (ws.taniJeton ?? 8) + (simdi - (ws.taniZaman || simdi)) / 1000);
 	ws.taniZaman = simdi;
+	if (ws.taniJeton < 1) return;
+	ws.taniJeton -= 1;
 	let metin;
 	try {
-		metin = JSON.stringify(m.veri).slice(0, 1500);
+		metin = JSON.stringify(m.veri).slice(0, 6000);
 	} catch {
 		return;
 	}

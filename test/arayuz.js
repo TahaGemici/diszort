@@ -53,11 +53,17 @@ const UC_KANALLI =
 // Sayfayı kur: DOM + taklitler + ana.js. Birden çok kez çağrılabilir (hash/depo senaryoları).
 // ekranYok: tarayıcı ekran paylaşımı sunmuyor (ör. telefon). red: tarayıcı RED'i (RFC 2198) biliyor
 // (RTCRtpReceiver.getCapabilities onu da listeler; yoksa RTCRtpReceiver hiç yok). dokunmatik:
-// telefon gibi (pointer: coarse).
-function kur({ url = 'https://chat.deneme/', depo = {}, oturumDepo = {}, ekranYok = false, red = false, dokunmatik = false } = {}) {
+// telefon gibi (pointer: coarse). android: tarayıcı kimliği Android'deki Chrome.
+function kur({ url = 'https://chat.deneme/', depo = {}, oturumDepo = {}, ekranYok = false, red = false, dokunmatik = false, android = false } = {}) {
 	const dom = new JSDOM(HTML, { url, pretendToBeVisual: true, runScripts: 'dangerously' });
 	const { window } = dom;
 	if (dokunmatik) window.matchMedia = (q) => ({ matches: /pointer:\s*coarse/.test(q), media: q, addEventListener() {}, removeEventListener() {} });
+	if (android) {
+		Object.defineProperty(window.navigator, 'userAgent', {
+			configurable: true,
+			get: () => 'Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Mobile Safari/537.36',
+		});
+	}
 	for (const [k, v] of Object.entries(depo)) window.localStorage.setItem(k, v);
 	for (const [k, v] of Object.entries(oturumDepo)) window.sessionStorage.setItem(k, v);
 	const durum = { gonderilen: [], ws: null, wsler: [], mikrofon: 0, micKisit: null };
@@ -204,6 +210,46 @@ function kur({ url = 'https://chat.deneme/', depo = {}, oturumDepo = {}, ekranYo
 		if (once) this.dispatchEvent(new window.Event('pause'));
 	};
 	window.HTMLMediaElement.prototype.load = function () {};
+	// Ekranı açık tutma (Screen Wake Lock): alınan kilitler (bırakılınca released).
+	const durumEk = { ekranKilitleri: [], medyaIsleyicileri: {} };
+	Object.defineProperty(window.navigator, 'wakeLock', {
+		configurable: true,
+		value: {
+			async request(tur) {
+				const kilit = {
+					type: tur,
+					released: false,
+					dinleyiciler: [],
+					addEventListener(olay, fn) {
+						if (olay === 'release') this.dinleyiciler.push(fn);
+					},
+					async release() {
+						if (this.released) return;
+						this.released = true;
+						for (const fn of this.dinleyiciler) fn();
+					},
+				};
+				durumEk.ekranKilitleri.push(kilit);
+				return kilit;
+			},
+		},
+	});
+	// Medya oturumu (bildirimdeki oynatıcı).
+	Object.defineProperty(window.navigator, 'mediaSession', {
+		configurable: true,
+		value: {
+			metadata: null,
+			playbackState: 'none',
+			setActionHandler(eylem, fn) {
+				durumEk.medyaIsleyicileri[eylem] = fn;
+			},
+		},
+	});
+	window.MediaMetadata = class {
+		constructor(o) {
+			Object.assign(this, o);
+		}
+	};
 	Object.defineProperty(window.HTMLMediaElement.prototype, 'paused', {
 		get() {
 			return !this._caliyor;
@@ -345,7 +391,12 @@ function kur({ url = 'https://chat.deneme/', depo = {}, oturumDepo = {}, ekranYo
 			const gizleme = this.gizlemeOrani ?? FakePC.gizlemeOrani;
 			s.alinan += Math.round(50 * dt);
 			s.kayip += Math.round(kayipHizi * dt);
-			s.ornek += Math.round(48000 * dt);
+			if (!this.ornekDurdu) s.ornek += Math.round(48000 * dt); // ornekDurdu: ses geliyor ama çalınmıyor
+			// Alıcı tamponu: çalınan her örnek 60 ms beklemiş, hedef 50 ms.
+			const yayilan = this.ornekDurdu ? 0 : Math.round(48000 * dt);
+			s.yayilan = (s.yayilan || 0) + yayilan;
+			s.tampon = (s.tampon || 0) + yayilan * 0.06;
+			s.hedef = (s.hedef || 0) + yayilan * 0.05;
 			s.gizli += Math.round(48000 * dt * gizleme);
 			s.bayt += Math.round(12000 * dt);
 			s.giden += Math.round(12000 * dt);
@@ -364,6 +415,9 @@ function kur({ url = 'https://chat.deneme/', depo = {}, oturumDepo = {}, ekranYo
 				totalSamplesReceived: s.ornek,
 				concealedSamples: s.gizli,
 				silentConcealedSamples: 0,
+				jitterBufferEmittedCount: s.yayilan,
+				jitterBufferDelay: s.tampon,
+				jitterBufferTargetDelay: s.hedef,
 			});
 			m.set('giden', { type: 'outbound-rtp', kind: 'audio', bytesSent: s.giden });
 			return m;
@@ -478,6 +532,7 @@ function kur({ url = 'https://chat.deneme/', depo = {}, oturumDepo = {}, ekranYo
 	const betik = window.document.createElement('script');
 	betik.textContent = BETIK;
 	window.document.body.append(betik);
+	Object.assign(durum, durumEk);
 	return { window, d: window.document, oc: durum, FakePC };
 }
 
@@ -1044,14 +1099,17 @@ const ICE = { iceServers: [{ urls: ['stun:1.2.3.4:3478'] }, { urls: ['turn:1.2.3
 		clearInterval(nabiz);
 	}
 
-	// --- 12) susturma ve sağırlaştırma
+	// --- 12) susturma ve sağırlaştırma: susturunca mikrofon aygıtı tamamen bırakılır (her cihazda),
+	// açınca yeniden alınıp eşlere bağlanır.
+	const susturmadanOnce = s.oc.sonIz;
 	d.getElementById('ben-mikrofon').click();
 	await bekle(20);
 	denetle('mikrofon kapatma bildirildi', son('sessiz').sessiz === true && son('sessiz').sagir === false);
-	denetle('mikrofon izi kapandı', s.oc.sonIz.enabled === false);
+	denetle('susturunca mikrofon aygıtı bırakıldı (masaüstünde de)', susturmadanOnce.readyState === 'ended' && w.eval('mikrofon === null && mikBirakildi === true'));
 	d.getElementById('ben-mikrofon').click();
-	await bekle(20);
-	denetle('mikrofon açma bildirildi', son('sessiz').sessiz === false && s.oc.sonIz.enabled === true);
+	await bekle(40);
+	denetle('mikrofon açma bildirildi, mikrofon yeniden alındı', son('sessiz').sessiz === false && s.oc.sonIz !== susturmadanOnce && s.oc.sonIz.readyState === 'live' && s.oc.sonIz.enabled === true);
+	denetle('yeniden alınan mikrofon eşlere bağlandı', ilkPc._transceivers[0].sender.track === s.oc.sonIz && zPc._transceivers[0].sender.track === s.oc.sonIz);
 	d.getElementById('kart-sagir').click(); // ses kartındaki düğme (telefonda)
 	await bekle(20);
 	denetle('sağırlaştırma: gelen sesler kapalı + bildirildi', [...d.querySelectorAll('#ses-akislari audio')].every((a) => a.muted) && son('sessiz').sagir === true && son('sessiz').sessiz === true);
@@ -1556,9 +1614,10 @@ const ICE = { iceServers: [{ urls: ['stun:1.2.3.4:3478'] }, { urls: ['turn:1.2.3
 	denetle('ses kartı kapandı', d.getElementById('ses-karti').hidden === true);
 	denetle('ayrılınca bağlantılar kapandı', s.FakePC.hepsi.every((p) => p.kapandi));
 	denetle('ayrılınca mikrofon bırakıldı', s.oc.sonIz.readyState === 'ended');
+	const mikIstekleri = s.oc.mikrofon; // susturma/sağırlık da mikrofonu bırakıp yeniden aldı (yukarıda)
 	sesDugme().click();
 	await bekle(60);
-	denetle('yeniden girişte mikrofon tekrar istendi', s.oc.mikrofon === 2, String(s.oc.mikrofon));
+	denetle('yeniden girişte mikrofon tekrar istendi', s.oc.mikrofon === mikIstekleri + 1, `${mikIstekleri} → ${s.oc.mikrofon}`);
 	gelsin({ type: 'ses-girdi', kanal: 'sesli-sohbet', kisiler: ['bora'], ice: ICE, devam: false });
 	await bekle(40);
 	denetle('ses kartı yeniden açıldı', d.getElementById('ses-karti').hidden === false);
@@ -1738,8 +1797,8 @@ const ICE = { iceServers: [{ urls: ['stun:1.2.3.4:3478'] }, { urls: ['turn:1.2.3
 
 	// --- 23) telefonda (dokunmatik) susturunca mikrofon tamamen bırakılır: telefon görüşme kipinden
 	// çıkar (Bluetooth kulaklık müzik profiline döner, görüşme işlemleri çalan sesi değiştirmez); açınca
-	// yeniden alınır. Susturulmuş girilen kanalda mikrofon hiç açılmaz. Masaüstünde (varsayılan) mikrofon
-	// açık kalır, yalnızca izi kapanır (yukarıda).
+	// yeniden alınır. Susturulmuş girilen kanalda mikrofon hiç açılmaz. (Masaüstünde de böyle; yukarıda.)
+	// Sesli kanaldayken ekran kendiliğinden kapanmaz (Screen Wake Lock); kanaldan çıkınca bırakılır.
 	{
 		const t = kur({ dokunmatik: true, depo: { anahtar: 'f'.repeat(128), ad: 'taha' } });
 		const tw = t.window;
@@ -1750,7 +1809,8 @@ const ICE = { iceServers: [{ urls: ['stun:1.2.3.4:3478'] }, { urls: ['turn:1.2.3
 		await bekle(40);
 		tgel({ type: 'hazir', ad: 'taha', kanallar, kimler: [{ ad: 'taha' }, { ad: 'bora' }], max: 10, maxKullanici: 10, beyazListe: 2, beyazListeAdlari: ['taha', 'bora'], sunulanDosyalar: [], ice: ICE, surum: 'v1' });
 		await bekle(40);
-		denetle('telefonda susturunca mikrofonu bırakmak varsayılan', tw.eval('ayar.mikBirak') === true);
+		denetle('susturunca mikrofonu bırakma artık bir ayar değil', tw.eval("typeof ayar.mikBirak === 'undefined'") && !td.getElementById('ayar-mik-birak'));
+		denetle('kanala girmeden ekran kilidi istenmedi', t.oc.ekranKilitleri.length === 0);
 		tw.eval("sesAc('sesli-sohbet')");
 		await bekle(60);
 		denetle('susturulmamışken kanala girince mikrofon alındı', t.oc.mikrofon === 1, String(t.oc.mikrofon));
@@ -1800,18 +1860,137 @@ const ICE = { iceServers: [{ urls: ['stun:1.2.3.4:3478'] }, { urls: ['turn:1.2.3
 		tgel({ type: 'ses-girdi', kanal: 'sesli-sohbet', kisiler: ['bora'], ice: ICE, devam: false });
 		await bekle(60);
 		denetle('telefon: susturulmuş girişte uyarı yok, "mikrofon kapalı"', td.getElementById('ses-uyari').hidden && td.getElementById('ben-alt').textContent === 'mikrofon kapalı', td.getElementById('ben-alt').textContent);
-		// Ayardan kapatılınca (susturulmuşken) mikrofon alınır ama izi kapalı kalır.
-		tw.eval('ayarlarAc()');
-		denetle('ayarlarda "susturunca mikrofonu tamamen kapat" işaretli', td.getElementById('ayar-mik-birak').checked === true);
-		td.getElementById('ayar-mik-birak').checked = false;
-		td.getElementById('ayar-mik-birak').dispatchEvent(new tw.Event('change'));
-		await bekle(60);
-		denetle('ayar kapatılınca susturulmuşken de mikrofon açık tutulur (izi kapalı)', t.oc.mikrofon === once + 1 && t.oc.sonIz.readyState === 'live' && t.oc.sonIz.enabled === false);
-		denetle('ayar kalıcı', JSON.parse(tw.localStorage.getItem('ses-ayarlari')).mikBirak === false);
-		tw.eval('ayarlarKapat(); sesKapat()');
-		const u = kur();
+		// Ekran kilidi: kanaldayken alınır; sayfa gizlenince tarayıcı bırakır, öne gelince yeniden alınır.
+		const kilitler = t.oc.ekranKilitleri;
+		const etkin = () => kilitler.filter((k) => !k.released);
+		denetle('telefon: sesli kanaldayken ekran açık tutuluyor', etkin().length === 1 && etkin()[0].type === 'screen', String(kilitler.length));
+		let gorunurluk = 'visible';
+		Object.defineProperty(td, 'visibilityState', { configurable: true, get: () => gorunurluk });
+		gorunurluk = 'hidden';
+		await etkin()[0].release(); // tarayıcı, sayfa gizlenince kilidi kendisi bırakır
+		td.dispatchEvent(new tw.Event('visibilitychange'));
 		await bekle(20);
-		denetle('masaüstünde susturunca mikrofon açık kalır (varsayılan)', u.window.eval('ayar.mikBirak') === false);
+		denetle('telefon: arka plandayken kilit istenmez', etkin().length === 0);
+		gorunurluk = 'visible';
+		td.dispatchEvent(new tw.Event('visibilitychange'));
+		await bekle(40);
+		denetle('telefon: öne gelince ekran kilidi yeniden alındı', etkin().length === 1, String(kilitler.length));
+		td.body.dispatchEvent(new tw.Event('pointerdown', { bubbles: true }));
+		await bekle(20);
+		denetle('telefon: dokununca ikinci kilit alınmaz', etkin().length === 1 && kilitler.length === 3, String(kilitler.length));
+		tw.eval('sesKapat()');
+		await bekle(20);
+		denetle('telefon: kanaldan çıkınca ekran kilidi bırakıldı', etkin().length === 0);
+		denetle('Android değil: arka plan sesi (medya oturumu) açılmadı', !td.querySelector('#ses-akislari audio[loop]') && tw.navigator.mediaSession.playbackState === 'none');
+		// Masaüstünde de susturunca mikrofon bırakılır (yukarıda); ekran kilidi istenmez.
+		const u = kur({ depo: { anahtar: 'f'.repeat(128), ad: 'taha' } });
+		await bekle(40);
+		u.oc.ws.onmessage({ data: JSON.stringify({ type: 'hazir', ad: 'taha', kanallar, kimler: [{ ad: 'taha' }], max: 10, maxKullanici: 10, beyazListe: 1, beyazListeAdlari: ['taha'], sunulanDosyalar: [], ice: ICE, surum: 'v1' }) });
+		await bekle(20);
+		u.window.eval("sesAc('sesli-sohbet')");
+		await bekle(40);
+		u.oc.ws.onmessage({ data: JSON.stringify({ type: 'ses-girdi', kanal: 'sesli-sohbet', kisiler: [], ice: ICE, devam: false }) });
+		await bekle(40);
+		denetle('masaüstünde ekran kilidi istenmez', u.oc.ekranKilitleri.length === 0 && u.window.eval('sesKanal') === 'sesli-sohbet');
+		u.window.eval('sesKapat()');
+	}
+
+	// --- 24) Android: sesli kanaldayken döngüde sessiz bir ses çalınır (tarayıcı oynatma bildirimi
+	// açar, sayfa arka planda donmaz); bildirimdeki duraklat bir şey yapmaz; başka uygulama sesi
+	// alırsa geri alınmaz; kanaldan çıkınca durur. Ses gelip çalınmıyorsa (çözülen örnek artmıyor) öğe
+	// yeniden bağlanır. Teşhis yalnızca sunucu günlüğüne gider (arka plana geçiş/dönüş, alıcı tamponu).
+	{
+		const t = kur({ dokunmatik: true, android: true, depo: { anahtar: 'f'.repeat(128), ad: 'taha' } });
+		const tw = t.window;
+		const td = t.d;
+		const tgel = (m) => t.oc.ws.onmessage({ data: JSON.stringify(m) });
+		await bekle(40);
+		tgel({ type: 'hazir', ad: 'taha', kanallar, kimler: [{ ad: 'taha' }, { ad: 'bora' }], max: 10, maxKullanici: 10, beyazListe: 2, beyazListeAdlari: ['taha', 'bora'], sunulanDosyalar: [], ice: ICE, surum: 'v1' });
+		await bekle(40);
+		tw.eval('ayar.mikKapali = true');
+		tw.eval("sesAc('sesli-sohbet')");
+		await bekle(40);
+		tgel({ type: 'ses-girdi', kanal: 'sesli-sohbet', kisiler: ['bora'], ice: ICE, devam: false });
+		await bekle(60);
+		const oge = () => td.querySelector('#ses-akislari audio[loop]');
+		const ms = tw.navigator.mediaSession;
+		denetle('Android: kanala girince sessiz ses döngüde çalıyor', !!oge() && !oge().paused && /^blob:/.test(oge().src), oge() && oge().src);
+		denetle('Android: medya oturumu kanal adıyla, oynatılıyor', ms.metadata && ms.metadata.title === 'Sesli Sohbet' && ms.playbackState === 'playing', ms.metadata && ms.metadata.title + ' ' + ms.playbackState);
+		denetle('Android: sesli kanalda ekran da açık tutuluyor', t.oc.ekranKilitleri.filter((k) => !k.released).length === 1);
+		t.oc.medyaIsleyicileri.pause();
+		await bekle(20);
+		denetle('Android: bildirimdeki duraklat sesi durdurmaz (kulaklığın "konuşunca duraklat"ı da)', !oge().paused && ms.playbackState === 'playing');
+		oge().pause(); // başka uygulama sesi aldı (müzik, arama): tarayıcı durdurur
+		await bekle(20);
+		denetle('Android: başka uygulama durdurunca bildirim duraklatıldı görünür', ms.playbackState === 'paused');
+		td.body.dispatchEvent(new tw.Event('pointerdown', { bubbles: true }));
+		tw.eval('sesUyandir()');
+		await bekle(20);
+		denetle('Android: başka uygulamanın durdurduğu ses dokunarak ya da öne gelince geri alınmaz', oge().paused);
+		t.oc.medyaIsleyicileri.play();
+		await bekle(20);
+		denetle('Android: bildirimden "oynat" ile sürer', !oge().paused && ms.playbackState === 'playing');
+		// Kanal değiştirince (çıkmadan) bildirimdeki kanal adı güncellenir, ses tek öğede sürer.
+		tw.eval("sesAc('muzik')");
+		await bekle(40);
+		tgel({ type: 'ses-girdi', kanal: 'muzik', kisiler: [], ice: ICE, devam: false });
+		await bekle(40);
+		denetle('Android: kanal değişince bildirimde yeni kanal adı', ms.metadata && ms.metadata.title === 'Müzik' && td.querySelectorAll('#ses-akislari audio[loop]').length === 1 && !oge().paused, ms.metadata && ms.metadata.title);
+		tw.eval("sesAc('sesli-sohbet')");
+		await bekle(40);
+		tgel({ type: 'ses-girdi', kanal: 'sesli-sohbet', kisiler: ['bora'], ice: ICE, devam: false });
+		await bekle(60);
+		denetle('Android: geri dönünce yine kanal adı', ms.metadata && ms.metadata.title === 'Sesli Sohbet');
+		// Arka plana geçip (20 sn) dönüş: tanıya yazılır (dönüşten ~6 sn sonra durumun tamamı).
+		const nabiz = setInterval(() => tgel({ type: 'pong' }), 2000);
+		let gorunurluk = 'visible';
+		Object.defineProperty(td, 'visibilityState', { configurable: true, get: () => gorunurluk });
+		gorunurluk = 'hidden';
+		td.dispatchEvent(new tw.Event('visibilitychange'));
+		await bekle(20);
+		tw.eval('gizlenme = Date.now() - 20000');
+		gorunurluk = 'visible';
+		td.dispatchEvent(new tw.Event('visibilitychange'));
+		// Ses gelip çalınmıyor: paket geliyor, çözülen örnek artmıyor → öğe akışa yeniden bağlanır.
+		const pc = t.FakePC.hepsi.at(-1);
+		pc.connectionState = 'connected';
+		tw.eval("esDurumDegisti(esler.get('bora'))");
+		const sesOgesi = tw.eval("esler.get('bora').ses");
+		let atama = 0;
+		Object.defineProperty(sesOgesi, 'srcObject', {
+			configurable: true,
+			get() {
+				return this._akis || null;
+			},
+			set(v) {
+				atama++;
+				this._akis = v;
+			},
+		});
+		sesOgesi._akis = new tw.MediaStream([t.oc.izYap()]);
+		sesOgesi.play();
+		pc.ornekDurdu = true;
+		await bekle(7000);
+		const tani = t.oc.gonderilen.filter((m) => m.type === 'tani').map((m) => m.veri);
+		denetle('çalmayan ses teşhise yazıldı', tani.some((v) => v.olay === 'calma-takildi' && v.es === 'bora' && v.kanal === 'mik'), JSON.stringify(tani.filter((v) => v.olay)));
+		denetle('çalmayan sesin öğesi akışa yeniden bağlandı', atama >= 2 && !!sesOgesi.srcObject && !sesOgesi.paused, String(atama));
+		pc.ornekDurdu = false;
+		// Günlüğe giden tanı: dönüşten sonra durumun tamamı; sayfa durumu ve alıcı tamponu (gecikme).
+		await bekle(2300); // ses yeniden çalınıyor: bir istatistik turu
+		clearInterval(nabiz);
+		const tanilar = t.oc.gonderilen.filter((m) => m.type === 'tani').map((m) => m.veri);
+		denetle('tanı: arka plana geçiş yazıldı', tanilar.some((v) => v.olay === 'arka-plan'));
+		const donus = tanilar.find((v) => v.olay === 'one-geldi');
+		denetle('tanı: öne gelince (yeniden bağlanma bitince) durumun tamamı, arka planda kalınan süreyle', donus && donus.arkaPlanSn >= 19 && donus.arkaPlanSn <= 22 && donus.kanal === 'sesli-sohbet' && Array.isArray(donus.esler), JSON.stringify(donus && { sn: donus.arkaPlanSn, kanal: donus.kanal }));
+		const v = await tw.eval('taniVeri()');
+		denetle('tanı: sayfa durumu (önde, ekran açık, arka plan sesi)', v.sayfa && v.sayfa.gorunur === 'visible' && v.sayfa.ekranAcik === true && v.sayfa.arkaPlanSesi === 'caliyor', JSON.stringify(v.sayfa));
+		const boraTani = v.esler.find((e) => e.ad === 'bora');
+		denetle('tanı: konuşmanın alıcı tarafı (tampon, hedef, titreşim, paket/sn, çözülüyor, çalıyor)', boraTani && boraTani.alici && boraTani.alici.tamponMs === 60 && boraTani.alici.hedefMs === 50 && boraTani.alici.titresimMs === 11 && boraTani.alici.paketSn > 0 && boraTani.alici.cozuluyor === true && boraTani.alici.caliyor === true, JSON.stringify(boraTani && boraTani.alici));
+		denetle('tanı satırı sunucunun sınırına sığar', JSON.stringify(v).length < 6000, String(JSON.stringify(v).length));
+		denetle('arayüzde teşhis bölümü yok (yalnızca günlük)', !td.getElementById('ayar-teshis'));
+		tw.eval('sesKapat()');
+		await bekle(20);
+		denetle('Android: kanaldan çıkınca sessiz ses durdu, medya oturumu kapandı', !oge() && ms.playbackState === 'none' && ms.metadata === null);
 	}
 
 	console.log(process.exitCode ? 'BAŞARISIZ' : `Arayüz denemeleri geçti (${gecen}).`);

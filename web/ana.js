@@ -169,12 +169,8 @@ const AYAR_VARSAYILAN = {
 	mikSeviye: 100, // gönderilen mikrofon seviyesi (%); 100 dışında WebAudio kazancı devreye girer
 	kalite: 96, // gönderilen Opus bit hızı tavanı (kbps)
 	sesler: true, // giriş/çıkış sesleri
-	mikKapali: false, // kendini susturdun (kanala girerken de geçerli)
+	mikKapali: false, // kendini susturdun (kanala girerken de geçerli; susturulmuşken mikrofon kapalıdır)
 	sagir: false, // gelen sesleri kapattın
-	// Susturunca mikrofonu bırak (telefonda varsayılan): açık mikrofon telefonu görüşme kipinde tutar,
-	// Bluetooth kulaklık tek kanallı görüşme profiline (HFP) geçer ve çalan ses görüşme işlemlerinden
-	// geçer. Bırakılınca yalnızca dinlenir, müzik tam kalitede çalar; açarken mikrofon yeniden alınır.
-	mikBirak: dokunmatik(),
 	// Ekran paylaşımı ses vermeyen tarayıcıda (Firefox, Safari) paylaşılan sesin alındığı aygıt
 	// ('' = henüz seçilmedi).
 	yayinAygitId: '',
@@ -237,7 +233,7 @@ let mikrofon = null; // getUserMedia akışı
 let mikIslem = null; // mikrofon seviyesi %100 değilse: { kaynak, kazanc, hedef }
 let gidenIz = null; // eşlere gönderilen iz (mikrofon izi ya da kazançlı iz)
 let mikHatasi = ''; // mikrofon alınamadıysa nedeni (yalnızca dinleme)
-let mikBirakildi = false; // susturulduğu için mikrofon bırakıldı (ayar.mikBirak); açınca yeniden alınır
+let mikBirakildi = false; // susturulduğu için mikrofon bırakıldı; açınca yeniden alınır
 let mikAliniyor = null; // susturma kalkınca mikrofon yeniden alınıyor (söz)
 let kendiOlcer = null;
 const esler = new Map(); // ad -> eş (bağlantı + arayüz)
@@ -370,8 +366,33 @@ window.addEventListener('online', uyandi);
 document.addEventListener('resume', uyandi);
 document.addEventListener('visibilitychange', () => {
 	sesDevamKaydet();
+	gorunurlukTanisi();
 	if (document.visibilityState === 'visible') uyandi();
 });
+// Teşhis (günlük): sesli kanaldayken arka plana geçiş ve dönüş; dönüşten ~6 sn sonra (yeniden
+// bağlanma bitince) durumun tamamı ("arka plandan dönünce bağlanamıyor" şikayeti için).
+let gizlenme = 0;
+function gorunurlukTanisi() {
+	if (!sesKanal) return;
+	if (document.visibilityState === 'hidden') {
+		gizlenme = Date.now();
+		taniGonder({ olay: 'arka-plan' });
+		return;
+	}
+	if (!gizlenme) return;
+	const sn = Math.round((Date.now() - gizlenme) / 1000);
+	gizlenme = 0;
+	if (sn < 3) return;
+	let deneme = 0;
+	const yolla = () => {
+		if (!sesKanal) return;
+		if (!bagliyim && ++deneme < 4) return void setTimeout(yolla, 5000);
+		taniVeri()
+			.then((v) => taniGonder({ olay: 'one-geldi', arkaPlanSn: sn, ...v }))
+			.catch(() => {});
+	};
+	setTimeout(yolla, 6000);
+}
 try {
 	if (navigator.connection && navigator.connection.addEventListener) navigator.connection.addEventListener('change', uyandi);
 } catch {}
@@ -2676,11 +2697,13 @@ function mikDurumuUygula() {
 	if (mikrofon) for (const t of mikrofon.getAudioTracks()) t.enabled = acik;
 }
 
-// Susturulmuşken mikrofon bırakılsın mı (ayar.mikBirak; telefonda varsayılan). Telefon mikrofon açık
-// oldukça görüşme kipindedir: Bluetooth kulaklık tek kanallı, 16 kHz görüşme profiline (HFP) geçer,
-// çalan ses telefonun görüşme işlemlerinden (yankı bastırma vb.) geçer. Susturulmuş dinleyen bunlara
-// katlanmasın: mikrofon tamamen kapanır, paylaşılan müzik tam kalitede çalar.
-const mikBirakilsin = () => ayar.mikBirak && (ayar.mikKapali || ayar.sagir);
+// Susturulmuşken (ya da sağırken) mikrofon tamamen kapalıdır: aygıt bırakılır. Telefon mikrofon açık
+// oldukça görüşme kipindedir (Android'de her açık mikrofon böyledir): Bluetooth kulaklık tek kanallı,
+// 16 kHz görüşme profiline (HFP) geçer, çalan ses telefonun görüşme işlemlerinden geçer. Susturulmuş
+// dinleyen bunlara katlanmasın: paylaşılan müzik tam kalitede çalar. Açınca mikrofon yeniden alınır
+// (izin çoktan verildi, birkaç yüz ms). Masaüstünde de böyle: tarayıcının "mikrofon kullanılıyor"
+// ışığı susturulmuşken söner.
+const mikBirakilsin = () => ayar.mikKapali || ayar.sagir;
 
 // Susturma/sağırlaştırma değişti: gerekiyorsa mikrofonu bırak ya da yeniden al. Yeniden alırken
 // (izin çoktan verildi, birkaç yüz ms) yeniden susturulursa sonunda yine bırakılır.
@@ -2806,6 +2829,8 @@ function sesKatil(m) {
 	for (const ad of liste) esGirdi(ad, devam, false);
 	sesArayuzuAc();
 	if (!kendiOlcer && mikrofon) gidenIzKur();
+	ekranAcikTut();
+	arkaPlandaTut(yeniGiris);
 	sesGozcuBaslat();
 	taniBaslat();
 	istatistikBaslat();
@@ -2829,6 +2854,8 @@ function sesKapat(bildir = true) {
 	if (vardi) sesCal('cikis');
 	mikrofonuBirak();
 	mikBirakildi = false;
+	ekranKilidiniBirak();
+	arkaPlanBirak();
 	yayinDurdur(false); // ekran paylaşımı (ekransız da) kanaldan çıkınca biter
 	sesKaynagiKapat();
 	sesArayuzuKapat();
@@ -3014,6 +3041,7 @@ function pcKapat(es) {
 	if (es.goruntuOgesi) es.goruntuOgesi.srcObject = null;
 	es.uzakGoruntu = null;
 	es.olcum = es.gidenOlcum = es.yayinOlcum = null;
+	es.alici = es.yayinAlici = null;
 	es.pencere = [];
 	es.yayinPencere = [];
 	es.cozulemeyen = {};
@@ -3677,13 +3705,182 @@ function sesleriAc() {
 	setTimeout(sesAcDugmesiGuncelle, 300);
 }
 $('ses-ac').addEventListener('click', sesleriAc);
-document.addEventListener('pointerdown', () => sesKanal && sesleriAc(), { passive: true });
+document.addEventListener(
+	'pointerdown',
+	() => {
+		if (!sesKanal) return;
+		sesleriAc();
+		ekranAcikTut(); // bazı tarayıcılar kilidi ancak bir dokunuştan sonra verir
+		arkaPlandaTut(); // sayfa yeniden yüklendiyse sessiz ses ancak dokununca başlar
+	},
+	{ passive: true },
+);
+
+// Telefonda sesli kanaldayken ekran kendiliğinden kapanmaz (Screen Wake Lock). Telefon tarayıcıları
+// kilit ekranında ya da arka planda sayfayı askıya alabilir: ses durur, bağlantılar kopar (mikrofon
+// açıkken tarayıcı sayfayı canlı tutar, ama susturulmuşken mikrofon kapalıdır). Sayfa gizlenince
+// tarayıcı kilidi kendisi bırakır; öne gelince ve her dokunuşta yeniden alınır. Masaüstünde alınmaz.
+let ekranKilidi = null;
+let ekranKilidiIsteniyor = false;
+async function ekranAcikTut() {
+	if (!sesKanal || !dokunmatik() || ekranKilidi || ekranKilidiIsteniyor || document.visibilityState !== 'visible') return;
+	if (!navigator.wakeLock || typeof navigator.wakeLock.request !== 'function') return;
+	ekranKilidiIsteniyor = true;
+	try {
+		const kilit = await navigator.wakeLock.request('screen');
+		if (!sesKanal) {
+			kilit.release().catch(() => {});
+			return;
+		}
+		ekranKilidi = kilit;
+		kilit.addEventListener('release', () => {
+			if (ekranKilidi === kilit) ekranKilidi = null;
+		});
+	} catch {
+		// Pil tasarrufu ya da izin yok: ekran yine kendiliğinden kapanabilir.
+	} finally {
+		ekranKilidiIsteniyor = false;
+	}
+}
+function ekranKilidiniBirak() {
+	const kilit = ekranKilidi;
+	ekranKilidi = null;
+	if (kilit) kilit.release().catch(() => {});
+}
+
+// Android'de arka planda çalışma. Android, arka plandaki uygulamayı (Chrome'u da) birkaç saniye
+// içinde dondurur; yalnızca kayıt (açık mikrofon) ya da oynatma bildirimi olan uygulama sürer.
+// Susturulmuşken mikrofon kapalı olduğundan sayfa donuyordu: ses kesiliyor, bağlantılar kopuyordu.
+// WebRTC'nin gelen sesi tarayıcıya "oynatma" sayılmaz; bu yüzden sesli kanaldayken döngüde sessiz bir
+// ses çalınır: tarayıcı bildirimde bir oynatıcı gösterir ve sayfayı arka planda (ekran kilitliyken
+// de) çalıştırır. Bildirimdeki duraklat bir şey yapmaz (kulaklıkların "konuşunca duraklat" gibi
+// özellikleri de bunu gönderir; sesi kesmemeli). Başka bir uygulama sesi alırsa (müzik, arama)
+// tarayıcı bu sesi durdurur: geri alınmaz, o uygulamanın sesi kesilmesin; kanala yeniden girince ya
+// da bildirimden "oynat"la sürer.
+const androidMi = () => /Android/i.test(navigator.userAgent || '');
+let arkaPlanSesi = null; // { oge, adres, sistemDurdurdu }
+function sessizWav(sn = 10, hiz = 8000) {
+	// 16 bit, tek kanal, tam sessizlik. 5 saniyeden kısa sesler tarayıcıda bildirim açmaz.
+	const n = sn * hiz;
+	const b = new ArrayBuffer(44 + n * 2);
+	const v = new DataView(b);
+	const yaz = (o, s) => {
+		for (let i = 0; i < s.length; i++) v.setUint8(o + i, s.charCodeAt(i));
+	};
+	yaz(0, 'RIFF');
+	v.setUint32(4, 36 + n * 2, true);
+	yaz(8, 'WAVE');
+	yaz(12, 'fmt ');
+	v.setUint32(16, 16, true);
+	v.setUint16(20, 1, true); // PCM
+	v.setUint16(22, 1, true); // tek kanal
+	v.setUint32(24, hiz, true);
+	v.setUint32(28, hiz * 2, true);
+	v.setUint16(32, 2, true);
+	v.setUint16(34, 16, true);
+	yaz(36, 'data');
+	v.setUint32(40, n * 2, true);
+	return new Blob([b], { type: 'audio/wav' });
+}
+// ilk: kanala girerken (ya da bildirimden "oynat"): sistem durdurduysa da yeniden başlat; bildirimdeki
+// kanal adı da güncellenir (kanal değiştirirken öğe kalır).
+function arkaPlandaTut(ilk = false) {
+	if (!sesKanal || !dokunmatik() || !androidMi()) return;
+	try {
+		if (ilk && arkaPlanSesi) medyaOturumuKur();
+		if (!arkaPlanSesi) {
+			const oge = document.createElement('audio');
+			const adres = URL.createObjectURL(sessizWav());
+			const k = { oge, adres, sistemDurdurdu: false, birakiliyor: false };
+			oge.src = adres;
+			oge.loop = true;
+			oge.preload = 'auto';
+			oge.setAttribute('playsinline', '');
+			oge.addEventListener('pause', () => {
+				if (!k.birakiliyor) k.sistemDurdurdu = true;
+				medyaOturumuDurumu();
+			});
+			oge.addEventListener('playing', () => {
+				k.sistemDurdurdu = false;
+				medyaOturumuDurumu();
+			});
+			$('ses-akislari').append(oge);
+			arkaPlanSesi = k;
+			medyaOturumuKur();
+		}
+		const k = arkaPlanSesi;
+		if (k.oge.paused && (ilk || !k.sistemDurdurdu)) oynat(k.oge).catch(() => {});
+	} catch {}
+}
+function arkaPlanBirak() {
+	const k = arkaPlanSesi;
+	arkaPlanSesi = null;
+	if (k) {
+		k.birakiliyor = true;
+		try {
+			k.oge.pause();
+			k.oge.removeAttribute('src');
+			k.oge.load();
+			k.oge.remove();
+		} catch {}
+		try {
+			URL.revokeObjectURL(k.adres);
+		} catch {}
+	}
+	medyaOturumuKapat();
+}
+function medyaOturumuKur() {
+	const ms = navigator.mediaSession;
+	if (!ms) return;
+	try {
+		if (typeof MediaMetadata === 'function') {
+			ms.metadata = new MediaMetadata({
+				title: kanalAdi(sesKanal) || 'Sesli kanal',
+				artist: 'Diszort · sesli kanaldasın',
+				artwork: [
+					{ src: '/favicon.svg', sizes: 'any', type: 'image/svg+xml' },
+					{ src: '/favicon.ico', sizes: '48x48', type: 'image/x-icon' },
+				],
+			});
+		}
+	} catch {}
+	const isleyici = (eylem, fn) => {
+		try {
+			ms.setActionHandler(eylem, fn);
+		} catch {}
+	};
+	isleyici('play', () => arkaPlandaTut(true));
+	isleyici('pause', () => medyaOturumuDurumu()); // bilerek bir şey yapmaz (bkz. yukarıda)
+	medyaOturumuDurumu();
+}
+function medyaOturumuDurumu() {
+	const ms = navigator.mediaSession;
+	if (!ms || !arkaPlanSesi) return;
+	try {
+		ms.playbackState = arkaPlanSesi.oge.paused ? 'paused' : 'playing';
+	} catch {}
+}
+function medyaOturumuKapat() {
+	const ms = navigator.mediaSession;
+	if (!ms) return;
+	try {
+		ms.metadata = null;
+		ms.playbackState = 'none';
+	} catch {}
+	for (const eylem of ['play', 'pause']) {
+		try {
+			ms.setActionHandler(eylem, null);
+		} catch {}
+	}
+}
 
 // Telefon arka plandan dönünce: ses bağlamını uyandır (iOS 'interrupted' yapar), durmuş gelen
 // sesleri yeniden çal, arka planda biten (ya da başka uygulama/telefon araması yüzünden
 // açılamayan) mikrofonu yeniden al, bozulan bağlantıları beklemeden onar.
 function sesUyandir() {
 	if (!sesKanal) return;
+	ekranAcikTut();
+	arkaPlandaTut();
 	sesBaglami();
 	const iz = mikrofon && mikrofon.getAudioTracks()[0];
 	const mikMesgul = !mikrofon && (mikHatasi === 'Mikrofon başka bir uygulamada kullanılıyor' || mikHatasi === 'Mikrofon açılamadı');
@@ -5056,10 +5253,17 @@ function gelenFark(es, olcumAd, gelen, simdi) {
 		ornek: gelen.totalSamplesReceived,
 		gizli: gelen.concealedSamples != null ? gelen.concealedSamples - (gelen.silentConcealedSamples || 0) : null,
 		gizliTum: gelen.concealedSamples,
+		// Alıcı tamponu: çalınan her örnek tamponda toplam ne kadar bekledi (sesin gecikmesine eklenen)
+		// ve tarayıcının hedeflediği bekleme.
+		yayilan: gelen.jitterBufferEmittedCount,
+		tampon: gelen.jitterBufferDelay,
+		hedef: gelen.jitterBufferTargetDelay,
 	};
 	es[olcumAd] = o;
 	if (!onceki || simdi - onceki.zaman <= 400) return null;
 	const fark = (a) => (o[a] != null && onceki[a] != null ? Math.max(0, o[a] - onceki[a]) : null);
+	const yayilan = fark('yayilan');
+	const tamponMs = (a) => (yayilan > 0 && fark(a) != null ? Math.round((1000 * fark(a)) / yayilan) : null);
 	return {
 		alinan: o.alinan - onceki.alinan,
 		kayip: Math.max(0, o.kayip - onceki.kayip),
@@ -5067,6 +5271,9 @@ function gelenFark(es, olcumAd, gelen, simdi) {
 		gizli: fark('gizli'),
 		gizliTum: fark('gizliTum'),
 		kbps: Math.max(0, Math.round(((o.bayt - onceki.bayt) * 8) / (simdi - onceki.zaman))),
+		sn: (simdi - onceki.zaman) / 1000,
+		tamponMs: tamponMs('tampon'),
+		hedefMs: tamponMs('hedef'),
 		// Bağlantı yeni kurulduysa (alıcı tamponu dolarken biraz ses uydurulur) sayılmaz.
 		erken: simdi - (es.baglandiZaman || 0) < 6000,
 	};
@@ -5082,6 +5289,42 @@ function cozumGozcusu(es, kanal, tr, d) {
 	const red = !!tr && redAnlasildi(tr, 'gelen');
 	taniGonder({ olay: 'cozulemiyor', es: es.ad, kanal, kbps: d.kbps, red });
 	if (red) redBirak(es, kanal);
+}
+
+// Ses geliyor ama çalınmıyor: tarayıcı (Chrome) gelen sesi ancak onu çalan bir <audio> isteyince
+// çözer. Paketler geldiği halde çözülen örnek sayısı (totalSamplesReceived) artmıyorsa öğenin ses
+// çıkışı ölmüştür (telefonda arka plandan dönünce: ses gelmiyor, kanaldan çıkıp girince düzeliyordu).
+// İki ölçüm (~4 sn) üst üste sürerse öğe akışa yeniden bağlanır (yeni ses çıkışı açılır); sürerse
+// ~16 sn'de bir yinelenir. Örnek sayısını vermeyen tarayıcıda (d.ornek null) bir şey yapılmaz.
+function calmaGozcusu(es, kanal, oge, d) {
+	if (!es.calmaTakildi) es.calmaTakildi = {};
+	const takildi = !!oge && !!oge.srcObject && !oge.paused && !oge.muted && oge.volume > 0 && d.ornek === 0 && d.alinan >= 20;
+	const n = (es.calmaTakildi[kanal] = takildi ? (es.calmaTakildi[kanal] || 0) + 1 : 0);
+	if (n < 2 || n % 8 !== 2) return;
+	taniGonder({ olay: 'calma-takildi', es: es.ad, kanal, kez: n, gorunur: document.visibilityState });
+	ogeyiYenidenBagla(oge);
+}
+// Teşhis (günlük): bir gelen sesin son ölçümü: alıcı tamponu (ms), hedefi, titreşim, saniyedeki
+// paket, çözülüyor mu, <audio> çalıyor mu.
+function aliciOzeti(d, gelen, oge) {
+	return {
+		tamponMs: d.tamponMs,
+		hedefMs: d.hedefMs,
+		titresimMs: gelen.jitter != null ? Math.round(gelen.jitter * 1000) : null,
+		paketSn: Math.round(d.alinan / Math.max(0.4, d.sn)),
+		cozuluyor: d.ornek == null ? null : d.ornek > 0,
+		caliyor: oge && oge.srcObject ? !oge.paused && !oge.muted : null,
+	};
+}
+function ogeyiYenidenBagla(oge) {
+	const akis = oge.srcObject;
+	if (!akis) return;
+	try {
+		oge.srcObject = null;
+		oge.srcObject = akis;
+	} catch {}
+	oynat(oge).catch(() => {});
+	setTimeout(sesAcDugmesiGuncelle, 300);
 }
 
 async function istatistikTuru() {
@@ -5120,11 +5363,14 @@ async function istatistikTuru() {
 				es.yayinSonKayip = k.kayip != null ? Math.round(k.kayip * 1000) / 10 : null;
 				es.yayinSonGizleme = k.gizleme != null ? Math.round(k.gizleme * 1000) / 10 : null;
 				cozumGozcusu(es, 'yayin', es.trSes, d);
+				calmaGozcusu(es, 'yayin', es.yayinSesOgesi, d);
+				es.yayinAlici = aliciOzeti(d, yayinGelen, es.yayinSesOgesi);
 			}
 		} else {
 			es.yayinOlcum = null;
 			es.yayinPencere = [];
 			es.yayinSonKbps = es.yayinSonKayip = es.yayinSonGizleme = null;
+			es.yayinAlici = null;
 		}
 		const secili = seciliCift(gelenRapor) || seciliCift(gidenRapor);
 		const parcalar = []; // görünen kısa özet: tür · gecikme (· kayıp · sorun)
@@ -5155,6 +5401,8 @@ async function istatistikTuru() {
 					ayrinti.push('gelen ' + es.sonKbps + ' kbps');
 				}
 				cozumGozcusu(es, 'mik', es.tr, d);
+				calmaGozcusu(es, 'mik', es.ses, d);
+				es.alici = aliciOzeti(d, gelen, es.ses);
 				es.pencere = (es.pencere || []).concat([d]).slice(-KALITE_PENCERESI);
 				const k = kaliteHesapla(es.pencere);
 				es.sonKayip = k.kayip != null ? Math.round(k.kayip * 1000) / 10 : null;
@@ -5263,8 +5511,11 @@ async function taniVeri() {
 			kurtarma: es.kurtarma,
 			// Kayıplara karşı yedek: bizim gönderdiğimiz mikrofon/paylaşım RED'li mi; bu eşte bırakıldı mı.
 			red: { mik: !!es.tr && redAnlasildi(es.tr, 'giden'), yayin: !!es.trSes && redAnlasildi(es.trSes, 'giden'), birakildi: !!es.redKapali },
-			// Onun paylaşımının sesi (paylaşıyorsa): gelen bit hızı, kayıp, uydurulan ses.
-			yayinGelen: es.yayinSonKbps != null ? { kbps: es.yayinSonKbps, kayip: es.yayinSonKayip ?? null, gizleme: es.yayinSonGizleme ?? null } : null,
+			// Konuşmasının alıcı tarafı: tampon (gecikmeye eklenen) ve hedefi (ms), titreşim, paket/sn,
+			// çözülüyor mu, çalıyor mu.
+			alici: es.alici || null,
+			// Onun paylaşımının sesi (paylaşıyorsa): gelen bit hızı, kayıp, uydurulan ses ve alıcı tarafı.
+			yayinGelen: es.yayinSonKbps != null ? { kbps: es.yayinSonKbps, kayip: es.yayinSonKayip ?? null, gizleme: es.yayinSonGizleme ?? null, ...(es.yayinAlici || {}) } : null,
 			yayinKanali: !!(es.trSes && es.trGoruntu),
 			izliyor: es.izliyor,
 			izliyorum: es.izliyorum,
@@ -5279,6 +5530,13 @@ async function taniVeri() {
 	} catch {}
 	return {
 		ua: navigator.userAgent.slice(0, 110),
+		// Sayfa: önde mi, ekran açık tutuluyor mu, (Android) arka plan sesi, ses bağlamının gecikmesi.
+		sayfa: {
+			gorunur: document.visibilityState,
+			ekranAcik: !!ekranKilidi,
+			arkaPlanSesi: arkaPlanSesi ? (arkaPlanSesi.oge.paused ? (arkaPlanSesi.sistemDurdurdu ? 'baska-uygulama-durdurdu' : 'duruyor') : 'caliyor') : null,
+			baglamGecikmeMs: baglam && baglam.outputLatency != null ? Math.round(((baglam.baseLatency || 0) + baglam.outputLatency) * 1000) : null,
+		},
 		kanal: sesKanal,
 		mikrofon: !!mikrofon,
 		mikBirakildi,
@@ -5359,7 +5617,6 @@ function ayarlarAc() {
 	$('ayar-gurultu').checked = ayar.gurultu;
 	$('ayar-yanki').checked = ayar.yanki;
 	$('ayar-kazanc').checked = ayar.kazanc;
-	$('ayar-mik-birak').checked = ayar.mikBirak;
 	$('ayar-mik-seviye').value = String(ayar.mikSeviye);
 	$('ayar-mik-seviye-deger').textContent = '%' + ayar.mikSeviye;
 	$('ayar-kalite').value = String(ayar.kalite);
@@ -5438,12 +5695,6 @@ for (const [id, alan] of [
 		mikrofonuYenile();
 	});
 }
-// Susturunca mikrofonu bırak: susturulmuşsak hemen bırakılır ya da (kapatıldıysa) yeniden alınır.
-$('ayar-mik-birak').addEventListener('change', () => {
-	ayar.mikBirak = $('ayar-mik-birak').checked;
-	ayarKaydet();
-	if (sesKanal) sesDurumunuUygula();
-});
 $('ayar-mik-seviye').addEventListener('input', () => {
 	ayar.mikSeviye = Number($('ayar-mik-seviye').value);
 	$('ayar-mik-seviye-deger').textContent = '%' + ayar.mikSeviye;

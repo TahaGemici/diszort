@@ -577,11 +577,7 @@ async function sidebarKisileri(k, kanal = 'Sesli Sohbet') {
 		assert.equal(await mert.sayfa.evaluate(() => [...esler.values()].some((e) => e.ses.muted)), false);
 	});
 
-	await dene('telefondaki gibi susturunca mikrofon tamamen kapanır (görüşme kipi biter), açınca yeniden alınır ve duyulur', async () => {
-		// Telefonda varsayılan olan ayar (ayar.mikBirak) zeynep'te açılır.
-		await zeynep.sayfa.evaluate(() => {
-			ayar.mikBirak = true;
-		});
+	await dene('susturunca mikrofon tamamen kapanır (telefonda görüşme kipi biter), açınca yeniden alınır ve duyulur', async () => {
 		const ilk = await zeynep.sayfa.evaluate(() => (window.ilkMikIzi = mikrofon.getAudioTracks()[0]).id);
 		await zeynep.sayfa.click('#ben-mikrofon');
 		await bekleKosul('zeynep susturunca mikrofon aygıtı bırakıldı, eşlere iz gitmiyor', () =>
@@ -596,9 +592,6 @@ async function sidebarKisileri(k, kanal = 'Sesli Sohbet') {
 		await bekle(700);
 		await duyuyor(taha, 'zeynep', 'açınca zeynep yeniden duyulmalı');
 		await duyuyor(mert, 'zeynep', 'açınca zeynep yeniden duyulmalı (mert)');
-		await zeynep.sayfa.evaluate(() => {
-			ayar.mikBirak = false;
-		});
 	});
 
 	await dene('kişi başı ses seviyesi kalıcı', async () => {

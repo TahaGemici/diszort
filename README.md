@@ -16,10 +16,15 @@ da sunucuya yüklenmez, paylaşandan doğrudan alınır. İçeri yalnızca içer
   sürer; büyük dosyalar belleğe değil doğrudan diske yazılır. Küçük resimler sohbette önizlenir.
 - **Sesli kanallar:** kanal başına 10 kişiye kadar, yüksek kaliteli Opus (~96 kbps), konuşma göstergesi,
   kişi başı ses seviyesi, susturma ve sağırlaştırma, mikrofon/hoparlör seçimi, gürültü bastırma.
-- **Telefonda susturunca mikrofon tamamen kapanır:** açık mikrofon telefonu görüşme kipinde tutar
-  (Bluetooth kulaklık tek kanallı, boğuk görüşme sesine geçer; çalan ses telefonun görüşme işlemlerinden
-  geçer). Susturulmuş dinleyende paylaşılan müzik tam kalitede çalar; açınca mikrofon bir anda yeniden
-  alınır. Ayarlardan değiştirilebilir (masaüstünde varsayılan kapalı).
+- **Susturunca mikrofon tamamen kapanır** (her cihazda; sağırlaştırınca da): tarayıcının kayıt
+  göstergesi söner. Telefonda açık mikrofon telefonu görüşme kipinde tutar (Bluetooth kulaklık tek
+  kanallı, boğuk görüşme sesine geçer; çalan ses telefonun görüşme işlemlerinden geçer): susturulmuş
+  dinleyende paylaşılan müzik tam kalitede çalar. Açınca mikrofon bir anda yeniden alınır.
+- **Telefonda:** sesli kanaldayken ekran kendiliğinden kapanmaz. Android'de sayfa arka planda ve ekran
+  kilitliyken de çalışır: sesli kanaldayken döngüde sessiz bir ses çalınır, tarayıcı bildirimde bir
+  oynatıcı gösterir (Android, oynatmayan ya da kayıt yapmayan uygulamayı arka planda dondurur).
+  Bildirimdeki duraklat bir şey yapmaz; başka bir uygulama sesi alırsa (müzik, arama) o sesin üstüne
+  çıkılmaz. Paket gelip ses çalınmıyorsa (arka plandan dönünce görülen) ses kendiliğinden yeniden bağlanır.
 - **Kayıplara karşı yedek (RED):** her ses paketi (konuşma da paylaşılan ses de) bir öncekinin kopyasını
   da taşır; tek tük kaybolan paket bir sonrakinden yerine konur. Alıcının uydurmak zorunda kaldığı ses
   %5 rastgele paket kaybında ~%5'ten ~%0,2'ye, %10'da ~%6'dan ~%1'e iner; bedeli bit hızının iki katı.
@@ -83,7 +88,7 @@ dosya sonra silinebilir.
 | `GIRIS_ARALIK_MS`, `GIRIS_KOVA` | 10000, 1 | giriş freni: sunucu genelinde 10 saniyede 1 deneme |
 | `SES_ASKI_MS` | 60000 | bağlantısı kopanın sesli kanaldaki yeri bu kadar korunur |
 | `DIS_IP`, `TURN_ADRESI` | kendiliğinden | TURN'ün duyurduğu adres |
-| `TANI` | 1 | ses teşhis satırlarını günlüğe yaz (0: kapalı) |
+| `TANI` | 1 | ses teşhis satırlarını günlüğe yaz (0: kapalı); bkz. Yönetim |
 
 Tam liste ve açıklamalar: [`.env.example`](.env.example).
 
@@ -92,10 +97,19 @@ Tam liste ve açıklamalar: [`.env.example`](.env.example).
 | İş | Komut |
 |---|---|
 | Günlük | `sudo docker logs -f diszort` |
+| Ses teşhisi | `sudo docker logs diszort 2>&1 \| grep -a '\[tanı\]' \| tail -20` |
 | Yeniden başlatma | `sudo docker restart diszort` |
 | Sağlık | `curl http://127.0.0.1:8080/saglik` (veritabanı boyutu dahil) |
 | Yedek | `/var/lib/chat` (ayarlar, `sohbet.db*`) |
 | Sohbeti temizle | arayüzde sol üstteki veritabanı simgesi → *Sohbeti temizle* |
+
+Ses teşhisi: sesli kanaldaki her tarayıcı 10 saniyede bir (ve önemli olaylarda) kendi gördüğünü
+gönderir, sunucu yalnızca günlüğe yazar (`[tanı] ad: {…}`). Kişi başı: bağlantı durumu ve türü,
+konuşmasının ve paylaşımının gelen bit hızı, kaybı, uydurulan sesi, alıcı tamponunun tuttuğu süre
+(`tamponMs`, sese eklenen gecikme) ve hedefi, titreşim, çalıyor mu; sayfa önde mi, ekran açık mı;
+paylaşılan sesin kaynağı ve yakalamadaki kopukluklar (`kopukluk`). Olaylar: `arka-plan` /
+`one-geldi` (dönüşten ~6 sn sonra durumun tamamı, `arkaPlanSn`), `calma-takildi`, `durum`,
+`yeniden-kur`. Sorun sürerken iki cihazın satırlarına birlikte bakılır.
 
 ## Geliştirme
 
