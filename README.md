@@ -51,6 +51,11 @@ da sunucuya yüklenmez, paylaşandan doğrudan alınır. İçeri yalnızca içer
   Yalnızca yazılı mesajlar silinir; beyaz liste, kanallar ve ayarlar kalır.
 - **Kopmalara dayanıklı:** sunucu bağlantısı koparsa ya da telefon siteyi arka plana alırsa ses sürer,
   bağlantı kendiliğinden geri gelir.
+- **Gecikme birikmez:** sesi çalan çıkış bir an durursa (telefonda mikrofon açılıp kapanınca Android ses
+  kipini değiştirir; çalma ilk başlarken de olabiliyor) gelen ses alıcının tamponunda birikir ve
+  tarayıcı bunu müzikte çok yavaş, parça atarak eritir (paylaşılan müzikte 1,5 sn gecikme ve kesik
+  kesik ses kalıyordu). Tampon hedefinin 350 ms üstünde ~4 sn kalırsa o kişiyle bağlantı
+  kendiliğinden yeniden kurulur (yerel ağda ~30 ms'lik bir kesinti).
 - Kanallar arayüzden eklenip silinir; masaüstünde ve telefonda çalışır.
 
 ## Kurulum
@@ -106,10 +111,13 @@ Tam liste ve açıklamalar: [`.env.example`](.env.example).
 Ses teşhisi: sesli kanaldaki her tarayıcı 10 saniyede bir (ve önemli olaylarda) kendi gördüğünü
 gönderir, sunucu yalnızca günlüğe yazar (`[tanı] ad: {…}`). Kişi başı: bağlantı durumu ve türü,
 konuşmasının ve paylaşımının gelen bit hızı, kaybı, uydurulan sesi, alıcı tamponunun tuttuğu süre
-(`tamponMs`, sese eklenen gecikme) ve hedefi, titreşim, çalıyor mu; sayfa önde mi, ekran açık mı;
-paylaşılan sesin kaynağı ve yakalamadaki kopukluklar (`kopukluk`). Olaylar: `arka-plan` /
-`one-geldi` (dönüşten ~6 sn sonra durumun tamamı, `arkaPlanSn`), `calma-takildi`, `durum`,
-`yeniden-kur`. Sorun sürerken iki cihazın satırlarına birlikte bakılır.
+(`tamponMs`, sese eklenen gecikme) ve hedefi, tamponu eritmek/doldurmak için sesten atılan/eklenen
+süre (`hizlandirmaMs`/`yavaslatmaMs`, müzikte duyulur), uydurma olayları, titreşim, çalıyor mu;
+paylaştığım sesin o kişiye gidişi (`yayinGiden`: kbps, paket/sn — düzenliyse 50); sayfa önde mi,
+ekran açık mı; mikrofonun ve paylaşılan sesin aygıtı, yakalamadaki kopukluklar (`kopukluk`).
+Olaylar: `arka-plan` / `one-geldi` (dönüşten ~6 sn sonra durumun tamamı, `arkaPlanSn`),
+`birikme` / `yeniden-kur-istendi`, `calma-takildi`, `durum`, `yeniden-kur`. Sorun sürerken iki
+cihazın satırlarına birlikte bakılır.
 
 ## Geliştirme
 

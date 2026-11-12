@@ -523,7 +523,7 @@ function mesaj(m) {
 			iceGeldi(m.from, m.ice, m.oturum);
 			break;
 		case 'yenile':
-			yenileGeldi(m.from, m.oturum);
+			yenileGeldi(m.from, m.oturum, !!m.tam);
 			break;
 		case 'izle':
 			izleGeldi(m.from, !!m.izle);
@@ -3042,6 +3042,7 @@ function pcKapat(es) {
 	es.uzakGoruntu = null;
 	es.olcum = es.gidenOlcum = es.yayinOlcum = null;
 	es.alici = es.yayinAlici = null;
+	es.yayinGidenOlcum = es.yayinGiden = null;
 	es.pencere = [];
 	es.yayinPencere = [];
 	es.cozulemeyen = {};
@@ -3268,11 +3269,18 @@ function iceGeldi(ad, aday, oturum) {
 }
 
 // Yanıtlayan taraf "bağlantımız bozuk / bende yok" diyor (yalnızca teklif eden alır).
-function yenileGeldi(ad, oturum) {
+// tam: karşı taraf bağlantının baştan kurulmasını istiyor (alıcı tamponunda birikme; bkz.
+// birikmeGozcusu): ICE yenilemek yetmez, yeni bağlantı kurulur.
+function yenileGeldi(ad, oturum, tam = false) {
 	if (!sesKanal || !ad || ad === benimAdim) return;
 	const es = esler.get(ad) || esOlustur(ad);
 	es.bekleniyor = 0;
 	if (!es.teklifci) return;
+	if (tam) {
+		taniGonder({ olay: 'yeniden-kur-istendi', es: es.ad });
+		esYenidenKur(es);
+		return;
+	}
 	oturum = String(oturum || '');
 	const pc = es.pc;
 	if (pc && !esKapandi(es) && pc.signalingState === 'have-local-offer' && pc.localDescription) {
@@ -5258,6 +5266,11 @@ function gelenFark(es, olcumAd, gelen, simdi) {
 		yayilan: gelen.jitterBufferEmittedCount,
 		tampon: gelen.jitterBufferDelay,
 		hedef: gelen.jitterBufferTargetDelay,
+		// Tamponu eritmek/doldurmak için sesten atılan / sese eklenen örnekler (müzikte duyulur) ve
+		// ayrı uydurma olayları (her biri kısa bir kesinti).
+		hizlandirma: gelen.removedSamplesForAcceleration,
+		yavaslatma: gelen.insertedSamplesForDeceleration,
+		gizlemeOlayi: gelen.concealmentEvents,
 	};
 	es[olcumAd] = o;
 	if (!onceki || simdi - onceki.zaman <= 400) return null;
@@ -5274,6 +5287,9 @@ function gelenFark(es, olcumAd, gelen, simdi) {
 		sn: (simdi - onceki.zaman) / 1000,
 		tamponMs: tamponMs('tampon'),
 		hedefMs: tamponMs('hedef'),
+		hizlandirmaMs: fark('hizlandirma') != null ? Math.round(fark('hizlandirma') / 48) : null,
+		yavaslatmaMs: fark('yavaslatma') != null ? Math.round(fark('yavaslatma') / 48) : null,
+		gizlemeOlayi: fark('gizlemeOlayi'),
 		// Bağlantı yeni kurulduysa (alıcı tamponu dolarken biraz ses uydurulur) sayılmaz.
 		erken: simdi - (es.baglandiZaman || 0) < 6000,
 	};
@@ -5304,12 +5320,41 @@ function calmaGozcusu(es, kanal, oge, d) {
 	taniGonder({ olay: 'calma-takildi', es: es.ad, kanal, kez: n, gorunur: document.visibilityState });
 	ogeyiYenidenBagla(oge);
 }
+// Alıcı tamponunda birikme. Sesi çalan çıkış bir an durursa (telefonda mikrofon açılıp kapanınca
+// Android ses kipini değiştirir, ses çıkışı yeniden açılır; telefon bir an donar) gelen paketler
+// tamponda birikir ve tarayıcı bunu ancak sesi hızlandırarak eritir: konuşmada çabuk, müzikte çok
+// yavaş ve parça atarak (duyulan "kesilmeler"). Ölçüm (gerçek Chromium, çıkış 2 sn durduruldu):
+// paylaşılan müzikte tampon ~2 sn'ye çıktı, 25 sn'de ancak ~1,5 sn'ye indi; şikayetteki telefonda
+// 1,4-1,6 sn (hedefi 80-100 ms). Gönderenin akışı kısa süre durdurması işe yaramıyor (alıcı boşluğu
+// ağ gecikmesi sanıp hedefini ~1,8 sn'ye çıkarıyor); bağlantıyı baştan kurmak tamponu hemen boşaltıyor
+// (yerel ağda ~30 ms). Tampon hedefinin 350 ms üstünde iki ölçüm (~4 sn) üst üste kalırsa o eşle
+// bağlantı baştan kurulur: teklif eden kendisi kurar, yanıtlayan ondan ister (yenile, tam). Aynı eşle
+// en çok 30 saniyede bir. Hedefi vermeyen tarayıcıda eşik 800 ms.
+const BIRIKME_PAYI = 350;
+function birikmeGozcusu(es, kanal, d) {
+	if (!es.birikme) es.birikme = {};
+	const esik = d.hedefMs != null ? d.hedefMs + BIRIKME_PAYI : 800;
+	const birikti = !d.erken && d.tamponMs != null && d.tamponMs > esik && d.alinan >= 20;
+	const n = (es.birikme[kanal] = birikti ? (es.birikme[kanal] || 0) + 1 : 0);
+	if (n < 2) return;
+	const simdi = Date.now();
+	if (simdi - (es.sonBirikmeKurulum || 0) < 30000) return;
+	es.sonBirikmeKurulum = simdi;
+	es.birikme = {};
+	taniGonder({ olay: 'birikme', es: es.ad, kanal, tamponMs: d.tamponMs, hedefMs: d.hedefMs });
+	if (es.teklifci) esYenidenKur(es);
+	else if (bagliyim) gonder({ type: 'yenile', to: es.ad, oturum: es.oturum || '', tam: true });
+}
+
 // Teşhis (günlük): bir gelen sesin son ölçümü: alıcı tamponu (ms), hedefi, titreşim, saniyedeki
 // paket, çözülüyor mu, <audio> çalıyor mu.
 function aliciOzeti(d, gelen, oge) {
 	return {
 		tamponMs: d.tamponMs,
 		hedefMs: d.hedefMs,
+		hizlandirmaMs: d.hizlandirmaMs,
+		yavaslatmaMs: d.yavaslatmaMs,
+		gizlemeOlayi: d.gizlemeOlayi,
 		titresimMs: gelen.jitter != null ? Math.round(gelen.jitter * 1000) : null,
 		paketSn: Math.round(d.alinan / Math.max(0.4, d.sn)),
 		cozuluyor: d.ornek == null ? null : d.ornek > 0,
@@ -5339,17 +5384,28 @@ async function istatistikTuru() {
 		let yayinRapor = null;
 		// Paylaşımın sesi yalnızca o kişi sesli bir paylaşım yaparken ölçülür (kanal ayrı).
 		const yayinSesVar = !!((sesDurumlari.get(es.ad) || {}).yayin || {}).ses && !!es.trSes;
+		// Paylaştığım ses bu eşe ne hızla gidiyor (teşhis: gönderim düzenli mi).
+		const yayinGidiyor = !!yayin.ses && !!es.trSes && !!es.trSes.sender && !!es.trSes.sender.track;
+		let yayinGidenRapor = null;
 		try {
-			[gelenRapor, gidenRapor, yayinRapor] = await Promise.all([
+			[gelenRapor, gidenRapor, yayinRapor, yayinGidenRapor] = await Promise.all([
 				kanalRaporu(es.tr && es.tr.receiver, pc),
 				kanalRaporu(es.tr && es.tr.sender, pc),
 				yayinSesVar ? kanalRaporu(es.trSes.receiver, pc) : null,
+				yayinGidiyor ? kanalRaporu(es.trSes.sender, pc) : null,
 			]);
 		} catch {
 			continue;
 		}
 		if (es.pc !== pc) continue;
 		const simdi = Date.now();
+		const yayinGiden = yayinGidenRapor ? sesKaydi(yayinGidenRapor, 'outbound-rtp', null) : null;
+		if (yayinGiden) {
+			const o = { zaman: simdi, bayt: yayinGiden.bytesSent || 0, paket: yayinGiden.packetsSent || 0 };
+			const a = es.yayinGidenOlcum;
+			if (a && simdi - a.zaman > 400) es.yayinGiden = { kbps: Math.round(((o.bayt - a.bayt) * 8) / (simdi - a.zaman)), paketSn: Math.round(((o.paket - a.paket) * 1000) / (simdi - a.zaman)) };
+			es.yayinGidenOlcum = o;
+		} else es.yayinGidenOlcum = es.yayinGiden = null;
 		const gelen = sesKaydi(gelenRapor, 'inbound-rtp', es.tr && es.tr.receiver && es.tr.receiver.track);
 		const giden = sesKaydi(gidenRapor, 'outbound-rtp', es.tr && es.tr.sender && es.tr.sender.track);
 		// Paylaşımın sesi: kendi penceresinde kayıp ve uydurulan ses (teşhis ve ipucu için).
@@ -5364,6 +5420,7 @@ async function istatistikTuru() {
 				es.yayinSonGizleme = k.gizleme != null ? Math.round(k.gizleme * 1000) / 10 : null;
 				cozumGozcusu(es, 'yayin', es.trSes, d);
 				calmaGozcusu(es, 'yayin', es.yayinSesOgesi, d);
+				birikmeGozcusu(es, 'yayin', d);
 				es.yayinAlici = aliciOzeti(d, yayinGelen, es.yayinSesOgesi);
 			}
 		} else {
@@ -5402,6 +5459,7 @@ async function istatistikTuru() {
 				}
 				cozumGozcusu(es, 'mik', es.tr, d);
 				calmaGozcusu(es, 'mik', es.ses, d);
+				birikmeGozcusu(es, 'mik', d);
 				es.alici = aliciOzeti(d, gelen, es.ses);
 				es.pencere = (es.pencere || []).concat([d]).slice(-KALITE_PENCERESI);
 				const k = kaliteHesapla(es.pencere);
@@ -5516,6 +5574,8 @@ async function taniVeri() {
 			alici: es.alici || null,
 			// Onun paylaşımının sesi (paylaşıyorsa): gelen bit hızı, kayıp, uydurulan ses ve alıcı tarafı.
 			yayinGelen: es.yayinSonKbps != null ? { kbps: es.yayinSonKbps, kayip: es.yayinSonKayip ?? null, gizleme: es.yayinSonGizleme ?? null, ...(es.yayinAlici || {}) } : null,
+			// Paylaştığım ses bu eşe: bit hızı, saniyedeki paket (düzenli gönderimde 50).
+			yayinGiden: es.yayinGiden || null,
 			yayinKanali: !!(es.trSes && es.trGoruntu),
 			izliyor: es.izliyor,
 			izliyorum: es.izliyorum,
@@ -5526,7 +5586,7 @@ async function taniVeri() {
 	let micAyarlar = null;
 	try {
 		const s = iz && iz.getSettings ? iz.getSettings() : null;
-		if (s) micAyarlar = { aec: s.echoCancellation ?? null, ns: s.noiseSuppression ?? null, agc: s.autoGainControl ?? null, kanal: s.channelCount ?? null, ornekHizi: s.sampleRate ?? null };
+		if (s) micAyarlar = { aygit: String(iz.label || '').slice(0, 60), aec: s.echoCancellation ?? null, ns: s.noiseSuppression ?? null, agc: s.autoGainControl ?? null, kanal: s.channelCount ?? null, ornekHizi: s.sampleRate ?? null };
 	} catch {}
 	return {
 		ua: navigator.userAgent.slice(0, 110),
@@ -5562,7 +5622,7 @@ async function yayinSesiOzeti() {
 	try {
 		s = iz.getSettings ? iz.getSettings() : {};
 	} catch {}
-	const o = { kaynak: yayin.aygit ? 'aygit' : 'ekran', durum: iz.readyState, kanal: s.channelCount ?? null, aec: s.echoCancellation ?? null };
+	const o = { kaynak: yayin.aygit ? 'aygit' : 'ekran', aygitAdi: String(yayin.aygitAdi || iz.label || '').slice(0, 60), durum: iz.readyState, kanal: s.channelCount ?? null, aec: s.echoCancellation ?? null };
 	if (yayin.aygit) {
 		const y = yayin.yanki;
 		o.cikarici = y ? { gidiyor: yayin.ses === y.iz, yuva: y.referans.size, suzgecler: [...y.suzgecler.values()], ...((await yankiOzeti(y)) || {}), denemeler: y.denemeler.slice(-4) } : null;

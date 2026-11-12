@@ -461,8 +461,9 @@ function iceSunuculari(host) {
 //   {type:'sdp', to, sdp, oturum} / {type:'ice', to, ice, oturum}
 //                                              WebRTC (aynı sesli kanaldaki kişiye). oturum: eş
 //                                              bağlantısının kimliği (eskisine ait yanıt/aday ayıklanır)
-//   {type:'yenile', to, oturum}                yanıtlayan: "bağlantımız bozuk" → teklif eden ICE'yi
-//                                              yeniler ya da baştan kurar
+//   {type:'yenile', to, oturum, tam}           yanıtlayan: "bağlantımız bozuk" → teklif eden ICE'yi
+//                                              yeniler ya da baştan kurar (tam: baştan kur; alıcı
+//                                              tamponunda birikme)
 //   {type:'sessiz', sessiz, sagir}             mikrofon kapalı / sağırlaştırılmış mı
 //   {type:'yayin', yayin}                      ekran paylaşımı: null (yok) ya da {goruntu, ses}.
 //                                              goruntu:false = ekransız (yalnızca ses gider: bilgisayarın
@@ -506,7 +507,7 @@ function iceSunuculari(host) {
 //   {type:'yaziyor', kanal, ad} / {type:'sessiz', ad, sessiz, sagir}
 //   {type:'ses-girdi', kanal, kisiler, ice, devam} / {type:'ses-kisi-girdi', kanal, ad, devam} /
 //   {type:'ses-kisi-cikti', kanal, ad} / {type:'ses-kapatildi', kanal}
-//   {type:'sdp', from, sdp, oturum} / {type:'ice', from, ice, oturum} / {type:'yenile', from, oturum}
+//   {type:'sdp', from, sdp, oturum} / {type:'ice', from, ice, oturum} / {type:'yenile', from, oturum, tam}
 //   {type:'izle', from, izle}
 //   {type:'dosya-durum', sunulan}              şu an çevrimiçi biri tarafından sunulan dosya id'leri
 //   {type:'dosya-sun', idler}                  dosya-sun yanıtı: geçerli sayılanlar (gerisi bırakılır)
@@ -1090,6 +1091,7 @@ function sdpIlet(ws, m, tur) {
 	if (tur === 'sdp') ileti.sdp = m.sdp;
 	else if (tur === 'ice') ileti.ice = m.ice;
 	else if (tur === 'izle') ileti.izle = !!m.izle;
+	else if (tur === 'yenile' && m.tam === true) ileti.tam = true;
 	gonder(karsi, ileti);
 }
 

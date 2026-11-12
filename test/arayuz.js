@@ -395,8 +395,10 @@ function kur({ url = 'https://chat.deneme/', depo = {}, oturumDepo = {}, ekranYo
 			// Alıcı tamponu: çalınan her örnek 60 ms beklemiş, hedef 50 ms.
 			const yayilan = this.ornekDurdu ? 0 : Math.round(48000 * dt);
 			s.yayilan = (s.yayilan || 0) + yayilan;
-			s.tampon = (s.tampon || 0) + yayilan * 0.06;
-			s.hedef = (s.hedef || 0) + yayilan * 0.05;
+			s.tampon = (s.tampon || 0) + yayilan * (this.tamponSn ?? 0.06);
+			s.hedef = (s.hedef || 0) + yayilan * (this.hedefSn ?? 0.05);
+			// Tamponu eritmek için atılan örnekler (birikme varken).
+			s.hizlandirma = (s.hizlandirma || 0) + Math.round(yayilan * (this.hizlandirmaOrani ?? 0));
 			s.gizli += Math.round(48000 * dt * gizleme);
 			s.bayt += Math.round(12000 * dt);
 			s.giden += Math.round(12000 * dt);
@@ -418,6 +420,9 @@ function kur({ url = 'https://chat.deneme/', depo = {}, oturumDepo = {}, ekranYo
 				jitterBufferEmittedCount: s.yayilan,
 				jitterBufferDelay: s.tampon,
 				jitterBufferTargetDelay: s.hedef,
+				removedSamplesForAcceleration: s.hizlandirma,
+				insertedSamplesForDeceleration: 0,
+				concealmentEvents: 0,
 			});
 			m.set('giden', { type: 'outbound-rtp', kind: 'audio', bytesSent: s.giden });
 			return m;
@@ -1991,6 +1996,65 @@ const ICE = { iceServers: [{ urls: ['stun:1.2.3.4:3478'] }, { urls: ['turn:1.2.3
 		tw.eval('sesKapat()');
 		await bekle(20);
 		denetle('Android: kanaldan çıkınca sessiz ses durdu, medya oturumu kapandı', !oge() && ms.playbackState === 'none' && ms.metadata === null);
+	}
+
+	// --- 25) alıcı tamponunda birikme: çıkış bir an durunca paketler tamponda birikir, tarayıcı bunu
+	// müzikte çok yavaş eritir (1,5 sn'lik gecikme kalıyordu). Tampon hedefinin 350 ms üstünde iki ölçüm
+	// sürerse o eşle bağlantı baştan kurulur: teklif eden kendisi kurar, yanıtlayan ondan ister (yenile,
+	// tam). Normal tamponda bir şey yapılmaz; aynı eşle en çok 30 sn'de bir.
+	{
+		const t = kur({ depo: { anahtar: 'f'.repeat(128), ad: 'taha' } });
+		const tw = t.window;
+		const tgel = (m) => t.oc.ws.onmessage({ data: JSON.stringify(m) });
+		await bekle(40);
+		tgel({ type: 'hazir', ad: 'taha', kanallar, kimler: [{ ad: 'taha' }, { ad: 'bora' }, { ad: 'zeynep' }], max: 10, maxKullanici: 10, beyazListe: 3, beyazListeAdlari: ['taha', 'bora', 'zeynep'], sunulanDosyalar: [], ice: ICE, surum: 'v1' });
+		await bekle(40);
+		tw.eval('ayar.mikKapali = true');
+		tw.eval("sesAc('sesli-sohbet')");
+		await bekle(40);
+		tgel({ type: 'ses-girdi', kanal: 'sesli-sohbet', kisiler: ['bora', 'zeynep'], ice: ICE, devam: false });
+		await bekle(60);
+		// bora'ya teklifi taha verir; zeynep'in teklifi gelir (taha yanıtlar).
+		tgel({ type: 'sdp', from: 'zeynep', sdp: { type: 'offer', sdp: UC_KANALLI }, oturum: 'zoturum12345' });
+		await bekle(60);
+		const bPc = tw.eval("esler.get('bora').pc");
+		const zPc = tw.eval("esler.get('zeynep').pc");
+		denetle('birikme: iki bağlantı (biri teklif eden, biri yanıtlayan)', !!bPc && !!zPc && bPc !== zPc && tw.eval("esler.get('bora').teklifci === true && esler.get('zeynep').teklifci === false"));
+		const nabiz = setInterval(() => tgel({ type: 'pong' }), 2000);
+		for (const pc of [bPc, zPc]) pc.connectionState = 'connected';
+		tw.eval("for (const e of esler.values()) { esDurumDegisti(e); e.baglandiZaman = Date.now() - 10000; }");
+		await bekle(4500);
+		const pcSayisi = t.FakePC.hepsi.length;
+		denetle('normal tamponda (60 ms, hedef 50) bağlantıya dokunulmaz', t.FakePC.hepsi.length === pcSayisi && !bPc.kapandi && !zPc.kapandi && !t.oc.gonderilen.some((m) => m.type === 'tani' && m.veri.olay === 'birikme'));
+		const v0 = await tw.eval('taniVeri()');
+		const ab = v0.esler.find((e) => e.ad === 'bora').alici;
+		denetle('tanı: alıcı tamponu ve hızlandırma alanları', ab && ab.tamponMs === 60 && ab.hedefMs === 50 && ab.hizlandirmaMs === 0 && ab.gizlemeOlayi === 0, JSON.stringify(ab));
+		// bora'dan gelen seste 1,5 sn birikme (hedef 80 ms), tarayıcı yavaşça hızlandırıyor.
+		bPc.tamponSn = 1.5;
+		bPc.hedefSn = 0.08;
+		bPc.hizlandirmaOrani = 0.02;
+		await bekle(5000);
+		const birikme = t.oc.gonderilen.filter((m) => m.type === 'tani' && m.veri.olay === 'birikme').map((m) => m.veri);
+		denetle('birikme teşhise yazıldı', birikme.some((v) => v.es === 'bora' && v.kanal === 'mik' && v.tamponMs === 1500 && v.hedefMs === 80), JSON.stringify(birikme));
+		denetle('teklif eden: bağlantı baştan kuruldu (eski kapandı, yeni oturum)', bPc.kapandi === true && tw.eval("esler.get('bora').pc") !== bPc && t.FakePC.hepsi.length === pcSayisi + 1);
+		// Yanıtlayan tarafta: zeynep'ten gelen seste birikme → zeynep'ten baştan kurmasını iste.
+		zPc.tamponSn = 1.2;
+		zPc.hedefSn = 0.06;
+		await bekle(5000);
+		const iste = t.oc.gonderilen.filter((m) => m.type === 'yenile' && m.to === 'zeynep');
+		denetle('yanıtlayan: teklif edenden baştan kurmasını istedi (yenile, tam)', iste.some((m) => m.tam === true && m.oturum === 'zoturum12345'), JSON.stringify(iste));
+		denetle('yanıtlayan kendi bağlantısını kapatmaz (teklif eden kuracak)', !zPc.kapandi);
+		const tamSayisi = iste.filter((m) => m.tam).length;
+		await bekle(4500);
+		denetle('aynı eşle 30 sn dolmadan yeniden istenmez', t.oc.gonderilen.filter((m) => m.type === 'yenile' && m.to === 'zeynep' && m.tam).length === tamSayisi);
+		// Karşıdan gelen "baştan kur" isteği (teklif eden bizsek): bağlantı yeniden kurulur.
+		const yeniB = tw.eval("esler.get('bora').pc");
+		tgel({ type: 'yenile', from: 'bora', oturum: tw.eval("esler.get('bora').oturum"), tam: true });
+		await bekle(40);
+		denetle('gelen "yenile, tam": teklif eden bağlantıyı baştan kurar', yeniB.kapandi === true && tw.eval("esler.get('bora').pc") !== yeniB);
+		denetle('gelen "yenile, tam" teşhise yazıldı', t.oc.gonderilen.some((m) => m.type === 'tani' && m.veri.olay === 'yeniden-kur-istendi' && m.veri.es === 'bora'));
+		clearInterval(nabiz);
+		tw.eval('sesKapat()');
 	}
 
 	console.log(process.exitCode ? 'BAŞARISIZ' : `Arayüz denemeleri geçti (${gecen}).`);

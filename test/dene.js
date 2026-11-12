@@ -672,6 +672,14 @@ async function turnAl(port, kullanici, sifre) {
 		const y = await b.bekle('yenile');
 		assert.equal(y.from, 'ayse-' + kimlik);
 		assert.equal(y.oturum, undefined, 'geçersiz oturum iletilmemeli');
+		assert.equal(y.tam, undefined, 'tam yalnızca istenince iletilir');
+		// tam: "baştan kur" (alıcı tamponunda birikme); yalnızca true iletilir.
+		a.yolla({ type: 'yenile', to: 'bora-' + kimlik, oturum: 'o1abc', tam: true });
+		const yt = await b.bekle((m) => m.type === 'yenile' && m.oturum === 'o1abc');
+		assert.equal(yt.tam, true, 'tam iletilmeli');
+		a.yolla({ type: 'yenile', to: 'bora-' + kimlik, oturum: 'o2abc', tam: 'evet' });
+		const yd = await b.bekle((m) => m.type === 'yenile' && m.oturum === 'o2abc');
+		assert.equal(yd.tam, undefined, 'tam yalnızca true olarak iletilir');
 		// Kanal dışındaki birine iletilmez.
 		a.yolla({ type: 'sdp', to: 'taha', sdp: { type: 'offer', sdp: 'v=0' } });
 		await new Promise((r) => setTimeout(r, 150));
