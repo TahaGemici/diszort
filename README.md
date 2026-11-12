@@ -25,6 +25,12 @@ da sunucuya yüklenmez, paylaşandan doğrudan alınır. İçeri yalnızca içer
   oynatıcı gösterir (Android, oynatmayan ya da kayıt yapmayan uygulamayı arka planda dondurur).
   Bildirimdeki duraklat bir şey yapmaz; başka bir uygulama sesi alırsa (müzik, arama) o sesin üstüne
   çıkılmaz. Paket gelip ses çalınmıyorsa (arka plandan dönünce görülen) ses kendiliğinden yeniden bağlanır.
+  Kulaklıkla konuşurken çalan ses görüşme kalitesine düşmez: Chrome (Samsung Internet vb. de) Android'de
+  yankı engellemeli bir mikrofon açılınca telefonu görüşme kipine alır, Bluetooth kulaklık tek kanallı
+  görüşme profiline geçer; yankı engellemesi kapalı mikrofonda almaz (Chromium kaynağı). Kulaklık
+  takılıyken yankı engelleme kapalı istenir (kulaklıkta yankı olmaz); Bluetooth kulaklıkta ses
+  telefonun kendi mikrofonundan alınır (kulaklığın mikrofonu onu yine görüşme profiline geçirirdi),
+  telefon konuşana yakın olmalı. Ses ayarlarında mikrofon seçildiyse ona dokunulmaz.
 - **Kayıplara karşı yedek (RED):** her ses paketi (konuşma da paylaşılan ses de) bir öncekinin kopyasını
   da taşır; tek tük kaybolan paket bir sonrakinden yerine konur. Alıcının uydurmak zorunda kaldığı ses
   %5 rastgele paket kaybında ~%5'ten ~%0,2'ye, %10'da ~%6'dan ~%1'e iner; bedeli bit hızının iki katı.
@@ -35,8 +41,10 @@ da sunucuya yüklenmez, paylaşandan doğrudan alınır. İçeri yalnızca içer
   - *Ekransız paylaş*: bilgisayarın ya da Spotify/YouTube çalan sekmenin sesini paylaşmak da bir ekran
     paylaşımıdır, yalnızca ekran kimseye gönderilmez: ses kanala stereo ve yüksek kalitede gider.
     Paylaşan ekranı sonradan yeniden seçmeden gösterip gizleyebilir. Firefox ve Safari ekran
-    paylaşımında ses vermediği için orada ses bir ses aygıtından alınır (Linux'ta bilgisayarın sesi
-    "Monitor of …" aygıtıdır). Kanaldakilerin konuşması bu sesten çıkarılır: sayfa ne çaldığını
+    paylaşımında ses vermediği için orada ses bir ses aygıtından alınır: tarayıcının çaldığı hoparlörün
+    (ses ayarlarında seçilen ya da sistemin varsayılanı) "Monitor of …" aygıtı sorulmadan seçilir;
+    bulunamazsa (Windows'ta "Stereo Karışımı", Mac'te sanal aygıt) sorulur. Kanaldakilerin
+    konuşması bu sesten çıkarılır: sayfa ne çaldığını
     bilir, gecikmesini ve seviyesini bulup yakalanan sesten çıkarır (tarayıcının yankı engelleyicisi
     kullanılmaz, müzik eşiksiz ve kesilmeden gider). Paylaşılan aygıt tarayıcının ilk açtığı ses
     girişi olmalı: Firefox sonradan açılan ikinci aygıtı ayrı bir arabellekten geçiriyor (ölçümde

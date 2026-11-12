@@ -1343,14 +1343,19 @@ const ICE = { iceServers: [{ urls: ['stun:1.2.3.4:3478'] }, { urls: ['turn:1.2.3
 			/ses aygıtından/.test(menuOgesi('Ekransız paylaş').textContent) && /Monitor of/.test(menu().querySelector('.yayin-menu-not').textContent),
 			menu().textContent,
 		);
+		// Tarayıcının hangi çıkışa çaldığı bilinmiyor ve bilgisayar sesi gibi iki aygıt var: sorulur.
+		const MONITOR2 = { kind: 'audioinput', deviceId: 'monitor-2', label: 'Monitor of HDMI Output', groupId: 'c' };
+		const CIKIS1 = { kind: 'audiooutput', deviceId: 'cikis-1', label: 'Built-in Audio Analog Stereo', groupId: 'b' };
+		const CIKIS2 = { kind: 'audiooutput', deviceId: 'cikis-2', label: 'HDMI Output', groupId: 'c' };
+		s.oc.aygitlar = [MIK, MONITOR, MONITOR2];
 		const ekranOnce = s.oc.ekranSayisi;
 		menuOgesi('Ekransız paylaş').click();
 		await bekle(40);
-		denetle('Firefox: ekransız paylaşım seçim penceresi açmaz, ses aygıtı sorar', s.oc.ekranSayisi === ekranOnce && !pencere.hidden);
+		denetle('Firefox: ekransız paylaşım seçim penceresi açmaz; çıkış bilinmiyor ve iki "Monitor" varsa ses aygıtı sorar', s.oc.ekranSayisi === ekranOnce && !pencere.hidden);
 		const secenekler = () => [...secim.options].map((o) => o.textContent);
 		denetle(
-			'bilgisayarın sesi (Monitor of …) başta ve seçili; mikrofon da listede, işaretli',
-			secim.options.length === 2 && secim.options[0].value === 'monitor-1' && /^Bilgisayarın sesi · Monitor of/.test(secim.options[0].textContent) && secim.value === 'monitor-1' && /Dahili Mikrofon · mikrofonun/.test(secim.options[1].textContent),
+			'bilgisayarın sesleri (Monitor of …) başta, ilki seçili; mikrofon da listede, işaretli',
+			secim.options.length === 3 && secim.options[0].value === 'monitor-1' && /^Bilgisayarın sesi · Monitor of/.test(secim.options[0].textContent) && secim.value === 'monitor-1' && /Dahili Mikrofon · mikrofonun/.test(secim.options[2].textContent),
 			secenekler().join(' | '),
 		);
 		denetle(
@@ -1361,10 +1366,12 @@ const ICE = { iceServers: [{ urls: ['stun:1.2.3.4:3478'] }, { urls: ['turn:1.2.3
 		await bekle(10);
 		denetle('iptal: pencere kapandı, paylaşım başlamadı', pencere.hidden && !w.eval('yayinVar()') && s.oc.aygitKisit === null);
 
+		// Tarayıcının çaldığı çıkış (çıkışların ilki: sistemin varsayılanı) belli: onun "Monitor"u sorulmadan.
+		s.oc.aygitlar = [MIK, MONITOR, MONITOR2, CIKIS1, CIKIS2];
 		await ekransizAc();
-		d.getElementById('ses-kaynagi-paylas').click();
 		await bekle(40);
 		const k = s.oc.aygitKisit || {};
+		denetle('sorulmadan (pencere açılmadan) tarayıcının çaldığı çıkışın "Monitor"u paylaşıldı', pencere.hidden && k.deviceId && k.deviceId.exact === 'monitor-1', JSON.stringify(k));
 		denetle(
 			'ses seçilen aygıttan: stereo, tarayıcının yankı engelleme, gürültü bastırma ve otomatik kazancı kapalı',
 			k.deviceId && k.deviceId.exact === 'monitor-1' && k.echoCancellation === false && k.noiseSuppression === false && k.autoGainControl === false && k.channelCount && k.channelCount.ideal === 2,
@@ -1520,14 +1527,15 @@ const ICE = { iceServers: [{ urls: ['stun:1.2.3.4:3478'] }, { urls: ['turn:1.2.3
 		);
 		await menuyuAc();
 		denetle('menüde de "Ses ekle" var', !!menuOgesi('Ses ekle'));
-		menuOgesi('Ses ekle').click();
-		await bekle(40);
-		denetle('son seçilen aygıt yine seçili', !pencere.hidden && secim.value === 'monitor-1');
+		// Ses ayarlarında başka bir hoparlör seçili: sayfa oraya çalıyor, onun "Monitor"u alınır.
+		w.eval("ayar.cikisId = 'cikis-2'");
 		s.oc.workletYok = true;
 		w.eval('yankiModulu = null');
 		const isciOnce = s.oc.isciler.length;
-		d.getElementById('ses-kaynagi-paylas').click();
-		await bekle(40);
+		menuOgesi('Ses ekle').click();
+		await bekle(60);
+		denetle('ses ayarlarında seçili hoparlörün "Monitor"u sorulmadan alındı', pencere.hidden && s.oc.aygitKisit.deviceId.exact === 'monitor-2', JSON.stringify(s.oc.aygitKisit));
+		w.eval("ayar.cikisId = ''");
 		const aIz2 = s.oc.aygitIzi;
 		denetle(
 			'ekranlı paylaşıma ses eklendi (AudioWorklet yok: ham ses), ekran sürüyor',
@@ -1544,7 +1552,6 @@ const ICE = { iceServers: [{ urls: ['stun:1.2.3.4:3478'] }, { urls: ['turn:1.2.3
 		// İzin verilmezse paylaşım başlamaz.
 		s.oc.aygitHata = 'NotAllowedError';
 		await ekransizAc();
-		d.getElementById('ses-kaynagi-paylas').click();
 		await bekle(40);
 		denetle('aygıta izin verilmezse paylaşım başlamaz, söylenir', !w.eval('yayinVar()') && /izin verilmedi/.test(durumMetni()), durumMetni());
 		s.oc.aygitHata = '';
@@ -2099,22 +2106,25 @@ const ICE = { iceServers: [{ urls: ['stun:1.2.3.4:3478'] }, { urls: ['turn:1.2.3
 		denetle('Firefox: kanalda mikrofon açık, eşe bağlı', ilkMik.readyState === 'live' && t.oc.mikrofon === 1 && pc._transceivers[0].sender.track === ilkMik);
 		t.oc.ekranSesiYok = true;
 		t.oc.ekranSesiVer = false;
+		// Kullanıcının bilgisayarı: ses FiiO'dan çıkıyor (varsayılan çıkış), mikrofon anakartta.
 		t.oc.aygitlar = [
 			{ kind: 'audioinput', deviceId: 'mik-1', label: 'Starship/Matisse HD Audio Controller Analog Stereo', groupId: 'a' },
 			{ kind: 'audioinput', deviceId: 'monitor-1', label: 'Monitor of FIIO KA13 Pro', groupId: 'b' },
+			{ kind: 'audioinput', deviceId: 'monitor-2', label: 'Monitor of Starship/Matisse HD Audio Controller Analog Stereo', groupId: 'a' },
+			{ kind: 'audiooutput', deviceId: 'cikis-fiio', label: 'FIIO KA13 Pro', groupId: 'b' },
+			{ kind: 'audiooutput', deviceId: 'cikis-dahili', label: 'Starship/Matisse HD Audio Controller Analog Stereo', groupId: 'a' },
 		];
 		t.oc.gumSirasi = [];
 		td.getElementById('yayin-ac').click();
 		await bekle(20);
 		[...td.querySelectorAll('#yayin-menu button')].find((b) => b.textContent.includes('Ekransız paylaş')).click();
 		await bekle(60);
-		td.getElementById('ses-kaynagi-aygit').value = 'monitor-1';
-		td.getElementById('ses-kaynagi-paylas').click();
-		await bekle(60);
+		denetle('Firefox: aygıt sorulmadı (pencere açılmadı)', td.getElementById('ses-kaynagi').hidden);
 		denetle('Firefox: paylaşım başlarken mikrofon önce bırakıldı (konuşma bir an kesilir)', ilkMik.readyState === 'ended' && tw.eval('mikrofon === null') && pc._transceivers[0].sender.track === null);
 		await bekle(800);
 		const sira = t.oc.gumSirasi;
 		denetle('Firefox: aygıt mikrofon kapalıyken açıldı (asıl giriş), mikrofon ondan sonra geri alındı', sira.length === 2 && sira[0].tur === 'aygit' && sira[0].mikAcik === false && sira[1].tur === 'mik', JSON.stringify(sira));
+		denetle('Firefox: varsayılan çıkışın (FiiO) "Monitor"u paylaşıldı', t.oc.aygitKisit && t.oc.aygitKisit.deviceId.exact === 'monitor-1', JSON.stringify(t.oc.aygitKisit));
 		const monitorIz = t.oc.aygitIzi;
 		denetle(
 			'Firefox: mikrofon geri geldi ve eşe bağlı; paylaşım çıkarıcının çıkışı',
@@ -2157,12 +2167,70 @@ const ICE = { iceServers: [{ urls: ['stun:1.2.3.4:3478'] }, { urls: ['turn:1.2.3
 		td.getElementById('yayin-ac').click();
 		await bekle(20);
 		[...td.querySelectorAll('#yayin-menu button')].find((b) => b.textContent.includes('Ekransız paylaş')).click();
-		await bekle(60);
-		td.getElementById('ses-kaynagi-aygit').value = 'monitor-1';
-		td.getElementById('ses-kaynagi-paylas').click();
 		await bekle(200);
 		denetle('susturulmuşken paylaşım: beklemeden aygıt açılır, mikrofon alınmaz', t.oc.gumSirasi.length === 1 && t.oc.gumSirasi[0].tur === 'aygit' && t.oc.mikrofon === mikSayisi && tw.eval('!!yayin.ses'), JSON.stringify(t.oc.gumSirasi));
 		tw.eval('sesKapat()');
+	}
+
+	// --- 27) Telefonda (Android) kulaklıkla konuşurken çalan ses tam kalitede kalsın: Chrome yankı
+	// engellemeli mikrofon açılınca telefonu görüşme kipine alır (Bluetooth kulaklık tek kanallı görüşme
+	// profiline düşer); yankı engellemesi kapalı mikrofonda almaz. Kulaklık varsa yankı engelleme kapalı
+	// istenir; yalnızca Bluetooth kulaklık varsa mikrofon telefonun kendisinden ("Speakerphone").
+	{
+		const t = kur({ dokunmatik: true, android: true, depo: { anahtar: 'f'.repeat(128), ad: 'taha' } });
+		const tw = t.window;
+		const td = t.d;
+		const tgel = (m) => t.oc.ws.onmessage({ data: JSON.stringify(m) });
+		await bekle(40);
+		tgel({ type: 'hazir', ad: 'taha', kanallar, kimler: [{ ad: 'taha' }], max: 10, maxKullanici: 10, beyazListe: 1, beyazListeAdlari: ['taha'], sunulanDosyalar: [], ice: ICE, surum: 'v1' });
+		await bekle(40);
+		// Chrome Android'in mikrofon listesi (sabit adlar).
+		const VARSAYILAN = { kind: 'audioinput', deviceId: 'default', label: 'Default', groupId: 'v' };
+		const TELEFON = { kind: 'audioinput', deviceId: 'mik-1', label: 'Speakerphone', groupId: 'a' };
+		const AHIZE = { kind: 'audioinput', deviceId: 'ahize', label: 'Headset earpiece', groupId: 'b' };
+		const gir = async () => {
+			tw.eval("sesAc('sesli-sohbet')");
+			await bekle(60);
+			tgel({ type: 'ses-girdi', kanal: 'sesli-sohbet', kisiler: [], ice: ICE, devam: false });
+			await bekle(40);
+			return t.oc.micKisit || {};
+		};
+		const cik = async () => {
+			tw.eval('sesKapat()');
+			await bekle(30);
+		};
+		t.oc.aygitlar = [VARSAYILAN, TELEFON, AHIZE, { kind: 'audioinput', deviceId: 'bt', label: 'Bluetooth headset', groupId: 'c' }];
+		let k = await gir();
+		denetle('Bluetooth kulaklık: mikrofon telefonun kendisinden, yankı engelleme kapalı (görüşme kipine geçilmez)', k.echoCancellation === false && k.deviceId && k.deviceId.exact === 'mik-1', JSON.stringify(k));
+		denetle('Bluetooth kulaklık: gürültü bastırma ve otomatik kazanç ayardaki gibi', k.noiseSuppression === tw.eval('ayar.gurultu') && k.autoGainControl === tw.eval('ayar.kazanc'), JSON.stringify(k));
+		denetle('Bluetooth kulaklık: kullanıcıya bir kez söylendi', /telefonun mikrofonundan/.test(td.getElementById('durum').textContent), td.getElementById('durum').textContent);
+		const tani = await tw.eval('taniVeri()');
+		denetle('tanıda kulaklık kipi', tani.micAyarlar && tani.micAyarlar.kulaklik === 'bluetooth', JSON.stringify(tani.micAyarlar));
+		await cik();
+		t.oc.aygitlar = [VARSAYILAN, TELEFON, AHIZE, { kind: 'audioinput', deviceId: 'kablo', label: 'Wired headset', groupId: 'd' }];
+		k = await gir();
+		denetle('kablolu kulaklık: yankı engelleme kapalı, varsayılan aygıt (kulaklığın kendisi)', k.echoCancellation === false && !k.deviceId, JSON.stringify(k));
+		await cik();
+		t.oc.aygitlar = [VARSAYILAN, TELEFON, AHIZE];
+		k = await gir();
+		denetle('kulaklık yokken (hoparlör): yankı engelleme ayardaki gibi açık', k.echoCancellation === true && !k.deviceId, JSON.stringify(k));
+		await cik();
+		t.oc.aygitlar = [VARSAYILAN, TELEFON, AHIZE, { kind: 'audioinput', deviceId: 'bt', label: 'Bluetooth headset', groupId: 'c' }];
+		tw.eval("ayar.mikId = 'mik-1'");
+		k = await gir();
+		denetle('ses ayarlarında mikrofon seçildiyse ona dokunulmaz', k.echoCancellation === true && k.deviceId && k.deviceId.exact === 'mik-1', JSON.stringify(k));
+		tw.eval("ayar.mikId = ''");
+		await cik();
+		// Android değilse (iPhone gibi) bir şey değişmez.
+		const u = kur({ dokunmatik: true, depo: { anahtar: 'f'.repeat(128), ad: 'taha' } });
+		await bekle(40);
+		u.oc.ws.onmessage({ data: JSON.stringify({ type: 'hazir', ad: 'taha', kanallar, kimler: [{ ad: 'taha' }], max: 10, maxKullanici: 10, beyazListe: 1, beyazListeAdlari: ['taha'], sunulanDosyalar: [], ice: ICE, surum: 'v1' }) });
+		await bekle(40);
+		u.oc.aygitlar = [VARSAYILAN, TELEFON, { kind: 'audioinput', deviceId: 'bt', label: 'Bluetooth headset', groupId: 'c' }];
+		u.window.eval("sesAc('sesli-sohbet')");
+		await bekle(60);
+		denetle('Android değilse kulaklık kipi yok', u.oc.micKisit && u.oc.micKisit.echoCancellation === true && !u.oc.micKisit.deviceId, JSON.stringify(u.oc.micKisit));
+		u.window.eval('sesKapat()');
 	}
 
 	console.log(process.exitCode ? 'BAŞARISIZ' : `Arayüz denemeleri geçti (${gecen}).`);

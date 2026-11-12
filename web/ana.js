@@ -2530,17 +2530,55 @@ window.addEventListener('resize', () => {
 
 const mikSessizMi = () => ayar.mikKapali || ayar.sagir || !gidenIz;
 
-function mikKisitlari() {
+// kip: telefonda kulaklık kipi (bkz. telefonKulaklikKipi): yankı engelleme kapalı, Bluetooth'ta
+// telefonun kendi mikrofonu.
+function mikKisitlari(kip = null) {
 	const k = {
-		echoCancellation: ayar.yanki,
+		echoCancellation: kip ? false : ayar.yanki,
 		noiseSuppression: ayar.gurultu,
 		autoGainControl: ayar.kazanc,
 		channelCount: { ideal: 1 },
 		sampleRate: { ideal: 48000 },
 	};
 	if (ayar.mikId) k.deviceId = { exact: ayar.mikId };
+	else if (kip && kip.deviceId) k.deviceId = { exact: kip.deviceId };
 	return k;
 }
+
+// Telefonda kulaklıkla konuşurken çalan ses (paylaşılan müzik) tam kalitede kalsın. Chrome (ve ona
+// dayanan Samsung Internet vb.) Android'de yankı engellemeli bir mikrofon açılınca telefonu görüşme
+// kipine alır (MODE_IN_COMMUNICATION): çalan ses görüşme yolundan geçer, Bluetooth kulaklık tek
+// kanallı görüşme profiline (HFP) düşer ("mikrofonu açınca ses korkunç oluyor"). Chromium'un kaynağına
+// göre (media/audio/android/audio_manager_android.cc) yankı engellemesi kapalı açılan mikrofonda
+// ("all audio input processing is disabled") görüşme kipine geçilmez, ses medya yolunda kalır. Ayrıca
+// varsayılan mikrofon istenince kablolu > USB > Bluetooth kulaklık sırasıyla bir "iletişim aygıtı"
+// seçilir (CommunicationDeviceSelector): Bluetooth seçilirse kulaklık yine görüşme profiline geçer.
+// Bu yüzden telefonda kulaklık takılıysa (mikrofon listesinde Chrome'un sabit adlarıyla "Bluetooth
+// headset", "Wired headset" ya da "USB audio" varsa) yankı engellemesi kapalı istenir (kulaklıkta
+// hoparlör yok, yankı olmaz); yalnızca Bluetooth kulaklık varsa ses telefonun kendi mikrofonundan
+// ("Speakerphone") alınır, kulaklık müzik profilinde kalır. Ses ayarlarında bir mikrofon seçildiyse
+// ona dokunulmaz. Aygıt adları mikrofon izni verilmeden gizlidir: o zaman eskisi gibi açılır.
+let telefonKulaklik = null; // son açılışta: { kulaklik: 'bluetooth' | 'kablolu', deviceId }
+async function telefonKulaklikKipi() {
+	if (!androidMi() || !dokunmatik() || ayar.mikId) return null;
+	let liste = [];
+	try {
+		liste = await navigator.mediaDevices.enumerateDevices();
+	} catch {
+		return null;
+	}
+	const ad = (a) => String((a && a.label) || '').trim().toLowerCase();
+	const girisler = liste.filter((a) => a.kind === 'audioinput');
+	const bt = girisler.some((a) => ad(a) === 'bluetooth headset');
+	const kablolu = girisler.some((a) => ad(a) === 'wired headset' || ad(a) === 'usb audio');
+	if (!bt && !kablolu) return null;
+	if (kablolu) return { kulaklik: 'kablolu', deviceId: null }; // varsayılan seçim kulaklığın kendisi
+	const telefon = girisler.find((a) => ad(a) === 'speakerphone');
+	return { kulaklik: 'bluetooth', deviceId: telefon ? telefon.deviceId : null };
+}
+let kulaklikBildirildi = false;
+let kulaklikNotuBekliyor = false; // kanala girerken: not giriş iletisine eklenir (yoksa üstüne yazılırdı)
+const KULAKLIK_NOTU = 'Bluetooth kulaklık: sesin telefonun mikrofonundan alınıyor; kulaklık müzik kalitesinde kalır (kulaklığın mikrofonu telefonu görüşme kipine alıp sesi bozardı).';
 
 function mikHataMetni(h) {
 	const ad = h && h.name;
@@ -2552,14 +2590,25 @@ function mikHataMetni(h) {
 
 async function mikrofonAc() {
 	if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) throw Object.assign(new Error('desteklenmiyor'), { name: 'NotSupportedError' });
+	const kip = await telefonKulaklikKipi();
+	telefonKulaklik = kip;
 	try {
-		return await navigator.mediaDevices.getUserMedia({ audio: mikKisitlari() });
+		const akis = await navigator.mediaDevices.getUserMedia({ audio: mikKisitlari(kip) });
+		if (kip && kip.kulaklik === 'bluetooth' && kip.deviceId && !kulaklikBildirildi) {
+			kulaklikBildirildi = true;
+			if (sesGiriliyor) kulaklikNotuBekliyor = true;
+			else durum(KULAKLIK_NOTU);
+		}
+		return akis;
 	} catch (h) {
 		// Seçili mikrofon çıkarılmış: varsayılanla dene.
-		if (h && (h.name === 'OverconstrainedError' || h.name === 'NotFoundError') && ayar.mikId) {
-			ayar.mikId = '';
-			ayarKaydet();
-			return navigator.mediaDevices.getUserMedia({ audio: mikKisitlari() });
+		if (h && (h.name === 'OverconstrainedError' || h.name === 'NotFoundError') && (ayar.mikId || (kip && kip.deviceId))) {
+			if (ayar.mikId) {
+				ayar.mikId = '';
+				ayarKaydet();
+			}
+			telefonKulaklik = kip ? { ...kip, deviceId: null } : null;
+			return navigator.mediaDevices.getUserMedia({ audio: mikKisitlari(telefonKulaklik) });
 		}
 		throw h;
 	}
@@ -2839,7 +2888,8 @@ function sesKatil(m) {
 	bitHizlariniAyarla();
 	yayinlarCiz();
 	if (yeniGiris) {
-		durum(`${kanalAdi(kanal)} kanalına girdin.` + (mikHatasi ? ` (${mikHatasi}; yalnızca dinliyorsun)` : ''));
+		durum(`${kanalAdi(kanal)} kanalına girdin.` + (mikHatasi ? ` (${mikHatasi}; yalnızca dinliyorsun)` : '') + (kulaklikNotuBekliyor ? ' ' + KULAKLIK_NOTU : ''));
+		kulaklikNotuBekliyor = false;
 		sesCal('giris');
 	}
 }
@@ -4214,7 +4264,8 @@ function sesPaneliCiz(ozet) {
 // bilgisayarın sesi). Firefox ve Safari, ne seçilirse seçilsin, ses vermez: bu tarayıcılarda paylaşılan
 // ses bir SES AYGITINDAN alınır (getUserMedia). Linux'ta bilgisayarın sesi PulseAudio/PipeWire'ın
 // "Monitor of …" aygıtıdır (Windows'ta "Stereo Karışımı", Mac'te BlackHole gibi sanal bir aygıt).
-// Ekransız paylaşım orada seçim penceresi açmaz, aygıt sorar; ekranlı paylaşıma ses sonradan eklenir,
+// Ekransız paylaşım orada seçim penceresi açmaz; tarayıcının çaldığı çıkışın "Monitor"u kendiliğinden
+// seçilir, bulunamazsa aygıt sorulur (bkz. sesKaynagiAc); ekranlı paylaşıma ses sonradan eklenir,
 // ses aygıtından ekransız paylaşıma ekran sonradan eklenir. Bu aygıt bilgisayarda çalan her şeyi,
 // kanaldakilerin konuşması dahil, duyar: bu sayfanın çaldığı yakalanan sesten çıkarılır (yanki.js;
 // kimse kendi sesini geri duymaz), başka sekmelerin ve uygulamaların sesi olduğu gibi kalır.
@@ -4466,47 +4517,81 @@ function yayinDurdur(bildir = true) {
 
 // --- ses kaynağı: paylaşılan sesin alındığı ses aygıtı (ekran paylaşımı ses vermeyen tarayıcılarda)
 //
-// Bilgisayarın sesi gibi görünen aygıtlar ("Monitor of …", Stereo Mix, BlackHole…) başta gelir ve ilki
-// seçili gelir (en son seçilen hâlâ takılıysa o); mikrofonun işaretlenir. Ses stereo ve tarayıcının
+// Kendiliğinden seçilemezse sorulur: bilgisayarın sesi gibi görünen aygıtlar ("Monitor of …", Stereo
+// Mix, BlackHole…) başta gelir ve ilki seçili gelir (en son seçilen hâlâ takılıysa o); mikrofonun
+// işaretlenir. Ses stereo ve tarayıcının
 // hiçbir işlemi olmadan alınır: gürültü bastırma ve otomatik kazanç müziği bozar; tarayıcının yankı
 // engelleyicisi de kalan yankıyı bastırırken müziği eşik varmış gibi kesik kesik gönderiyordu.
 // Kanaldakilerin sesi yakalanandan bunun yerine yanki.js'le çıkarılır (aşağıda).
 
 const BILGISAYAR_SESI = /monit|izleyici|stereo ?mix|stereo karı|what ?u ?hear|loopback|blackhole|soundflower|vb-audio|cable output|voicemeeter/i;
 
-async function sesAygitlari() {
+let sesKaynagiOncekiOdak = null;
+// Bilgisayarın sesini paylaş: hangi aygıt diye sorulmaz, tarayıcının (bu sayfanın) çaldığı çıkışın
+// "Monitor"u seçilir. Çıkış: ses ayarlarında seçilen hoparlör, yoksa sistemin varsayılanı (tarayıcı
+// onu çıkış aygıtlarının ilki olarak verir; Firefox'ta denendi: varsayılan değişince sıra da
+// değişiyor). Linux'ta onun sesi "Monitor of <çıkışın adı>" girişidir. Bulunamazsa (Windows'ta
+// "Stereo Karışımı", Mac'te sanal aygıt) bilgisayar sesi gibi görünen tek aygıt varsa o, yoksa
+// pencere açılır ve sorulur. Aygıt adları izin verilmeden gizlidir (mikrofonsuz dinlerken): o zaman
+// bir kez izin istenir (açılan giriş kapanmadan aygıt açılmasın: bkz. aygitSesiniPaylas).
+async function tumAygitlar() {
 	try {
-		const liste = await navigator.mediaDevices.enumerateDevices();
-		return liste.filter((a) => a.kind === 'audioinput' && a.deviceId && a.deviceId !== 'default' && a.deviceId !== 'communications');
+		return await navigator.mediaDevices.enumerateDevices();
 	} catch {
 		return [];
 	}
 }
-
-let sesKaynagiOncekiOdak = null;
-// Pencereyi aç ve aygıtları listele. Aygıt adları izin verilmeden gizlidir (mikrofonsuz, yalnızca
-// dinlerken): o zaman bir kez izin istenir.
+function bilgisayarSesiBul(liste) {
+	const girisler = liste.filter((a) => a.kind === 'audioinput' && a.deviceId && a.deviceId !== 'default' && a.deviceId !== 'communications');
+	const cikislar = liste.filter((a) => a.kind === 'audiooutput');
+	const secili = ayar.cikisId && cikislar.find((a) => a.deviceId === ayar.cikisId);
+	const cikis = secili || cikislar[0] || null;
+	// Chrome varsayılanı "Default - <ad>" diye ayrı bir girdi olarak verir.
+	const cikisAdi = cikis ? String(cikis.label || '').replace(/^(default|varsayılan|communications|iletişim)\s*-\s*/i, '').trim() : '';
+	if (cikisAdi) {
+		const tam = girisler.find((a) => String(a.label || '').toLowerCase() === `monitor of ${cikisAdi}`.toLowerCase());
+		if (tam) return tam;
+	}
+	const adaylar = girisler.filter((a) => BILGISAYAR_SESI.test(a.label || ''));
+	return adaylar.length === 1 ? adaylar[0] : null;
+}
+let sesKaynagiAraniyor = false;
 async function sesKaynagiAc() {
 	yayinMenuKapat();
 	if (!sesKanal) return durum('Önce bir sesli kanala gir.', true);
 	if (!navigator.mediaDevices || typeof navigator.mediaDevices.getUserMedia !== 'function') return durum('Bu tarayıcı ses aygıtından paylaşamıyor.', true);
-	if ($('ses-kaynagi').hidden) sesKaynagiOncekiOdak = document.activeElement;
-	const secim = $('ses-kaynagi-aygit');
-	secim.replaceChildren(el('option', null, 'Ses aygıtları aranıyor…'));
-	secim.disabled = true;
-	$('ses-kaynagi-paylas').disabled = true;
-	$('ses-kaynagi-ipucu').hidden = true;
-	$('ses-kaynagi').hidden = false;
-	$('ses-kaynagi-iptal').focus();
-	let aygitlar = await sesAygitlari();
-	if (!aygitlar.some((a) => a.label)) {
-		try {
-			const izin = await navigator.mediaDevices.getUserMedia({ audio: true });
-			izin.getTracks().forEach((t) => t.stop());
-			aygitlar = await sesAygitlari();
-		} catch {}
+	if (sesKaynagiAraniyor || aygitAciliyor) return;
+	sesKaynagiAraniyor = true;
+	try {
+		let liste = await tumAygitlar();
+		let izinIstendi = false;
+		if (!liste.some((a) => a.kind === 'audioinput' && a.label)) {
+			try {
+				const izin = await navigator.mediaDevices.getUserMedia({ audio: true });
+				izin.getTracks().forEach((t) => t.stop());
+				izinIstendi = true;
+				liste = await tumAygitlar();
+			} catch {}
+		}
+		if (!sesKanal) return;
+		const aygit = bilgisayarSesiBul(liste);
+		if (aygit) {
+			ayar.yayinAygitId = aygit.deviceId;
+			ayarKaydet();
+			yayin.tazeleme = { sayi: 0, son: 0 };
+			if (izinIstendi) await new Promise((r) => setTimeout(r, GIRIS_KAPANMA_MS));
+			await aygitSesiniPaylas(aygit.deviceId, aygit.label || '');
+			return;
+		}
+		// Kendiliğinden bulunamadı: sor.
+		if ($('ses-kaynagi').hidden) sesKaynagiOncekiOdak = document.activeElement;
+		$('ses-kaynagi-ipucu').hidden = true;
+		$('ses-kaynagi').hidden = false;
+		$('ses-kaynagi-iptal').focus();
+		sesKaynaklariniCiz(liste.filter((a) => a.kind === 'audioinput' && a.deviceId && a.deviceId !== 'default' && a.deviceId !== 'communications'));
+	} finally {
+		sesKaynagiAraniyor = false;
 	}
-	if (!$('ses-kaynagi').hidden) sesKaynaklariniCiz(aygitlar);
 }
 
 function sesKaynaklariniCiz(aygitlar) {
@@ -4757,10 +4842,9 @@ async function yankiCikariciKur(ham) {
 // görünür ve işlemci (yanki.js, SondaBulucu) gecikmeyi ölçer: çıkış yolu + yakalama yolu. Paylaşılan
 // sesin gecikmesinin bilgisayardan mı geldiği buradan anlaşılır (alıcının tamponu ayrıca ölçülüyor).
 // Başta, 3 dakikada bir ve mikrofon açılıp kapanınca (iki ses aygıtı birden açıkken fark var mı).
-// Yalnızca Firefox'ta kendiliğinden: Chrome uzun süre sessiz kalan ses bağlamının çıkışını askıya
-// alıyor; sonda çalınca çıkış yeniden açılıyor, akışların gecikmesi oynuyor ve kanaldakilerin sesini
-// çıkaran süzgeçler bir an şaşıyordu (gerçek Chromium'da çıkarılan yankı 32-36 dB yerine 24 dB).
-// Aygıttan paylaşım sorunu (bkz. aygitSesiniPaylas) zaten Firefox'ta.
+// Yalnızca Firefox'ta kendiliğinden: aygıttan paylaşım sorunu (bkz. aygitSesiniPaylas) Firefox'ta;
+// başka tarayıcıda sayfanın sessiz çıkışına boşuna ses çalınmasın. (Chromium denemesinde çıkarılan
+// yankının bir kez 24 dB'ye düşmesi önce sondaya bağlanmıştı; sondasız da görüldü, ilgisiz.)
 const SONDA_HZ = 18500;
 const SONDA_SURE = 0.04;
 function yakalamaSondasi(y = yayin.yanki) {
@@ -4805,12 +4889,18 @@ function sondayiPlanla() {
 // Yakalanan seste kopukluk (tam sıfır dizisi): ne zaman ve mikrofon açıkken mi olduğu teşhiste görünsün.
 // Olaylar biriktirilip en çok 3 sn'de bir gönderilir.
 function kopukluklariBildir(y, olaylar) {
-	for (const o of olaylar) y.kopukluklar.push(o.uzun ? `${o.ms}*` : o.ms);
+	// Bekleyen en çok 60 (fazlası sayılır): çok sık olursa liste büyümesin.
+	for (const o of olaylar) {
+		if (y.kopukluklar.length < 60) y.kopukluklar.push(o.uzun ? `${o.ms}*` : o.ms);
+		else y.kopuklukFazla = (y.kopuklukFazla || 0) + 1;
+	}
 	if (y.kopuklukZamani) return;
 	y.kopuklukZamani = setTimeout(() => {
 		y.kopuklukZamani = null;
 		if (y.kapandi || !y.kopukluklar.length) return;
-		taniGonder({ olay: 'yakalama-kopuklugu', ms: y.kopukluklar.splice(0, 30), mikrofon: !!mikrofon });
+		const fazla = y.kopuklukFazla || 0;
+		y.kopuklukFazla = 0;
+		taniGonder({ olay: 'yakalama-kopuklugu', ms: y.kopukluklar.splice(0, 60), ...(fazla ? { fazla } : {}), mikrofon: !!mikrofon });
 	}, 3000);
 }
 
@@ -5217,7 +5307,7 @@ function yayinMenusuCiz() {
 			'yayin-menu-not',
 			ekranSesli
 				? 'Ses için seçim penceresinde sesi paylaşma seçeneğini aç: sekmenin sesi her bilgisayarda gider, tüm bilgisayarın sesi Windows\'ta "Tüm ekran" seçilince. Hoparlörden dinliyorsan kulaklık kullan (mikrofonun sesi geri alır).'
-				: 'Bu tarayıcı ekranla birlikte ses paylaşamaz; ses bir ses aygıtından alınır (Linux\'ta bilgisayarın sesi "Monitor of …" aygıtıdır). Hoparlörden dinliyorsan kulaklık kullan (mikrofonun sesi geri alır).',
+				: 'Bu tarayıcı ekranla birlikte ses paylaşamaz; ses bir ses aygıtından alınır: tarayıcının çaldığı hoparlörün "Monitor of …" aygıtı kendiliğinden seçilir (bulunamazsa sorulur). Hoparlörden dinliyorsan kulaklık kullan (mikrofonun sesi geri alır).',
 		),
 	);
 }
@@ -5756,7 +5846,7 @@ async function taniVeri() {
 	let micAyarlar = null;
 	try {
 		const s = iz && iz.getSettings ? iz.getSettings() : null;
-		if (s) micAyarlar = { aygit: String(iz.label || '').slice(0, 60), aec: s.echoCancellation ?? null, ns: s.noiseSuppression ?? null, agc: s.autoGainControl ?? null, kanal: s.channelCount ?? null, ornekHizi: s.sampleRate ?? null };
+		if (s) micAyarlar = { aygit: String(iz.label || '').slice(0, 60), aec: s.echoCancellation ?? null, ns: s.noiseSuppression ?? null, agc: s.autoGainControl ?? null, kanal: s.channelCount ?? null, ornekHizi: s.sampleRate ?? null, kulaklik: telefonKulaklik ? telefonKulaklik.kulaklik : null };
 	} catch {}
 	return {
 		ua: navigator.userAgent.slice(0, 110),
