@@ -577,6 +577,30 @@ async function sidebarKisileri(k, kanal = 'Sesli Sohbet') {
 		assert.equal(await mert.sayfa.evaluate(() => [...esler.values()].some((e) => e.ses.muted)), false);
 	});
 
+	await dene('telefondaki gibi susturunca mikrofon tamamen kapanır (görüşme kipi biter), açınca yeniden alınır ve duyulur', async () => {
+		// Telefonda varsayılan olan ayar (ayar.mikBirak) zeynep'te açılır.
+		await zeynep.sayfa.evaluate(() => {
+			ayar.mikBirak = true;
+		});
+		const ilk = await zeynep.sayfa.evaluate(() => (window.ilkMikIzi = mikrofon.getAudioTracks()[0]).id);
+		await zeynep.sayfa.click('#ben-mikrofon');
+		await bekleKosul('zeynep susturunca mikrofon aygıtı bırakıldı, eşlere iz gitmiyor', () =>
+			zeynep.sayfa.evaluate(() => mikrofon === null && mikBirakildi && window.ilkMikIzi.readyState === 'ended' && [...esler.values()].every((e) => e.tr.sender.track === null)), 5000, 100);
+		assert.equal(await zeynep.sayfa.evaluate(() => document.getElementById('ben-alt').textContent), 'mikrofon kapalı');
+		await bekle(500);
+		assert.ok((await sesOlc(taha, 'zeynep')).enerji < SES_YOK, 'bırakılan mikrofondan ses gelmemeli');
+		await duyuyor(zeynep, 'taha', 'susturulmuşken gelen ses sürmeli');
+		await zeynep.sayfa.click('#ben-mikrofon');
+		await bekleKosul('zeynep açınca mikrofon yeniden alındı, eşlere bağlandı', () =>
+			zeynep.sayfa.evaluate((ilk) => !!mikrofon && mikrofon.getAudioTracks()[0].id !== ilk && mikrofon.getAudioTracks()[0].readyState === 'live' && !mikBirakildi && [...esler.values()].every((e) => e.tr.sender.track === gidenIz), ilk), 5000, 100);
+		await bekle(700);
+		await duyuyor(taha, 'zeynep', 'açınca zeynep yeniden duyulmalı');
+		await duyuyor(mert, 'zeynep', 'açınca zeynep yeniden duyulmalı (mert)');
+		await zeynep.sayfa.evaluate(() => {
+			ayar.mikBirak = false;
+		});
+	});
+
 	await dene('kişi başı ses seviyesi kalıcı', async () => {
 		const kaydirici = taha.sayfa.locator('#ses-kisiler .ses-kisi[data-ad="mert"] input.ses-seviye');
 		await kaydirici.fill('40');

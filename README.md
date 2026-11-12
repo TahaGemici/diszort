@@ -16,6 +16,10 @@ da sunucuya yüklenmez, paylaşandan doğrudan alınır. İçeri yalnızca içer
   sürer; büyük dosyalar belleğe değil doğrudan diske yazılır. Küçük resimler sohbette önizlenir.
 - **Sesli kanallar:** kanal başına 10 kişiye kadar, yüksek kaliteli Opus (~96 kbps), konuşma göstergesi,
   kişi başı ses seviyesi, susturma ve sağırlaştırma, mikrofon/hoparlör seçimi, gürültü bastırma.
+- **Telefonda susturunca mikrofon tamamen kapanır:** açık mikrofon telefonu görüşme kipinde tutar
+  (Bluetooth kulaklık tek kanallı, boğuk görüşme sesine geçer; çalan ses telefonun görüşme işlemlerinden
+  geçer). Susturulmuş dinleyende paylaşılan müzik tam kalitede çalar; açınca mikrofon bir anda yeniden
+  alınır. Ayarlardan değiştirilebilir (masaüstünde varsayılan kapalı).
 - **Kayıplara karşı yedek (RED):** her ses paketi (konuşma da paylaşılan ses de) bir öncekinin kopyasını
   da taşır; tek tük kaybolan paket bir sonrakinden yerine konur. Alıcının uydurmak zorunda kaldığı ses
   %5 rastgele paket kaybında ~%5'ten ~%0,2'ye, %10'da ~%6'dan ~%1'e iner; bedeli bit hızının iki katı.
@@ -135,6 +139,10 @@ açıklanmıştır.
   Karışımı" açılmalı, Mac'te BlackHole gibi sanal bir aygıt gerekir). Telefon tarayıcılarının çoğu hiç
   paylaşamaz. İzlemek ve dinlemek her yerde olur. Hoparlörden dinleyenin mikrofonu çalan sesi de alır;
   kulaklık önerilir.
+- Konuşma algılayan kulaklıklar (AirPods'un Konuşma Farkındalığı, Sony'nin Speak-to-Chat'i, Pixel Buds,
+  Galaxy Buds'ın ses algılaması) takan kişi konuşunca çalan sesi kısar ya da durdurur, konuşma bitince
+  birkaç saniyede geri getirir: paylaşılan müzik "konuşunca kısılıyor" gibi duyulur. Bu kulaklığın
+  özelliğidir; ayarlarından kapatılır.
 - P2P dosya, paylaşanın sayfası açıkken alınabilir. Chrome/Edge (masaüstü) büyük dosyayı doğrudan seçilen
   yere yazar; diğer tarayıcılar önce tarayıcının dosya alanına (kotası diskin bir kısmı) yazar.
 - TURN'den geçen ses sunucunun bant genişliğini kullanır (kişi başı ~200 kbps); TURN'den geçen dosya

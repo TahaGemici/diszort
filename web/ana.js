@@ -171,6 +171,10 @@ const AYAR_VARSAYILAN = {
 	sesler: true, // giriş/çıkış sesleri
 	mikKapali: false, // kendini susturdun (kanala girerken de geçerli)
 	sagir: false, // gelen sesleri kapattın
+	// Susturunca mikrofonu bırak (telefonda varsayılan): açık mikrofon telefonu görüşme kipinde tutar,
+	// Bluetooth kulaklık tek kanallı görüşme profiline (HFP) geçer ve çalan ses görüşme işlemlerinden
+	// geçer. Bırakılınca yalnızca dinlenir, müzik tam kalitede çalar; açarken mikrofon yeniden alınır.
+	mikBirak: dokunmatik(),
 	// Ekran paylaşımı ses vermeyen tarayıcıda (Firefox, Safari) paylaşılan sesin alındığı aygıt
 	// ('' = henüz seçilmedi).
 	yayinAygitId: '',
@@ -233,6 +237,8 @@ let mikrofon = null; // getUserMedia akışı
 let mikIslem = null; // mikrofon seviyesi %100 değilse: { kaynak, kazanc, hedef }
 let gidenIz = null; // eşlere gönderilen iz (mikrofon izi ya da kazançlı iz)
 let mikHatasi = ''; // mikrofon alınamadıysa nedeni (yalnızca dinleme)
+let mikBirakildi = false; // susturulduğu için mikrofon bırakıldı (ayar.mikBirak); açınca yeniden alınır
+let mikAliniyor = null; // susturma kalkınca mikrofon yeniden alınıyor (söz)
 let kendiOlcer = null;
 const esler = new Map(); // ad -> eş (bağlantı + arayüz)
 const sesDurumlari = new Map(); // ad -> { sessiz, sagir, askida } (sunucudan)
@@ -2584,6 +2590,13 @@ function mikrofonuBirak() {
 let mikKurtariliyor = false;
 function mikrofonBitti() {
 	if (mikKurtariliyor || (!sesKanal && !sesGiriliyor)) return;
+	if (sesKanal && mikBirakilsin()) {
+		// Susturulmuşken zaten bırakılacaktı: yeniden alma, açınca alınır.
+		mikrofonuBirak();
+		mikBirakildi = true;
+		gidenIzKur();
+		return;
+	}
 	mikKurtariliyor = true;
 	durum('Mikrofon bağlantısı kesildi; yeniden alınıyor…', true);
 	setTimeout(async () => {
@@ -2663,6 +2676,53 @@ function mikDurumuUygula() {
 	if (mikrofon) for (const t of mikrofon.getAudioTracks()) t.enabled = acik;
 }
 
+// Susturulmuşken mikrofon bırakılsın mı (ayar.mikBirak; telefonda varsayılan). Telefon mikrofon açık
+// oldukça görüşme kipindedir: Bluetooth kulaklık tek kanallı, 16 kHz görüşme profiline (HFP) geçer,
+// çalan ses telefonun görüşme işlemlerinden (yankı bastırma vb.) geçer. Susturulmuş dinleyen bunlara
+// katlanmasın: mikrofon tamamen kapanır, paylaşılan müzik tam kalitede çalar.
+const mikBirakilsin = () => ayar.mikBirak && (ayar.mikKapali || ayar.sagir);
+
+// Susturma/sağırlaştırma değişti: gerekiyorsa mikrofonu bırak ya da yeniden al. Yeniden alırken
+// (izin çoktan verildi, birkaç yüz ms) yeniden susturulursa sonunda yine bırakılır.
+function mikBirakmayiUygula() {
+	if (!sesKanal) return;
+	if (mikBirakilsin()) {
+		if (!mikrofon) return;
+		mikrofonuBirak();
+		mikBirakildi = true;
+		gidenIzKur();
+		mikDugmeleriCiz();
+		return;
+	}
+	if (!mikBirakildi || mikAliniyor) return;
+	mikAliniyor = mikYenidenAl();
+	mikDugmeleriCiz();
+}
+async function mikYenidenAl() {
+	const tamam = await mikrofonHazirla();
+	mikAliniyor = null;
+	if (!sesKanal) {
+		mikrofonuBirak();
+		return;
+	}
+	if (mikBirakilsin()) {
+		// Alınırken yeniden susturuldu.
+		if (mikrofon) {
+			mikrofonuBirak();
+			gidenIzKur();
+		}
+		mikDugmeleriCiz();
+		return;
+	}
+	mikBirakildi = false;
+	if (!tamam) durum(mikHatasi + '; yalnızca dinliyorsun.', true);
+	mikDurumuUygula();
+	mikDugmeleriCiz();
+	benSatiriCiz();
+	sesUyarisiCiz();
+	gonder({ type: 'sessiz', sessiz: mikSessizMi(), sagir: ayar.sagir });
+}
+
 function esIzBagla(es) {
 	const tr = es.tr;
 	if (!tr || !tr.sender || !es.pc || es.pc.signalingState === 'closed') return Promise.resolve();
@@ -2686,8 +2746,16 @@ async function sesAc(kanal) {
 	sesGiriliyor = true;
 	sesHedef = kanal;
 	sesKilidiAc(); // ses bağlamını bu tıklamayla başlat (tarayıcı otomatik oynatma kuralı)
-	const mikVar = await mikrofonHazirla();
-	if (!mikVar) durum(mikHatasi + '; kanala yalnızca dinleyici olarak giriliyor.', true);
+	if (mikBirakilsin()) {
+		// Susturulmuş giriliyor ve susturulunca mikrofon bırakılıyor: mikrofon (telefonda görüşme kipi)
+		// ancak açınca alınır.
+		mikrofonuBirak();
+		mikBirakildi = true;
+	} else {
+		mikBirakildi = false;
+		const mikVar = await mikrofonHazirla();
+		if (!mikVar) durum(mikHatasi + '; kanala yalnızca dinleyici olarak giriliyor.', true);
+	}
 	if (!bagliyim || sesHedef !== kanal) {
 		sesGiriliyor = false;
 		if (!sesKanal) mikrofonuBirak();
@@ -2760,6 +2828,7 @@ function sesKapat(bildir = true) {
 	konusanlar.clear();
 	if (vardi) sesCal('cikis');
 	mikrofonuBirak();
+	mikBirakildi = false;
 	yayinDurdur(false); // ekran paylaşımı (ekransız da) kanaldan çıkınca biter
 	sesKaynagiKapat();
 	sesArayuzuKapat();
@@ -2791,6 +2860,7 @@ function sagirDegistir() {
 }
 function sesDurumunuUygula() {
 	mikDurumuUygula();
+	mikBirakmayiUygula();
 	for (const es of esler.values()) esSesUygula(es);
 	mikDugmeleriCiz();
 	benSatiriCiz();
@@ -2820,8 +2890,12 @@ function mikDugmeleriCiz() {
 		s.setAttribute('aria-label', ayar.sagir ? 'Sesleri aç' : 'Sağırlaştır');
 	}
 	let alt = 'çevrimiçi';
-	if (sesKanal) alt = ayar.sagir ? 'sağırlaştırıldın' : !gidenIz ? 'yalnızca dinliyorsun' : ayar.mikKapali ? 'mikrofon kapalı' : kanalAdi(sesKanal);
-	else if (sesGiriliyor) alt = 'bağlanıyor…';
+	if (sesKanal) {
+		if (ayar.sagir) alt = 'sağırlaştırıldın';
+		else if (mikAliniyor) alt = 'mikrofon açılıyor…';
+		else if (ayar.mikKapali && (gidenIz || mikBirakildi)) alt = 'mikrofon kapalı';
+		else alt = !gidenIz ? 'yalnızca dinliyorsun' : ayar.mikKapali ? 'mikrofon kapalı' : kanalAdi(sesKanal);
+	} else if (sesGiriliyor) alt = 'bağlanıyor…';
 	$('ben-alt').textContent = alt;
 }
 
@@ -3810,7 +3884,8 @@ function benSatiriCiz() {
 
 function sesUyarisiCiz() {
 	const u = $('ses-uyari');
-	if (!sesKanal || gidenIz) {
+	// Susturulduğu için bırakılan mikrofon bir sorun değildir (açınca yeniden alınır).
+	if (!sesKanal || gidenIz || mikBirakildi || mikAliniyor) {
 		u.hidden = true;
 		return;
 	}
@@ -5206,6 +5281,7 @@ async function taniVeri() {
 		ua: navigator.userAgent.slice(0, 110),
 		kanal: sesKanal,
 		mikrofon: !!mikrofon,
+		mikBirakildi,
 		mikAcik: !mikSessizMi(),
 		mikDurum: iz ? iz.readyState : null,
 		micAyarlar,
@@ -5283,6 +5359,7 @@ function ayarlarAc() {
 	$('ayar-gurultu').checked = ayar.gurultu;
 	$('ayar-yanki').checked = ayar.yanki;
 	$('ayar-kazanc').checked = ayar.kazanc;
+	$('ayar-mik-birak').checked = ayar.mikBirak;
 	$('ayar-mik-seviye').value = String(ayar.mikSeviye);
 	$('ayar-mik-seviye-deger').textContent = '%' + ayar.mikSeviye;
 	$('ayar-kalite').value = String(ayar.kalite);
@@ -5333,7 +5410,8 @@ async function mikrofonuYenile() {
 		denemeyiBitir();
 		$('ayar-mik-dene').click();
 	}
-	if (!sesKanal) return;
+	// Susturulduğu için bırakılmışsa yeni ayar açınca alınan mikrofona uygulanır.
+	if (!sesKanal || mikBirakildi || mikAliniyor) return;
 	try {
 		const akis = await mikrofonAc();
 		if (!sesKanal) return akis.getTracks().forEach((t) => t.stop());
@@ -5360,6 +5438,12 @@ for (const [id, alan] of [
 		mikrofonuYenile();
 	});
 }
+// Susturunca mikrofonu bırak: susturulmuşsak hemen bırakılır ya da (kapatıldıysa) yeniden alınır.
+$('ayar-mik-birak').addEventListener('change', () => {
+	ayar.mikBirak = $('ayar-mik-birak').checked;
+	ayarKaydet();
+	if (sesKanal) sesDurumunuUygula();
+});
 $('ayar-mik-seviye').addEventListener('input', () => {
 	ayar.mikSeviye = Number($('ayar-mik-seviye').value);
 	$('ayar-mik-seviye-deger').textContent = '%' + ayar.mikSeviye;

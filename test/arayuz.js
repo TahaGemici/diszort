@@ -52,10 +52,12 @@ const UC_KANALLI =
 
 // Sayfayı kur: DOM + taklitler + ana.js. Birden çok kez çağrılabilir (hash/depo senaryoları).
 // ekranYok: tarayıcı ekran paylaşımı sunmuyor (ör. telefon). red: tarayıcı RED'i (RFC 2198) biliyor
-// (RTCRtpReceiver.getCapabilities onu da listeler; yoksa RTCRtpReceiver hiç yok).
-function kur({ url = 'https://chat.deneme/', depo = {}, oturumDepo = {}, ekranYok = false, red = false } = {}) {
+// (RTCRtpReceiver.getCapabilities onu da listeler; yoksa RTCRtpReceiver hiç yok). dokunmatik:
+// telefon gibi (pointer: coarse).
+function kur({ url = 'https://chat.deneme/', depo = {}, oturumDepo = {}, ekranYok = false, red = false, dokunmatik = false } = {}) {
 	const dom = new JSDOM(HTML, { url, pretendToBeVisual: true, runScripts: 'dangerously' });
 	const { window } = dom;
+	if (dokunmatik) window.matchMedia = (q) => ({ matches: /pointer:\s*coarse/.test(q), media: q, addEventListener() {}, removeEventListener() {} });
 	for (const [k, v] of Object.entries(depo)) window.localStorage.setItem(k, v);
 	for (const [k, v] of Object.entries(oturumDepo)) window.sessionStorage.setItem(k, v);
 	const durum = { gonderilen: [], ws: null, wsler: [], mikrofon: 0, micKisit: null };
@@ -1732,6 +1734,84 @@ const ICE = { iceServers: [{ urls: ['stun:1.2.3.4:3478'] }, { urls: ['turn:1.2.3
 		const boraTani = sonTani && sonTani.esler.find((e) => e.ad === 'bora');
 		denetle('tanıda RED durumu', boraTani && boraTani.red && boraTani.red.birakildi === true, JSON.stringify(boraTani && boraTani.red));
 		tw.eval('sesKapat()');
+	}
+
+	// --- 23) telefonda (dokunmatik) susturunca mikrofon tamamen bırakılır: telefon görüşme kipinden
+	// çıkar (Bluetooth kulaklık müzik profiline döner, görüşme işlemleri çalan sesi değiştirmez); açınca
+	// yeniden alınır. Susturulmuş girilen kanalda mikrofon hiç açılmaz. Masaüstünde (varsayılan) mikrofon
+	// açık kalır, yalnızca izi kapanır (yukarıda).
+	{
+		const t = kur({ dokunmatik: true, depo: { anahtar: 'f'.repeat(128), ad: 'taha' } });
+		const tw = t.window;
+		const td = t.d;
+		const tgel = (m) => t.oc.ws.onmessage({ data: JSON.stringify(m) });
+		const tson = (tur) => t.oc.gonderilen.filter((m) => m.type === tur).at(-1);
+		const tikla = (id) => td.getElementById(id).click();
+		await bekle(40);
+		tgel({ type: 'hazir', ad: 'taha', kanallar, kimler: [{ ad: 'taha' }, { ad: 'bora' }], max: 10, maxKullanici: 10, beyazListe: 2, beyazListeAdlari: ['taha', 'bora'], sunulanDosyalar: [], ice: ICE, surum: 'v1' });
+		await bekle(40);
+		denetle('telefonda susturunca mikrofonu bırakmak varsayılan', tw.eval('ayar.mikBirak') === true);
+		tw.eval("sesAc('sesli-sohbet')");
+		await bekle(60);
+		denetle('susturulmamışken kanala girince mikrofon alındı', t.oc.mikrofon === 1, String(t.oc.mikrofon));
+		tgel({ type: 'ses-girdi', kanal: 'sesli-sohbet', kisiler: ['bora'], ice: ICE, devam: false });
+		await bekle(60);
+		const pc = t.FakePC.hepsi.at(-1);
+		const gidenIzi = () => pc._transceivers[0].sender.track;
+		const ilkIz = t.oc.sonIz;
+		denetle('telefon: mikrofon eşe bağlı', gidenIzi() === ilkIz);
+		tikla('ben-mikrofon'); // sustur
+		await bekle(40);
+		denetle('telefon: susturunca mikrofon aygıtı bırakıldı', ilkIz.readyState === 'ended' && tw.eval('mikrofon === null && mikBirakildi === true'));
+		denetle('telefon: susturunca eşe iz gitmiyor', gidenIzi() === null);
+		denetle('telefon: susturma bildirildi', tson('sessiz').sessiz === true);
+		denetle('telefon: "mikrofon kapalı" yazar, "yalnızca dinliyorsun" uyarısı çıkmaz', td.getElementById('ben-alt').textContent === 'mikrofon kapalı' && td.getElementById('ses-uyari').hidden, td.getElementById('ben-alt').textContent);
+		tikla('ben-mikrofon'); // aç
+		await bekle(60);
+		denetle('telefon: açınca mikrofon yeniden alındı', t.oc.mikrofon === 2 && t.oc.sonIz !== ilkIz && t.oc.sonIz.readyState === 'live');
+		denetle('telefon: açınca eşe yeni mikrofon bağlandı, açık', gidenIzi() === t.oc.sonIz && t.oc.sonIz.enabled === true);
+		denetle('telefon: açma bildirildi', tson('sessiz').sessiz === false);
+		denetle('telefon: açınca kanal adı yazar', td.getElementById('ben-alt').textContent === 'Sesli Sohbet', td.getElementById('ben-alt').textContent);
+		// Hızlı sustur → aç → sustur (mikrofon alınırken): sonunda bırakılmış, açık aygıt kalmamış olmalı.
+		tikla('ben-mikrofon');
+		tikla('ben-mikrofon');
+		tikla('ben-mikrofon');
+		await bekle(80);
+		denetle('telefon: hızlı sustur/aç/sustur sonunda mikrofon bırakılmış', tw.eval('mikrofon === null && mikBirakildi === true') && t.oc.sonIz.readyState === 'ended' && gidenIzi() === null, `${t.oc.mikrofon} ${t.oc.sonIz.readyState}`);
+		tikla('ben-mikrofon'); // aç
+		await bekle(60);
+		tikla('ben-sagir'); // sağırlaştır: mikrofon da bırakılır
+		await bekle(40);
+		denetle('telefon: sağırlaştırınca da mikrofon bırakıldı', tw.eval('mikrofon === null && mikBirakildi === true') && gidenIzi() === null);
+		const sayi = t.oc.mikrofon;
+		tikla('ben-sagir');
+		await bekle(60);
+		denetle('telefon: sağırlık kalkınca mikrofon yeniden alındı', t.oc.mikrofon === sayi + 1 && gidenIzi() === t.oc.sonIz && t.oc.sonIz.readyState === 'live');
+		// Susturulmuşken kanala girilirse mikrofon hiç açılmaz.
+		tikla('ben-mikrofon'); // sustur
+		await bekle(40);
+		tw.eval('sesKapat()');
+		await bekle(30);
+		const once = t.oc.mikrofon;
+		tw.eval("sesAc('sesli-sohbet')");
+		await bekle(60);
+		denetle('telefon: susturulmuşken girince mikrofon açılmadı', t.oc.mikrofon === once && tw.eval('mikBirakildi === true'), String(t.oc.mikrofon - once));
+		denetle('telefon: ses-gir susturulmuş', tson('ses-gir').sessiz === true);
+		tgel({ type: 'ses-girdi', kanal: 'sesli-sohbet', kisiler: ['bora'], ice: ICE, devam: false });
+		await bekle(60);
+		denetle('telefon: susturulmuş girişte uyarı yok, "mikrofon kapalı"', td.getElementById('ses-uyari').hidden && td.getElementById('ben-alt').textContent === 'mikrofon kapalı', td.getElementById('ben-alt').textContent);
+		// Ayardan kapatılınca (susturulmuşken) mikrofon alınır ama izi kapalı kalır.
+		tw.eval('ayarlarAc()');
+		denetle('ayarlarda "susturunca mikrofonu tamamen kapat" işaretli', td.getElementById('ayar-mik-birak').checked === true);
+		td.getElementById('ayar-mik-birak').checked = false;
+		td.getElementById('ayar-mik-birak').dispatchEvent(new tw.Event('change'));
+		await bekle(60);
+		denetle('ayar kapatılınca susturulmuşken de mikrofon açık tutulur (izi kapalı)', t.oc.mikrofon === once + 1 && t.oc.sonIz.readyState === 'live' && t.oc.sonIz.enabled === false);
+		denetle('ayar kalıcı', JSON.parse(tw.localStorage.getItem('ses-ayarlari')).mikBirak === false);
+		tw.eval('ayarlarKapat(); sesKapat()');
+		const u = kur();
+		await bekle(20);
+		denetle('masaüstünde susturunca mikrofon açık kalır (varsayılan)', u.window.eval('ayar.mikBirak') === false);
 	}
 
 	console.log(process.exitCode ? 'BAŞARISIZ' : `Arayüz denemeleri geçti (${gecen}).`);
