@@ -53,11 +53,13 @@ const UC_KANALLI =
 // Sayfayı kur: DOM + taklitler + ana.js. Birden çok kez çağrılabilir (hash/depo senaryoları).
 // ekranYok: tarayıcı ekran paylaşımı sunmuyor (ör. telefon). red: tarayıcı RED'i (RFC 2198) biliyor
 // (RTCRtpReceiver.getCapabilities onu da listeler; yoksa RTCRtpReceiver hiç yok). dokunmatik:
-// telefon gibi (pointer: coarse). android: tarayıcı kimliği Android'deki Chrome.
-function kur({ url = 'https://chat.deneme/', depo = {}, oturumDepo = {}, ekranYok = false, red = false, dokunmatik = false, android = false } = {}) {
+// telefon gibi (pointer: coarse). android: tarayıcı kimliği Android'deki Chrome. firefox: masaüstü
+// Firefox (Linux).
+function kur({ url = 'https://chat.deneme/', depo = {}, oturumDepo = {}, ekranYok = false, red = false, dokunmatik = false, android = false, firefox = false } = {}) {
 	const dom = new JSDOM(HTML, { url, pretendToBeVisual: true, runScripts: 'dangerously' });
 	const { window } = dom;
 	if (dokunmatik) window.matchMedia = (q) => ({ matches: /pointer:\s*coarse/.test(q), media: q, addEventListener() {}, removeEventListener() {} });
+	if (firefox) Object.defineProperty(window.navigator, 'userAgent', { configurable: true, get: () => 'Mozilla/5.0 (X11; Linux x86_64; rv:153.0) Gecko/20100101 Firefox/153.0' });
 	if (android) {
 		Object.defineProperty(window.navigator, 'userAgent', {
 			configurable: true,
@@ -138,6 +140,8 @@ function kur({ url = 'https://chat.deneme/', depo = {}, oturumDepo = {}, ekranYo
 	durum.aygitKisit = null;
 	durum.aygitIzi = null;
 	durum.aygitHata = '';
+	// getUserMedia sırası: mikrofon mu aygıt mı; aygıt açılırken mikrofon açık mıydı.
+	durum.gumSirasi = [];
 	Object.defineProperty(window.navigator, 'mediaDevices', {
 		value: {
 			getUserMedia: async (kisitlar) => {
@@ -150,6 +154,7 @@ function kur({ url = 'https://chat.deneme/', depo = {}, oturumDepo = {}, ekranYo
 				}
 				const id = ses && ses.deviceId && ses.deviceId.exact;
 				if (id && id !== 'mik-1') {
+					durum.gumSirasi.push({ tur: 'aygit', mikAcik: !!(durum.sonIz && durum.sonIz.readyState === 'live') });
 					if (durum.aygitHata) throw Object.assign(new Error('aygıt'), { name: durum.aygitHata });
 					durum.aygitKisit = { ...ses };
 					const iz = izYap();
@@ -157,6 +162,7 @@ function kur({ url = 'https://chat.deneme/', depo = {}, oturumDepo = {}, ekranYo
 					return akisYap([iz]);
 				}
 				durum.mikrofon++;
+				durum.gumSirasi.push({ tur: 'mik' });
 				durum.micKisit = ses ? { ...ses } : null;
 				const iz = izYap();
 				const ayarlar = iz.getSettings();
@@ -2067,6 +2073,95 @@ const ICE = { iceServers: [{ urls: ['stun:1.2.3.4:3478'] }, { urls: ['turn:1.2.3
 		denetle('gelen "yenile, tam": teklif eden bağlantıyı baştan kurar', yeniB.kapandi === true && tw.eval("esler.get('bora').pc") !== yeniB);
 		denetle('gelen "yenile, tam" teşhise yazıldı', t.oc.gonderilen.some((m) => m.type === 'tani' && m.veri.olay === 'yeniden-kur-istendi' && m.veri.es === 'bora'));
 		clearInterval(nabiz);
+		tw.eval('sesKapat()');
+	}
+
+	// --- 26) Firefox: paylaşılan ses aygıtı ilk açılan ses girişi olmalı (sonradan açılan aygıt ayrı bir
+	// arabellekten geçiyor: şikayette 0,8-0,9 sn yakalama gecikmesi, saniyelerce boşluk). Mikrofon
+	// açıkken aygıttan paylaşım başlatılırsa mikrofon önce bırakılır, aygıt açılır, mikrofon geri
+	// alınır. Ölçülen yakalama gecikmesi yüksekse yakalama aynı sırayla yeniden açılır (paylaşım başına
+	// en çok 2 kez, 2 dk arayla).
+	{
+		const t = kur({ firefox: true, depo: { anahtar: 'f'.repeat(128), ad: 'taha' } });
+		const tw = t.window;
+		const td = t.d;
+		const tgel = (m) => t.oc.ws.onmessage({ data: JSON.stringify(m) });
+		const tanilar = (olay) => t.oc.gonderilen.filter((m) => m.type === 'tani' && m.veri.olay === olay).map((m) => m.veri);
+		await bekle(40);
+		tgel({ type: 'hazir', ad: 'taha', kanallar, kimler: [{ ad: 'taha' }, { ad: 'bora' }], max: 10, maxKullanici: 10, beyazListe: 2, beyazListeAdlari: ['taha', 'bora'], sunulanDosyalar: [], ice: ICE, surum: 'v1' });
+		await bekle(40);
+		tw.eval("sesAc('sesli-sohbet')");
+		await bekle(60);
+		tgel({ type: 'ses-girdi', kanal: 'sesli-sohbet', kisiler: ['bora'], ice: ICE, devam: false });
+		await bekle(60);
+		const pc = t.FakePC.hepsi.at(-1);
+		const ilkMik = t.oc.sonIz;
+		denetle('Firefox: kanalda mikrofon açık, eşe bağlı', ilkMik.readyState === 'live' && t.oc.mikrofon === 1 && pc._transceivers[0].sender.track === ilkMik);
+		t.oc.ekranSesiYok = true;
+		t.oc.ekranSesiVer = false;
+		t.oc.aygitlar = [
+			{ kind: 'audioinput', deviceId: 'mik-1', label: 'Starship/Matisse HD Audio Controller Analog Stereo', groupId: 'a' },
+			{ kind: 'audioinput', deviceId: 'monitor-1', label: 'Monitor of FIIO KA13 Pro', groupId: 'b' },
+		];
+		t.oc.gumSirasi = [];
+		td.getElementById('yayin-ac').click();
+		await bekle(20);
+		[...td.querySelectorAll('#yayin-menu button')].find((b) => b.textContent.includes('Ekransız paylaş')).click();
+		await bekle(60);
+		td.getElementById('ses-kaynagi-aygit').value = 'monitor-1';
+		td.getElementById('ses-kaynagi-paylas').click();
+		await bekle(60);
+		denetle('Firefox: paylaşım başlarken mikrofon önce bırakıldı (konuşma bir an kesilir)', ilkMik.readyState === 'ended' && tw.eval('mikrofon === null') && pc._transceivers[0].sender.track === null);
+		await bekle(800);
+		const sira = t.oc.gumSirasi;
+		denetle('Firefox: aygıt mikrofon kapalıyken açıldı (asıl giriş), mikrofon ondan sonra geri alındı', sira.length === 2 && sira[0].tur === 'aygit' && sira[0].mikAcik === false && sira[1].tur === 'mik', JSON.stringify(sira));
+		const monitorIz = t.oc.aygitIzi;
+		denetle(
+			'Firefox: mikrofon geri geldi ve eşe bağlı; paylaşım çıkarıcının çıkışı',
+			t.oc.mikrofon === 2 && t.oc.sonIz.readyState === 'live' && pc._transceivers[0].sender.track === t.oc.sonIz && pc._transceivers[1].sender.track === t.oc.hedefIzleri.at(-1) && monitorIz.readyState === 'live',
+		);
+		denetle('Firefox: mikrofon susturulmuş görünmedi', !t.oc.gonderilen.some((m) => m.type === 'sessiz' && m.sessiz === true) && /Ekransız paylaşıyorsun/.test(td.getElementById('durum').textContent));
+		const aygitTani = tanilar('yayin-aygit').at(-1);
+		denetle('teşhis: mikrofon önce bırakıldı yazıldı', aygitTani && aygitTani.mikOnceBirakildi === true && aygitTani.tazele === false, JSON.stringify(aygitTani));
+		// Ölçülen yakalama gecikmesi yüksek (850 ms): yakalama aynı sırayla yeniden açılır.
+		const dugum = t.oc.workletDugumleri.at(-1);
+		const mik2 = t.oc.sonIz;
+		const yayinMesaji = t.oc.gonderilen.filter((m) => m.type === 'yayin').length;
+		t.oc.gumSirasi = [];
+		dugum.port.onmessage({ data: { tur: 'sonda', gecikme: 0.85, snr: 1000 } });
+		await bekle(60);
+		const tz = tanilar('yakalama-tazele');
+		denetle('yüksek yakalama gecikmesi: tazeleme teşhise yazıldı', tz.length === 1 && tz[0].ms === 850 && tz[0].mikrofon === true && tz[0].kez === 1, JSON.stringify(tz));
+		denetle('tazeleme: eski yakalama ve mikrofon önce kapandı', monitorIz.readyState === 'ended' && mik2.readyState === 'ended');
+		await bekle(800);
+		const sira2 = t.oc.gumSirasi;
+		denetle(
+			'tazeleme: aygıt mikrofon kapalıyken yeniden açıldı, mikrofon sonra; eşe yeni izler',
+			sira2.length === 2 && sira2[0].tur === 'aygit' && !sira2[0].mikAcik && sira2[1].tur === 'mik' && t.oc.aygitIzi !== monitorIz && t.oc.aygitIzi.readyState === 'live' && pc._transceivers[1].sender.track === t.oc.hedefIzleri.at(-1) && pc._transceivers[0].sender.track === t.oc.sonIz && t.oc.sonIz.readyState === 'live',
+			JSON.stringify(sira2),
+		);
+		const yayinlar = t.oc.gonderilen.filter((m) => m.type === 'yayin').slice(yayinMesaji);
+		denetle('tazelemede paylaşım bitmiş sayılmadı (yayın hep sesli bildirildi)', yayinlar.length >= 1 && yayinlar.every((m) => m.yayin && m.yayin.ses === true), JSON.stringify(yayinlar));
+		denetle('tazelemede kullanıcıya ileti yok, teşhiste tazele', tanilar('yayin-aygit').at(-1).tazele === true && /Ekransız paylaşıyorsun/.test(td.getElementById('durum').textContent));
+		// 2 dakika dolmadan yeniden yüksek ölçülürse yeniden denenmez.
+		const aygitIzi2 = t.oc.aygitIzi;
+		t.oc.workletDugumleri.at(-1).port.onmessage({ data: { tur: 'sonda', gecikme: 0.9, snr: 1000 } });
+		await bekle(700);
+		denetle('2 dk dolmadan ikinci tazeleme yok', tanilar('yakalama-tazele').length === 1 && t.oc.aygitIzi === aygitIzi2 && aygitIzi2.readyState === 'live');
+		// Susturulmuşken başlatılan paylaşımda mikrofona dokunulmaz.
+		tw.eval('yayinDurdur()');
+		td.getElementById('ben-mikrofon').click(); // sustur: mikrofon bırakılır
+		await bekle(40);
+		const mikSayisi = t.oc.mikrofon;
+		t.oc.gumSirasi = [];
+		td.getElementById('yayin-ac').click();
+		await bekle(20);
+		[...td.querySelectorAll('#yayin-menu button')].find((b) => b.textContent.includes('Ekransız paylaş')).click();
+		await bekle(60);
+		td.getElementById('ses-kaynagi-aygit').value = 'monitor-1';
+		td.getElementById('ses-kaynagi-paylas').click();
+		await bekle(200);
+		denetle('susturulmuşken paylaşım: beklemeden aygıt açılır, mikrofon alınmaz', t.oc.gumSirasi.length === 1 && t.oc.gumSirasi[0].tur === 'aygit' && t.oc.mikrofon === mikSayisi && tw.eval('!!yayin.ses'), JSON.stringify(t.oc.gumSirasi));
 		tw.eval('sesKapat()');
 	}
 

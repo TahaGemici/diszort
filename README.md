@@ -38,7 +38,13 @@ da sunucuya yüklenmez, paylaşandan doğrudan alınır. İçeri yalnızca içer
     paylaşımında ses vermediği için orada ses bir ses aygıtından alınır (Linux'ta bilgisayarın sesi
     "Monitor of …" aygıtıdır). Kanaldakilerin konuşması bu sesten çıkarılır: sayfa ne çaldığını
     bilir, gecikmesini ve seviyesini bulup yakalanan sesten çıkarır (tarayıcının yankı engelleyicisi
-    kullanılmaz, müzik eşiksiz ve kesilmeden gider).
+    kullanılmaz, müzik eşiksiz ve kesilmeden gider). Paylaşılan aygıt tarayıcının ilk açtığı ses
+    girişi olmalı: Firefox sonradan açılan ikinci aygıtı ayrı bir arabellekten geçiriyor (ölçümde
+    mikrofon önce açıkken yakalama 0,8-0,9 sn gecikti, dinleyen ~4 sn gecikme ve 1-5 sn'lik boşluklar
+    duydu; aygıt önce açılınca 79 ms, sonradan açılan mikrofonla da). Bu yüzden Firefox'ta mikrofon
+    açıkken paylaşım başlatılırsa mikrofon bir an (~0,5 sn) bırakılıp geri alınır. Firefox'ta yakalama
+    gecikmesi ölçülür (duyulmayacak kadar tiz, kısık bir sesle); 300 ms'yi aşarsa yakalama aynı
+    sırayla kendiliğinden yeniden açılır.
   - Paylaşım, kanaldakilerde bir yayın kartı olarak görünür (CANLI): ekranlıysa görüntü, sesliyse ses
     satırı. Herkes paylaşımın sesini kendi için susturur ya da kısar; ses geldikçe kart ışır.
   - İzlemek ve dinlemek her cihazda olur (telefonda görüntüyü kapatıp yalnızca dinlenebilir).
@@ -117,11 +123,13 @@ paylaştığım sesin o kişiye gidişi (`yayinGiden`: kbps, paket/sn — düzen
 ekran açık mı; mikrofonun ve paylaşılan sesin aygıtı, yakalamadaki kopukluklar (`kopukluk`).
 Olaylar: `arka-plan` / `one-geldi` (dönüşten ~6 sn sonra durumun tamamı, `arkaPlanSn`),
 `birikme` / `yeniden-kur-istendi`, `calma-takildi`, `durum`, `yeniden-kur`, `teklif-hata`. Ses
-aygıtından paylaşanda: `yakalama-gecikmesi` (sayfa kendi çıkışına duyulmayacak kadar tiz ve kısık,
+aygıtından paylaşanda: `yakalama-gecikmesi` (Firefox; sayfa kendi çıkışına duyulmayacak kadar tiz ve kısık,
 40 ms'lik bir ses çalar, paylaşılan "Monitor"da kaç ms sonra göründüğünü ölçer: çıkış yolu
-`cikisMs` + yakalama yolu; paylaşım başında, dakikada bir ve mikrofon açılıp kapanınca;
-`mikrofon`: o an mikrofon açık mı) ve `yakalama-kopuklugu` (yakalanan sesteki tam sessizlikler,
-ms; `*` 200 ms'den uzun). Sorun sürerken iki cihazın satırlarına birlikte bakılır.
+`cikisMs` + yakalama yolu; paylaşım başında, 3 dakikada bir ve mikrofon açılıp kapanınca;
+`mikrofon`: o an mikrofon açık mı), `yakalama-tazele` (gecikme yüksek ölçüldü: mikrofon bırakılıp
+yakalama yeniden açıldı), `yayin-aygit` (`mikOnceBirakildi`: aygıt açılırken mikrofon bir an
+bırakıldı) ve `yakalama-kopuklugu` (yakalanan sesteki tam sessizlikler, ms; `*` 200 ms'den uzun;
+müzikteki gerçek sessizlikleri de sayar). Sorun sürerken iki cihazın satırlarına birlikte bakılır.
 
 ## Geliştirme
 

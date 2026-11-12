@@ -4569,40 +4569,104 @@ async function sesKaynagiPaylas() {
 	if (!sesKanal) return durum('Önce bir sesli kanala gir.', true);
 	ayar.yayinAygitId = id;
 	ayarKaydet();
+	yayin.tazeleme = { sayi: 0, son: 0 };
+	await aygitSesiniPaylas(id, ad);
+}
+
+// Paylaşılan ses aygıtı tarayıcının İLK açtığı ses girişi olmalı. Firefox sayfadaki ilk ses girişini
+// ses düzeninin asıl girişi yapar; sonradan açılan aygıt ayrı bir arabellekten (saat farkı
+// düzeltmesi) geçer. Şikayetteki bilgisayarda (ses FiiO USB DAC'tan çıkıyor, mikrofon anakartta;
+// saatleri ayrı) mikrofon açıkken başlatılan paylaşımın yakalaması 0,8-0,9 sn gecikiyordu (dinleyen
+// ~4 sn duydu) ve 1-5 sn'lik (bir kez 14 sn) boşluklar oluşuyordu; mikrofon kapalıyken başlatılınca
+// yakalama 79-82 ms, sonradan mikrofon açılınca da aynı ve kesintisiz (mikrofon ikinci giriş olur,
+// konuşmada sorun yok). Bu yüzden Firefox'ta mikrofon açıkken aygıttan paylaşım başlatılırsa mikrofon
+// bir an bırakılır, aygıt açılır, mikrofon geri alınır (konuşmada ~0,5 sn boşluk).
+const firefoxMu = () => /Firefox\//.test(navigator.userAgent || '');
+const aygitOnceAcilmali = firefoxMu;
+const GIRIS_KAPANMA_MS = 500; // izler durunca tarayıcının ses girişini gerçekten kapatması için
+let aygitAciliyor = false;
+
+// Aygıtın sesini aç ve paylaşıma tak. tazele: süren aygıt paylaşımını aynı sırayla yeniden aç
+// (yakalama gecikmesi yüksek ölçüldü; bkz. yakalamayiTazele): eski yakalama önce kapatılır (aynı
+// aygıt açıkken tarayıcı yeni izi aynı girişten verir), mesaj gösterilmez.
+async function aygitSesiniPaylas(id, ad, tazele = false) {
+	if (aygitAciliyor) return;
+	aygitAciliyor = true;
 	const kisit = { echoCancellation: false, noiseSuppression: false, autoGainControl: false, channelCount: { ideal: 2 }, sampleRate: { ideal: 48000 } };
 	if (id) kisit.deviceId = { exact: id };
-	let ses;
+	const mikGeriAl = !!mikrofon && (tazele || aygitOnceAcilmali());
 	try {
-		const akis = await navigator.mediaDevices.getUserMedia({ audio: kisit });
-		ses = akis.getAudioTracks()[0] || null;
-		for (const t of akis.getTracks()) if (t !== ses) t.stop();
-		if (!ses) throw Object.assign(new Error('ses izi yok'), { name: 'NotFoundError' });
-	} catch (h) {
-		if (h && (h.name === 'OverconstrainedError' || h.name === 'NotFoundError')) {
-			ayar.yayinAygitId = '';
-			ayarKaydet();
+		if (tazele) yayinSesiniBirak();
+		if (mikGeriAl) {
+			mikrofonuBirak();
+			mikBirakildi = true;
+			gidenIzKur();
+			mikDugmeleriCiz();
 		}
-		taniGonder({ olay: 'yayin-aygit-hata', ad: (h && h.name) || null, metin: String((h && h.message) || h).slice(0, 160) });
-		return durum(aygitHataMetni(h), true);
+		if (mikGeriAl || tazele) await new Promise((r) => setTimeout(r, GIRIS_KAPANMA_MS));
+		let ses = null;
+		let hata = null;
+		if (sesKanal) {
+			try {
+				const akis = await navigator.mediaDevices.getUserMedia({ audio: kisit });
+				ses = akis.getAudioTracks()[0] || null;
+				for (const t of akis.getTracks()) if (t !== ses) t.stop();
+				if (!ses) throw Object.assign(new Error('ses izi yok'), { name: 'NotFoundError' });
+			} catch (h) {
+				hata = h;
+			}
+		}
+		// Aygıt açıldı (asıl giriş oldu) ya da açılamadı: mikrofon şimdi geri alınabilir.
+		if (mikGeriAl) mikBirakmayiUygula();
+		if (hata) {
+			if (hata.name === 'OverconstrainedError' || hata.name === 'NotFoundError') {
+				ayar.yayinAygitId = '';
+				ayarKaydet();
+			}
+			taniGonder({ olay: 'yayin-aygit-hata', ad: hata.name || null, metin: String(hata.message || hata).slice(0, 160) });
+			if (tazele) yayinDegisti(); // paylaşımın sesi gitti
+			return durum(aygitHataMetni(hata), true);
+		}
+		if (!sesKanal) {
+			if (ses) ses.stop();
+			return;
+		}
+		const isleyici = await yankiCikariciKur(ses);
+		if (!sesKanal || ses.readyState === 'ended') {
+			if (isleyici) yankiCikariciKapat(isleyici);
+			return ses.stop();
+		}
+		// Teşhis: tarayıcının gerçekte uyguladığı (kanal sayısı, işlemler) ve çıkarıcının kurulup kurulmadığı.
+		try {
+			const s = ses.getSettings ? ses.getSettings() : {};
+			taniGonder({ olay: 'yayin-aygit', kanal: s.channelCount ?? null, aec: s.echoCancellation ?? null, ns: s.noiseSuppression ?? null, agc: s.autoGainControl ?? null, ornekHizi: s.sampleRate ?? null, cikarici: !!isleyici, baglamHizi: isleyici ? isleyici.ac.sampleRate : null, tazele, mikOnceBirakildi: mikGeriAl });
+		} catch {}
+		const ekle = yayinVar();
+		if (!ekle) yayin.ekransiz = true;
+		yayinSesiTak(isleyici ? isleyici.iz : ses, id || 'varsayilan', ad, isleyici);
+		yayinDegisti();
+		if (tazele) return;
+		const kaynak = ad ? ` (${ad})` : '';
+		const not = isleyici ? '' : ' Bu tarayıcıda kanaldakilerin sesi paylaşımdan çıkarılamıyor: kendi seslerini geri duyabilirler.';
+		durum((ekle ? `Ses de paylaşılıyor${kaynak}.` : `Ekransız paylaşıyorsun: yalnızca ses gidiyor${kaynak}.`) + not, !isleyici);
+	} finally {
+		aygitAciliyor = false;
 	}
-	if (!sesKanal) return ses.stop();
-	const isleyici = await yankiCikariciKur(ses);
-	if (!sesKanal || ses.readyState === 'ended') {
-		if (isleyici) yankiCikariciKapat(isleyici);
-		return ses.stop();
-	}
-	// Teşhis: tarayıcının gerçekte uyguladığı (kanal sayısı, işlemler) ve çıkarıcının kurulup kurulmadığı.
-	try {
-		const s = ses.getSettings ? ses.getSettings() : {};
-		taniGonder({ olay: 'yayin-aygit', kanal: s.channelCount ?? null, aec: s.echoCancellation ?? null, ns: s.noiseSuppression ?? null, agc: s.autoGainControl ?? null, ornekHizi: s.sampleRate ?? null, cikarici: !!isleyici, baglamHizi: isleyici ? isleyici.ac.sampleRate : null });
-	} catch {}
-	const ekle = yayinVar();
-	if (!ekle) yayin.ekransiz = true;
-	yayinSesiTak(isleyici ? isleyici.iz : ses, id || 'varsayilan', ad, isleyici);
-	yayinDegisti();
-	const kaynak = ad ? ` (${ad})` : '';
-	const not = isleyici ? '' : ' Bu tarayıcıda kanaldakilerin sesi paylaşımdan çıkarılamıyor: kendi seslerini geri duyabilirler.';
-	durum((ekle ? `Ses de paylaşılıyor${kaynak}.` : `Ekransız paylaşıyorsun: yalnızca ses gidiyor${kaynak}.`) + not, !isleyici);
+}
+
+// Ölçülen yakalama gecikmesi yüksekse (aygıt asıl giriş olamadı: ör. mikrofon önce açıktı, başka bir
+// tarayıcı) yakalama aynı sırayla yeniden açılır: mikrofon bırakılır, aygıt açılır, mikrofon geri
+// alınır. Paylaşım başına en çok 2 kez, en az 2 dakika arayla (işe yaramıyorsa durmadan denenmesin).
+const YAKALAMA_GECIKMESI_SINIRI = 300;
+function yakalamayiTazele(ms) {
+	if (!sesKanal || !yayin.aygit || !yayin.ses || aygitAciliyor) return;
+	const t = yayin.tazeleme || (yayin.tazeleme = { sayi: 0, son: 0 });
+	const simdi = Date.now();
+	if (t.sayi >= 2 || simdi - t.son < 120000) return;
+	t.sayi++;
+	t.son = simdi;
+	taniGonder({ olay: 'yakalama-tazele', ms, mikrofon: !!mikrofon, kez: t.sayi });
+	aygitSesiniPaylas(yayin.aygit === 'varsayilan' ? '' : yayin.aygit, yayin.aygitAdi, true);
 }
 
 // --- ses aygıtından paylaşımda kanaldakilerin sesini çıkarma (bkz. yanki.js)
@@ -4680,9 +4744,11 @@ async function yankiCikariciKur(ham) {
 		return null;
 	}
 	yankiReferansGuncelle(y);
-	// Yakalama gecikmesi: başta (3 sn sonra) ve dakikada bir ölçülür (bkz. yakalamaSondasi).
-	y.sondaZamani = setTimeout(() => yakalamaSondasi(y), 3000);
-	y.sondaDongusu = setInterval(() => yakalamaSondasi(y), 60000);
+	// Yakalama gecikmesi (Firefox'ta): başta (3 sn sonra) ve 3 dakikada bir ölçülür (bkz. yakalamaSondasi).
+	if (firefoxMu()) {
+		y.sondaZamani = setTimeout(() => yakalamaSondasi(y), 3000);
+		y.sondaDongusu = setInterval(() => yakalamaSondasi(y), 180000);
+	}
 	return y;
 }
 
@@ -4690,7 +4756,11 @@ async function yankiCikariciKur(ham) {
 // (−34 dBFS), 40 ms'lik bir ses çalınır; paylaşılan aygıt bu çıkışın "Monitor"u ise yakalanan seste
 // görünür ve işlemci (yanki.js, SondaBulucu) gecikmeyi ölçer: çıkış yolu + yakalama yolu. Paylaşılan
 // sesin gecikmesinin bilgisayardan mı geldiği buradan anlaşılır (alıcının tamponu ayrıca ölçülüyor).
-// Başta, dakikada bir ve mikrofon açılıp kapanınca (iki ses aygıtı birden açıkken fark var mı).
+// Başta, 3 dakikada bir ve mikrofon açılıp kapanınca (iki ses aygıtı birden açıkken fark var mı).
+// Yalnızca Firefox'ta kendiliğinden: Chrome uzun süre sessiz kalan ses bağlamının çıkışını askıya
+// alıyor; sonda çalınca çıkış yeniden açılıyor, akışların gecikmesi oynuyor ve kanaldakilerin sesini
+// çıkaran süzgeçler bir an şaşıyordu (gerçek Chromium'da çıkarılan yankı 32-36 dB yerine 24 dB).
+// Aygıttan paylaşım sorunu (bkz. aygitSesiniPaylas) zaten Firefox'ta.
 const SONDA_HZ = 18500;
 const SONDA_SURE = 0.04;
 function yakalamaSondasi(y = yayin.yanki) {
@@ -4723,11 +4793,12 @@ function sondaSonucu(y, v) {
 	if (y.sondalar.length > 6) y.sondalar.shift();
 	const cikisMs = y.ac && y.ac.outputLatency != null ? Math.round(y.ac.outputLatency * 1000) : null;
 	taniGonder({ olay: 'yakalama-gecikmesi', ms, cikisMs, snr: v.snr ?? null, mikrofon: !!mikrofon });
+	if (ms != null && ms > YAKALAMA_GECIKMESI_SINIRI && yayin.yanki === y) yakalamayiTazele(ms);
 }
 // Mikrofon açılıp kapanınca (paylaşım sürüyorsa) 3 sn sonra yeniden ölç.
 let sondaBeklemesi = null;
 function sondayiPlanla() {
-	if (!yayin.yanki || !yayin.aygit) return;
+	if (!yayin.yanki || !yayin.aygit || !firefoxMu()) return;
 	clearTimeout(sondaBeklemesi);
 	sondaBeklemesi = setTimeout(() => yakalamaSondasi(), 3000);
 }
