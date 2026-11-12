@@ -1429,6 +1429,19 @@ const ICE = { iceServers: [{ urls: ['stun:1.2.3.4:3478'] }, { urls: ['turn:1.2.3
 			cDugum.giden.at(-1) === suzgec && tani.length === 1 && tani[0].veri.olay === 'yayin-yanki' && tani[0].veri.gecikmeMs === 73.4 && tani[0].veri.yuva === 2,
 			JSON.stringify(tani),
 		);
+		// Yakalama gecikmesi sondası: sayfa çıkışına tiz, kısık bir ses çalınır, worklet'e ne zaman çalındığı
+		// bildirilir; worklet'in ölçtüğü gecikme teşhise yazılır. Yakalanan sesteki kopukluklar da (toplanarak).
+		w.eval('yakalamaSondasi()');
+		const sonda = cDugum.giden.filter((v) => v.tur === 'sonda').at(-1);
+		denetle('sonda: worklet\'e çalınma zamanı ve süresi bildirildi', sonda && typeof sonda.t0 === 'number' && sonda.sure === 0.04, JSON.stringify(sonda));
+		cDugum.port.onmessage({ data: { tur: 'sonda', gecikme: 0.2154, snr: 420 } });
+		const sTani = s.oc.gonderilen.filter((m) => m.type === 'tani' && m.veri.olay === 'yakalama-gecikmesi').at(-1);
+		denetle('sonda sonucu teşhise yazıldı (ms, mikrofon açık mı)', sTani && sTani.veri.ms === 215 && sTani.veri.snr === 420 && typeof sTani.veri.mikrofon === 'boolean' && w.eval('yayin.yanki.sondalar.at(-1)') === 215, JSON.stringify(sTani));
+		cDugum.port.onmessage({ data: { tur: 'kopukluk', olaylar: [{ ms: 40, uzun: false }] } });
+		cDugum.port.onmessage({ data: { tur: 'kopukluk', olaylar: [{ ms: 900, uzun: true }] } });
+		await bekle(3200);
+		const kTani = s.oc.gonderilen.filter((m) => m.type === 'tani' && m.veri.olay === 'yakalama-kopuklugu');
+		denetle('yakalamadaki kopukluklar toplanıp tek satırda teşhise yazıldı', kTani.length === 1 && JSON.stringify(kTani[0].veri.ms) === JSON.stringify([40, '900*']), JSON.stringify(kTani));
 		// Akış gidince (bağlantı yeniden kuruldu, kişi çıktı) yuvası boşalır: worklet de işçi de unutur.
 		const boraYuva = w.eval("yayin.yanki.referans.get(esler.get('bora').ses.srcObject).yuva");
 		const boraKazanc = w.eval("yayin.yanki.referans.get(esler.get('bora').ses.srcObject).kazanc");

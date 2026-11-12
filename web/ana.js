@@ -2709,6 +2709,7 @@ const mikBirakilsin = () => ayar.mikKapali || ayar.sagir;
 // (izin çoktan verildi, birkaç yüz ms) yeniden susturulursa sonunda yine bırakılır.
 function mikBirakmayiUygula() {
 	if (!sesKanal) return;
+	sondayiPlanla();
 	if (mikBirakilsin()) {
 		if (!mikrofon) return;
 		mikrofonuBirak();
@@ -3157,7 +3158,18 @@ async function teklifVer(es, iceYenidenBaslat = false) {
 		gonder({ type: 'sdp', to: es.ad, sdp: pc.localDescription, oturum: es.oturum });
 	} catch (h) {
 		console.warn('teklif', es.ad, h);
-		taniGonder({ olay: 'teklif-hata', es: es.ad, metin: String((h && h.message) || h).slice(0, 160) });
+		// Bağlam (teşhis): ICE yenilemesi miydi, hangi durumda, açıklamalardaki m-line'lar (mid sırası).
+		const midler = (d) => (d && d.sdp ? (d.sdp.match(/^a=mid:\S+/gm) || []).map((x) => x.slice(6)).join(',') : null);
+		taniGonder({
+			olay: 'teklif-hata',
+			es: es.ad,
+			metin: String((h && h.message) || h).slice(0, 160),
+			iceYenile: iceYenidenBaslat,
+			sinyal: pc.signalingState,
+			yerel: midler(pc.localDescription),
+			uzak: midler(pc.remoteDescription),
+			kanallar: pc.getTransceivers().map((t) => `${t.mid}:${t.currentDirection || t.direction}`).join(' '),
+		});
 	}
 }
 
@@ -4621,7 +4633,7 @@ async function yankiCikariciKur(ham) {
 		console.warn('yankı çıkarıcı yüklenemedi', h);
 		return null;
 	}
-	const y = { ac, ham, referans: new Map(), ozet: null, ozetBekleyen: [], suzgec: null, suzgecler: new Map(), denemeler: [], kapandi: false, t0: Date.now() };
+	const y = { ac, ham, referans: new Map(), ozet: null, ozetBekleyen: [], suzgec: null, suzgecler: new Map(), denemeler: [], sondalar: [], kopukluklar: [], kapandi: false, t0: Date.now() };
 	try {
 		y.dugum = new AudioWorkletNode(ac, 'yanki-cikarici', { numberOfInputs: 1 + YANKI_YUVA, numberOfOutputs: 1, outputChannelCount: [2], channelCount: 2, channelCountMode: 'explicit', channelInterpretation: 'speakers' });
 		y.kaynak = ac.createMediaStreamSource(new MediaStream([ham]));
@@ -4638,7 +4650,8 @@ async function yankiCikariciKur(ham) {
 			else if (v.tur === 'ozet') {
 				y.ozet = v.ozet;
 				for (const f of y.ozetBekleyen.splice(0)) f(v.ozet);
-			}
+			} else if (v.tur === 'sonda') sondaSonucu(y, v);
+			else if (v.tur === 'kopukluk') kopukluklariBildir(y, v.olaylar || []);
 		};
 		y.isci.onmessage = (e) => {
 			const v = e.data || {};
@@ -4667,12 +4680,75 @@ async function yankiCikariciKur(ham) {
 		return null;
 	}
 	yankiReferansGuncelle(y);
+	// Yakalama gecikmesi: başta (3 sn sonra) ve dakikada bir ölçülür (bkz. yakalamaSondasi).
+	y.sondaZamani = setTimeout(() => yakalamaSondasi(y), 3000);
+	y.sondaDongusu = setInterval(() => yakalamaSondasi(y), 60000);
 	return y;
+}
+
+// Yakalama gecikmesi (teşhis): sayfanın kendi çıkışına duyulmayacak kadar tiz (18,5 kHz) ve kısık
+// (−34 dBFS), 40 ms'lik bir ses çalınır; paylaşılan aygıt bu çıkışın "Monitor"u ise yakalanan seste
+// görünür ve işlemci (yanki.js, SondaBulucu) gecikmeyi ölçer: çıkış yolu + yakalama yolu. Paylaşılan
+// sesin gecikmesinin bilgisayardan mı geldiği buradan anlaşılır (alıcının tamponu ayrıca ölçülüyor).
+// Başta, dakikada bir ve mikrofon açılıp kapanınca (iki ses aygıtı birden açıkken fark var mı).
+const SONDA_HZ = 18500;
+const SONDA_SURE = 0.04;
+function yakalamaSondasi(y = yayin.yanki) {
+	if (!y || y.kapandi || yayin.yanki !== y || !yayin.aygit) return;
+	const ac = y.ac;
+	if (!ac || ac.state !== 'running' || ac.sampleRate < 40000 || typeof ac.createOscillator !== 'function') return;
+	try {
+		const t0 = ac.currentTime + 0.15;
+		const osc = ac.createOscillator();
+		osc.frequency.value = SONDA_HZ;
+		const g = ac.createGain();
+		g.gain.setValueAtTime(0, t0);
+		g.gain.linearRampToValueAtTime(0.02, t0 + SONDA_SURE / 2);
+		g.gain.linearRampToValueAtTime(0, t0 + SONDA_SURE);
+		osc.connect(g);
+		g.connect(ac.destination);
+		osc.start(t0);
+		osc.stop(t0 + SONDA_SURE + 0.01);
+		osc.onended = () => {
+			try {
+				g.disconnect();
+			} catch {}
+		};
+		y.dugum.port.postMessage({ tur: 'sonda', t0, sure: SONDA_SURE });
+	} catch {}
+}
+function sondaSonucu(y, v) {
+	const ms = v.gecikme != null ? Math.round(v.gecikme * 1000) : null;
+	y.sondalar.push(ms);
+	if (y.sondalar.length > 6) y.sondalar.shift();
+	const cikisMs = y.ac && y.ac.outputLatency != null ? Math.round(y.ac.outputLatency * 1000) : null;
+	taniGonder({ olay: 'yakalama-gecikmesi', ms, cikisMs, snr: v.snr ?? null, mikrofon: !!mikrofon });
+}
+// Mikrofon açılıp kapanınca (paylaşım sürüyorsa) 3 sn sonra yeniden ölç.
+let sondaBeklemesi = null;
+function sondayiPlanla() {
+	if (!yayin.yanki || !yayin.aygit) return;
+	clearTimeout(sondaBeklemesi);
+	sondaBeklemesi = setTimeout(() => yakalamaSondasi(), 3000);
+}
+// Yakalanan seste kopukluk (tam sıfır dizisi): ne zaman ve mikrofon açıkken mi olduğu teşhiste görünsün.
+// Olaylar biriktirilip en çok 3 sn'de bir gönderilir.
+function kopukluklariBildir(y, olaylar) {
+	for (const o of olaylar) y.kopukluklar.push(o.uzun ? `${o.ms}*` : o.ms);
+	if (y.kopuklukZamani) return;
+	y.kopuklukZamani = setTimeout(() => {
+		y.kopuklukZamani = null;
+		if (y.kapandi || !y.kopukluklar.length) return;
+		taniGonder({ olay: 'yakalama-kopuklugu', ms: y.kopukluklar.splice(0, 30), mikrofon: !!mikrofon });
+	}, 3000);
 }
 
 function yankiCikariciKapat(y) {
 	if (!y || y.kapandi) return;
 	y.kapandi = true;
+	clearTimeout(y.sondaZamani);
+	clearInterval(y.sondaDongusu);
+	clearTimeout(y.kopuklukZamani);
 	for (const f of y.ozetBekleyen.splice(0)) f(null);
 	try {
 		if (y.dugum) {
@@ -5346,6 +5422,28 @@ function birikmeGozcusu(es, kanal, d) {
 	else if (bagliyim) gonder({ type: 'yenile', to: es.ad, oturum: es.oturum || '', tam: true });
 }
 
+// Teşhis (günlük): gelen sesin tampondan çıktıktan sonra hoparlöre/kulaklığa varana kadar geçen süre
+// (tarayıcının çalma istatistiği, media-playout: telefonda Bluetooth kulaklık ~150-300 ms ekler).
+// Sayfada tek çalma yolu var: turda bir kez, bir bağlantının genel raporundan okunur (Chrome bunu
+// alıcının kendi raporuna koymuyor); son ölçüm penceresinin ortalaması.
+let oynatmaOlcumu = null;
+let oynatmaGecikmesiMs = null;
+let oynatmaOkundu = 0;
+async function oynatmaOlc(pc, simdi) {
+	if (simdi - oynatmaOkundu < 1800) return;
+	oynatmaOkundu = simdi;
+	try {
+		let o = null;
+		(await pc.getStats()).forEach((x) => {
+			if (x.type === 'media-playout' && (x.kind || 'audio') === 'audio') o = x;
+		});
+		if (!o || o.totalSamplesCount == null || o.totalPlayoutDelay == null) return;
+		const a = oynatmaOlcumu;
+		oynatmaOlcumu = { zaman: simdi, ornek: o.totalSamplesCount, gecikme: o.totalPlayoutDelay };
+		if (a && simdi - a.zaman > 400 && o.totalSamplesCount > a.ornek) oynatmaGecikmesiMs = Math.round(((o.totalPlayoutDelay - a.gecikme) / (o.totalSamplesCount - a.ornek)) * 1000);
+	} catch {}
+}
+
 // Teşhis (günlük): bir gelen sesin son ölçümü: alıcı tamponu (ms), hedefi, titreşim, saniyedeki
 // paket, çözülüyor mu, <audio> çalıyor mu.
 function aliciOzeti(d, gelen, oge) {
@@ -5407,6 +5505,7 @@ async function istatistikTuru() {
 			es.yayinGidenOlcum = o;
 		} else es.yayinGidenOlcum = es.yayinGiden = null;
 		const gelen = sesKaydi(gelenRapor, 'inbound-rtp', es.tr && es.tr.receiver && es.tr.receiver.track);
+		oynatmaOlc(pc, simdi);
 		const giden = sesKaydi(gidenRapor, 'outbound-rtp', es.tr && es.tr.sender && es.tr.sender.track);
 		// Paylaşımın sesi: kendi penceresinde kayıp ve uydurulan ses (teşhis ve ipucu için).
 		const yayinGelen = yayinRapor ? sesKaydi(yayinRapor, 'inbound-rtp', es.trSes.receiver.track) : null;
@@ -5596,6 +5695,8 @@ async function taniVeri() {
 			ekranAcik: !!ekranKilidi,
 			arkaPlanSesi: arkaPlanSesi ? (arkaPlanSesi.oge.paused ? (arkaPlanSesi.sistemDurdurdu ? 'baska-uygulama-durdurdu' : 'duruyor') : 'caliyor') : null,
 			baglamGecikmeMs: baglam && baglam.outputLatency != null ? Math.round(((baglam.baseLatency || 0) + baglam.outputLatency) * 1000) : null,
+			// Gelen sesin tampondan sonra çalınana kadarki gecikmesi (çıkış yolu; tarayıcı veriyorsa).
+			oynatmaGecikmesiMs,
 		},
 		kanal: sesKanal,
 		mikrofon: !!mikrofon,
@@ -5625,7 +5726,7 @@ async function yayinSesiOzeti() {
 	const o = { kaynak: yayin.aygit ? 'aygit' : 'ekran', aygitAdi: String(yayin.aygitAdi || iz.label || '').slice(0, 60), durum: iz.readyState, kanal: s.channelCount ?? null, aec: s.echoCancellation ?? null };
 	if (yayin.aygit) {
 		const y = yayin.yanki;
-		o.cikarici = y ? { gidiyor: yayin.ses === y.iz, yuva: y.referans.size, suzgecler: [...y.suzgecler.values()], ...((await yankiOzeti(y)) || {}), denemeler: y.denemeler.slice(-4) } : null;
+		o.cikarici = y ? { gidiyor: yayin.ses === y.iz, yuva: y.referans.size, suzgecler: [...y.suzgecler.values()], ...((await yankiOzeti(y)) || {}), denemeler: y.denemeler.slice(-4), sondaMs: y.sondalar.slice(), cikisMs: y.ac && y.ac.outputLatency != null ? Math.round(y.ac.outputLatency * 1000) : null } : null;
 	}
 	return o;
 }

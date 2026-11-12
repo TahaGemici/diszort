@@ -68,6 +68,8 @@ class YankiCikarici {
 		this.kopuklukOrnek = 0;
 		this.uzunSessizlik = []; // son uzun (>200 ms) tam sıfır dizilerinin süreleri (ms)
 		this.sesVardi = false;
+		// Kopukluk olayları (işlemci sayfaya iletir: ne zaman olduğu teşhiste görünsün).
+		this.olaylar = [];
 	}
 
 	yuva(k) {
@@ -167,10 +169,12 @@ class YankiCikarici {
 				if (this.sesVardi && this.sifirDizi >= this.hiz / 500 && this.sifirDizi <= this.hiz / 5) {
 					this.kopukluk++;
 					this.kopuklukOrnek += this.sifirDizi;
+					if (this.olaylar.length < 20) this.olaylar.push({ ms: Math.round((this.sifirDizi / this.hiz) * 1000), uzun: false });
 				} else if (this.sesVardi && this.sifirDizi > this.hiz / 5) {
 					// Uzun tam sessizlik: şarkı arası olabilir; müzik sürerken olduysa yakalama durmuştur.
 					this.uzunSessizlik.push(Math.round((this.sifirDizi / this.hiz) * 1000));
 					if (this.uzunSessizlik.length > 5) this.uzunSessizlik.shift();
+					if (this.olaylar.length < 20) this.olaylar.push({ ms: Math.round((this.sifirDizi / this.hiz) * 1000), uzun: true });
 				}
 				this.sifirDizi = 0;
 				this.sesVardi = true;
@@ -663,6 +667,57 @@ class YankiTahminleri {
 	}
 }
 
+// ---------------------------------------------------------------- yakalama gecikmesi (sonda)
+//
+// Sayfa kendi çıkışına (varsayılan çıkış aygıtı) duyulmayacak kadar tiz ve kısık, 40 ms'lik bir ses
+// çalar (t0: bağlamın zamanı). Paylaşılan aygıt o çıkışın "Monitor"u ise ses yakalanan seste görünür.
+// Bulucu, yakalanan sesin her bloğunda o frekanstaki gücü ölçer (Goertzel), t0'dan sonraki 1,5 sn'de
+// gücün en yüksek olduğu bloğu bulur. Gecikme = o bloğun ortası − sondanın ortası: sayfanın çıkış
+// yolu + yakalama yolu (Monitor → tarayıcı → bu işlemci). Sondadan önceki bloklarla (arka plan:
+// müziğin o frekanstaki gücü) kıyaslanır; belirgin değilse (paylaşılan aygıt başka) sonuç yok.
+const SONDA_HZ = 18500;
+const SONDA_SURE = 0.04;
+class SondaBulucu {
+	constructor(hiz, f = SONDA_HZ) {
+		this.hiz = hiz;
+		this.k = 2 * Math.cos((2 * Math.PI * f) / hiz);
+		this.taban = 0; // sonda beklenmezken bloklardaki gücün üstel ortalaması
+		this.bekleyen = null; // { t0, sure, enGuc, enZaman }
+	}
+	bekle(t0, sure = SONDA_SURE) {
+		this.bekleyen = { t0, sure, enGuc: 0, enZaman: null };
+	}
+	// x: blok (tek kanal), zaman: bloğun başının bağlam zamanı (sn). Sonuç: null (sürüyor) ya da
+	// { gecikme: sn | null, snr }.
+	blok(x, zaman) {
+		const k = this.k;
+		let s1 = 0;
+		let s2 = 0;
+		for (let i = 0; i < x.length; i++) {
+			const s0 = x[i] + k * s1 - s2;
+			s2 = s1;
+			s1 = s0;
+		}
+		const guc = (s1 * s1 + s2 * s2 - k * s1 * s2) / (x.length * x.length);
+		const b = this.bekleyen;
+		if (!b || zaman < b.t0) {
+			this.taban = this.taban ? this.taban * 0.98 + guc * 0.02 : guc;
+			return null;
+		}
+		if (zaman <= b.t0 + 1.5) {
+			if (guc > b.enGuc) {
+				b.enGuc = guc;
+				b.enZaman = zaman;
+			}
+			return null;
+		}
+		this.bekleyen = null;
+		const snr = b.enGuc / Math.max(this.taban, 1e-12);
+		const gecerli = b.enZaman != null && snr > 30 && b.enGuc > 1e-8;
+		return { gecikme: gecerli ? b.enZaman + x.length / this.hiz / 2 - (b.t0 + b.sure / 2) : null, snr: Math.round(snr) };
+	}
+}
+
 // ---------------------------------------------------------------- AudioWorklet işlemcisi
 
 if (typeof registerProcessor === 'function' && typeof AudioWorkletProcessor === 'function') {
@@ -674,12 +729,15 @@ if (typeof registerProcessor === 'function' && typeof AudioWorkletProcessor === 
 				super();
 				/* global sampleRate */
 				this.c = new YankiCikarici(sampleRate);
+				this.sonda = new SondaBulucu(sampleRate);
+				this.tek = new Float32Array(128);
 				this.bitti = false;
 				this.port.onmessage = (e) => {
 					const v = e.data || {};
 					if (v.tur === 'suzgec') this.c.suzgecAyarla(v.yuva, v.D0, v.w || null);
 					else if (v.tur === 'yuva-bos') this.c.yuvaBosalt(v.yuva);
 					else if (v.tur === 'ozet') this.port.postMessage({ tur: 'ozet', ozet: this.c.ozet() });
+					else if (v.tur === 'sonda') this.sonda.bekle(v.t0, v.sure);
 					else if (v.tur === 'bitir') this.bitti = true;
 				};
 				this.sessiz = new Float32Array(128);
@@ -696,9 +754,16 @@ if (typeof registerProcessor === 'function' && typeof AudioWorkletProcessor === 
 				const refler = this.refler;
 				refler.length = 0;
 				for (let k = 1; k < girisler.length; k++) refler.push(girisler[k] && girisler[k].length ? girisler[k] : null);
+				// Yakalama gecikmesi sondası (tek kanal: L+R).
+				if (this.tek.length !== n) this.tek = new Float32Array(n);
+				for (let i = 0; i < n; i++) this.tek[i] = (ml[i] + mr[i]) * 0.5;
+				/* global currentTime */
+				const sonuc = this.sonda.blok(this.tek, currentTime);
+				if (sonuc) this.port.postMessage({ tur: 'sonda', ...sonuc });
 				const cl = cik[0];
 				const cr = cik[1] || new Float32Array(n);
 				const paket = this.c.isle(ml, mr, refler, cl, cr);
+				if (this.c.olaylar.length) this.port.postMessage({ tur: 'kopukluk', olaylar: this.c.olaylar.splice(0) });
 				if (paket) {
 					const aktar = [paket.m.buffer, ...Object.values(paket.r).map((d) => d.buffer)];
 					this.port.postMessage({ tur: 'ornek', m: paket.m, r: paket.r }, aktar);
@@ -727,4 +792,4 @@ if (typeof WorkerGlobalScope !== 'undefined' && typeof self !== 'undefined' && s
 	};
 }
 
-if (typeof module !== 'undefined' && module.exports) module.exports = { YankiCikarici, YankiTahmini, YankiTahminleri, YANKI_PAKET, YANKI_DOKUNUS, YANKI_YUVA, fftKur, fft, toeplitzCoz };
+if (typeof module !== 'undefined' && module.exports) module.exports = { YankiCikarici, YankiTahmini, YankiTahminleri, SondaBulucu, SONDA_HZ, SONDA_SURE, YANKI_PAKET, YANKI_DOKUNUS, YANKI_YUVA, fftKur, fft, toeplitzCoz };

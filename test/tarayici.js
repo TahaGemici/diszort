@@ -1052,11 +1052,17 @@ async function sidebarKisileri(k, kanal = 'Sesli Sohbet') {
 		console.log(`     ekran ${z2.esler.taha.kareGenislik} px genişlikte; zeynep 1,5 sn'de ${z2.esler.taha.kare - z1.esler.taha.kare} kare aldı`);
 		await mert.sayfa.locator('#yayinlar .yayin-kart[data-ad="taha"] button', { hasText: 'Görüntüyü kapat' }).click();
 		await bekleKosul("taha mert'e görüntü göndermiyor", () => taha.sayfa.evaluate(() => esler.get('mert').trGoruntu.sender.track === null), 10000);
-		await bekle(500);
-		const m1 = await durumu(mert);
-		await bekle(1500);
-		const m2 = await durumu(mert);
-		assert.ok(m2.esler.taha.kare - m1.esler.taha.kare <= 2, 'görüntüyü kapatana kare gelmemeli');
+		// Yolda (ve alıcının tamponunda) kalan birkaç kare yüklü makinede geç gelebilir: kareler kesilene
+		// kadar bekle (1,5 sn'lik pencerede en çok 2 kare), sonra kesildiğini doğrula.
+		let m1 = await durumu(mert);
+		let gelenKare = Infinity;
+		for (let i = 0; i < 4 && gelenKare > 2; i++) {
+			await bekle(1500);
+			const m2 = await durumu(mert);
+			gelenKare = m2.esler.taha.kare - m1.esler.taha.kare;
+			m1 = m2;
+		}
+		assert.ok(gelenKare <= 2, `görüntüyü kapatana kare gelmemeli (son 1,5 sn'de ${gelenKare})`);
 		const z3 = await durumu(zeynep);
 		await bekle(1500);
 		const z4 = await durumu(zeynep);

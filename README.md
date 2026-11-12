@@ -116,8 +116,12 @@ süre (`hizlandirmaMs`/`yavaslatmaMs`, müzikte duyulur), uydurma olayları, tit
 paylaştığım sesin o kişiye gidişi (`yayinGiden`: kbps, paket/sn — düzenliyse 50); sayfa önde mi,
 ekran açık mı; mikrofonun ve paylaşılan sesin aygıtı, yakalamadaki kopukluklar (`kopukluk`).
 Olaylar: `arka-plan` / `one-geldi` (dönüşten ~6 sn sonra durumun tamamı, `arkaPlanSn`),
-`birikme` / `yeniden-kur-istendi`, `calma-takildi`, `durum`, `yeniden-kur`. Sorun sürerken iki
-cihazın satırlarına birlikte bakılır.
+`birikme` / `yeniden-kur-istendi`, `calma-takildi`, `durum`, `yeniden-kur`, `teklif-hata`. Ses
+aygıtından paylaşanda: `yakalama-gecikmesi` (sayfa kendi çıkışına duyulmayacak kadar tiz ve kısık,
+40 ms'lik bir ses çalar, paylaşılan "Monitor"da kaç ms sonra göründüğünü ölçer: çıkış yolu
+`cikisMs` + yakalama yolu; paylaşım başında, dakikada bir ve mikrofon açılıp kapanınca;
+`mikrofon`: o an mikrofon açık mı) ve `yakalama-kopuklugu` (yakalanan sesteki tam sessizlikler,
+ms; `*` 200 ms'den uzun). Sorun sürerken iki cihazın satırlarına birlikte bakılır.
 
 ## Geliştirme
 

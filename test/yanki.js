@@ -9,7 +9,7 @@
 
 const assert = require('node:assert/strict');
 const path = require('node:path');
-const { YankiCikarici, YankiTahminleri } = require(path.join(__dirname, '../web/yanki.js'));
+const { YankiCikarici, YankiTahminleri, SondaBulucu, SONDA_HZ, SONDA_SURE } = require(path.join(__dirname, '../web/yanki.js'));
 
 let gecen = 0;
 function dene(ad, fn) {
@@ -352,7 +352,45 @@ dene('teşhis: yakalanan seste kısa kopukluklar ve uzun tam sessizlikler ayrı 
 	assert.ok(Math.abs(o.kopuklukMs - 50) <= 3, JSON.stringify(o));
 	assert.equal(o.uzunSessizlikMs.length, 1, JSON.stringify(o));
 	assert.ok(Math.abs(o.uzunSessizlikMs[0] - 3200) <= 3, JSON.stringify(o));
+	assert.ok(c.olaylar.length === 2 && !c.olaylar[0].uzun && Math.abs(c.olaylar[0].ms - 50) <= 3 && c.olaylar[1].uzun && Math.abs(c.olaylar[1].ms - 3200) <= 3, 'kopukluklar olay olarak da iletilir: ' + JSON.stringify(c.olaylar));
 	return `kopukluk ${o.kopukluk} (${o.kopuklukMs} ms), uzun sessizlik ${o.uzunSessizlikMs.join(', ')} ms`;
+});
+
+dene('yakalama gecikmesi sondası: müziğin içinde tiz, kısık ses bilinen gecikmeyle bulunur; yoksa sonuç yok', () => {
+	// Yakalanan ses: müziğe benzer gürültü (−20 dBFS, tizleri zayıf) + t0'dan D sonra 18,5 kHz,
+	// −34 dBFS, 40 ms'lik üçgen zarflı sonda. Bloklar 128 örnek (AudioWorklet gibi).
+	const sonuclar = [];
+	for (const [hiz, D, sonda] of [[48000, 0.237, true], [44100, 0.061, true], [48000, 0.9, true], [48000, 0.237, false]]) {
+		const b = new SondaBulucu(hiz);
+		let tohum = 7;
+		const rastgele = () => ((tohum = (tohum * 1103515245 + 12345) & 0x7fffffff) / 0x7fffffff) * 2 - 1;
+		let onceki = 0;
+		const t0 = 2.0;
+		let sonuc = null;
+		for (let k = 0; !sonuc && k < Math.ceil((5 * hiz) / 128); k++) {
+			const zaman = (k * 128) / hiz;
+			if (k === Math.floor((1.5 * hiz) / 128)) b.bekle(t0, SONDA_SURE);
+			const x = new Float32Array(128);
+			for (let i = 0; i < 128; i++) {
+				const t = zaman + i / hiz;
+				onceki = 0.97 * onceki + 0.03 * rastgele(); // alçak geçiren: müzik gibi, tizleri zayıf
+				let v = 0.4 * onceki;
+				const u = t - (t0 + D);
+				if (sonda && u >= 0 && u < SONDA_SURE) v += 0.02 * (1 - Math.abs((2 * u) / SONDA_SURE - 1)) * Math.sin(2 * Math.PI * SONDA_HZ * t);
+				x[i] = v;
+			}
+			sonuc = b.blok(x, zaman);
+		}
+		assert.ok(sonuc, 'sonuç gelmeli');
+		if (sonda) {
+			assert.ok(sonuc.gecikme != null && Math.abs(sonuc.gecikme - D) <= 0.004, `${hiz} Hz, D=${D}: ${JSON.stringify(sonuc)}`);
+			sonuclar.push(`${Math.round(D * 1000)} → ${(sonuc.gecikme * 1000).toFixed(1)} ms (snr ${sonuc.snr})`);
+		} else {
+			assert.equal(sonuc.gecikme, null, 'sonda yokken gecikme bulunmamalı: ' + JSON.stringify(sonuc));
+			sonuclar.push(`sondasız: yok (snr ${sonuc.snr})`);
+		}
+	}
+	return sonuclar.join('; ');
 });
 
 console.log(process.exitCode ? 'BAŞARISIZ' : `Yankı çıkarma denemeleri geçti (${gecen}).`);
