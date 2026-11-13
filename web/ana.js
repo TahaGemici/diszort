@@ -162,19 +162,22 @@ function ekran(hangi) {
 
 // Paylaşılan sesin bit hızı seçenekleri (kbps, stereo Opus). Tarayıcılar sesi sıkıştırmadan
 // gönderemez (Firefox'ta Opus'tan başka müzik kodeği yok); kodlayıcıya giden ses her tarayıcıda 16
-// bit. 510 Opus'un en yükseği (tek çerçeve en çok 1275 bayt: 20 ms'de 510 kbit/s).
-const YAYIN_SES_SECENEKLERI = [510, 256, 192, 128, 96];
+// bit. En yükseği 320: Spotify'ın en yüksek kayıplı kalitesi ("Çok yüksek", Ogg Vorbis 320 kbps); Opus
+// aynı hızda Vorbis'ten verimli. (Opus 510'a kadar çıkabilir; kayıpsız göndermenin yolu yok.)
+const YAYIN_SES_SECENEKLERI = [320, 256, 192, 128, 96];
 // Kayıplara karşı yedek (RED): her paket bir önceki çerçevenin kopyasını da taşır (libwebrtc yalnızca
 // bir önceki: kRedNumberOfRedundantEncodings = 1; sayfa değiştiremez). Paket 1200 baytı geçemez:
 // gerçek müzikte 192'de sığıyor (%10 rastgele kayıpta uydurulan ses %3,1 → %0,4), 256'da çoğu zaman
-// sığmıyor (%3,6 → %1,5), 510'da hiç. Kayıplar art arda gelince (ortalama 3 paket) kazancı az:
-// konuşmada %27-54, müzikte ~%12 (test/kayip.js). Firefox RED'i hiç bilmiyor (ne gönderir ne alır).
+// sığmıyor (%3,6 → %1,5), 320'de (çerçeve ~800 bayt) hiç. Kayıplar art arda gelince (ortalama 3 paket) kazancı az:
+// konuşmada %27-54, müzikte %5-12 (test/kayip.js). Firefox RED'i hiç bilmiyor (ne gönderir ne alır).
 const RED_SIGAN_HIZ = 192;
 
 const AYAR_VARSAYILAN = {
 	mikId: '', // seçili mikrofon ('' = sistemin varsayılanı)
 	cikisId: '', // seçili hoparlör ('' = varsayılan)
-	yanki: true, // yankı engelleme
+	// Yankı engelleme: varsayılan kapalı, çıkış aygıtından bağımsız (hoparlörle konuşan açar). Eski
+	// "yanki" anahtarı (varsayılanı açıktı) okunmaz: yeni varsayılan herkese bir kez uygulanır.
+	yankiEngel: false,
 	mikSeviye: 100, // gönderilen mikrofon seviyesi (%; mikrofonun yolunda, RNNoise'dan sonra)
 	// Konuşma eşiği (%, 0 = kapalı): mikrofonun seviyesi bunun altındayken ses gönderilmez. Ayarlardaki
 	// seviye çubuğuyla aynı ölçek: dBFS = -60 + % / 2 (varsayılan %10 = -55 dBFS).
@@ -2556,7 +2559,7 @@ const mikSessizMi = () => ayar.mikKapali || ayar.sagir || !gidenIz;
 // boyunca seviyeyi oynatıyor, sessizlikte gürültüyü yükseltiyordu; seviye elle ayarlanır).
 function mikKisitlari(kip = null) {
 	const k = {
-		echoCancellation: kip ? false : ayar.yanki,
+		echoCancellation: kip ? false : ayar.yankiEngel,
 		noiseSuppression: !rnnoiseKullanilir(),
 		autoGainControl: false,
 		channelCount: { ideal: 1 },
@@ -3706,7 +3709,7 @@ function gonderimHizi() {
 
 // Yayın bit hızları (kbps), alan kişi sayısına göre (mesh: herkese ayrı akış). Paylaşılan ses
 // (stereo) herkese gider: ayardaki tavan; toplam ~3 Mbit/s'yi geçmesin diye kalabalıkta kişi başına
-// düşer (510 altı kişiye kadar tam; 256 ve altı hiç düşmez).
+// düşer (320 dokuz eşe kadar tam: pratikte hiç düşmez).
 const yayinSesHizi = () => Math.round(Math.min(ayar.yayinSes, Math.max(64, 3000 / Math.max(1, esSayisi()))));
 // Kayıplara karşı yedek (RED) isteği. Gönderen kendisi seçer: tarayıcı RED'i karşının açıklamasında
 // Opus'tan önce geliyorsa kullanır ("RED codec needs to be negotiated before the actual codec",
@@ -6231,7 +6234,7 @@ function esikCiz() {
 	$('ayar-olcer-esik').hidden = ayar.esik === 0;
 }
 function ayarlarAc() {
-	$('ayar-yanki').checked = ayar.yanki;
+	$('ayar-yanki').checked = ayar.yankiEngel;
 	esikCiz();
 	gurultuDurumuYaz();
 	$('ayar-olcer-dolgu').classList.remove('kapali');
@@ -6334,7 +6337,7 @@ $('ayar-mik').addEventListener('change', () => {
 	mikrofonuYenile();
 });
 $('ayar-yanki').addEventListener('change', () => {
-	ayar.yanki = $('ayar-yanki').checked;
+	ayar.yankiEngel = $('ayar-yanki').checked;
 	ayarKaydet();
 	mikrofonuYenile();
 });

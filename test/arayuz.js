@@ -1007,7 +1007,7 @@ const ICE = { iceServers: [{ urls: ['stun:1.2.3.4:3478'] }, { urls: ['turn:1.2.3
 	denetle('mikrofon bir kez istendi (çift tıklamada sızıntı yok)', s.oc.mikrofon === 1, String(s.oc.mikrofon));
 	denetle('AGC kapalı istendi', s.oc.micKisit && s.oc.micKisit.autoGainControl === false, JSON.stringify(s.oc.micKisit));
 	// Bu denemede rnnoise.wasm gelmiyor: tarayıcının gürültü bastırması açık istenir.
-	denetle('yankı engelleme açık; RNNoise yokken tarayıcının gürültü bastırması', s.oc.micKisit && s.oc.micKisit.echoCancellation === true && s.oc.micKisit.noiseSuppression === true);
+	denetle('yankı engelleme varsayılan kapalı (çıkış aygıtından bağımsız); RNNoise yokken tarayıcının gürültü bastırması', s.oc.micKisit && s.oc.micKisit.echoCancellation === false && s.oc.micKisit.noiseSuppression === true, JSON.stringify(s.oc.micKisit));
 	const sesGir = son('ses-gir');
 	denetle('ses-gir gönderildi (sessiz/sağır durumu ile)', sesGir && sesGir.kanal === 'sesli-sohbet' && sesGir.sessiz === false && sesGir.sagir === false, JSON.stringify(sesGir));
 	gelsin({ type: 'ses-girdi', kanal: 'sesli-sohbet', kisiler: ['bora'], ice: ICE, devam: false });
@@ -1750,7 +1750,7 @@ const ICE = { iceServers: [{ urls: ['stun:1.2.3.4:3478'] }, { urls: ['turn:1.2.3
 	denetle('ses ayarları açıldı', d.getElementById('ayarlar').hidden === false);
 	denetle(
 		'ayarlar varsayılanları gösteriyor: gürültü bastırma ve otomatik kazanç seçeneği yok, konuşma eşiği %10',
-		!d.getElementById('ayar-gurultu') && !d.getElementById('ayar-kazanc') && d.getElementById('ayar-yanki').checked && d.getElementById('ayar-kalite').value === '96' && d.getElementById('ayar-esik').value === '10' && d.getElementById('ayar-esik-deger').textContent === '%10' && d.getElementById('ayar-olcer-esik').style.left === '10%',
+		!d.getElementById('ayar-gurultu') && !d.getElementById('ayar-kazanc') && !d.getElementById('ayar-yanki').checked && d.getElementById('ayar-kalite').value === '96' && d.getElementById('ayar-esik').value === '10' && d.getElementById('ayar-esik-deger').textContent === '%10' && d.getElementById('ayar-olcer-esik').style.left === '10%',
 	);
 	denetle('RNNoise kurulamayan tarayıcıda tarayıcının gürültü bastırması yazar', /tarayıcınınki/.test(d.getElementById('ayar-gurultu-durum').textContent), d.getElementById('ayar-gurultu-durum').textContent);
 	d.getElementById('ayar-kalite').value = '128';
@@ -2205,7 +2205,8 @@ const ICE = { iceServers: [{ urls: ['stun:1.2.3.4:3478'] }, { urls: ['turn:1.2.3
 	// profiline düşer); yankı engellemesi kapalı mikrofonda almaz. Kulaklık varsa yankı engelleme kapalı
 	// istenir; yalnızca Bluetooth kulaklık varsa mikrofon telefonun kendisinden ("Speakerphone").
 	{
-		const t = kur({ dokunmatik: true, android: true, depo: { anahtar: 'f'.repeat(128), ad: 'taha' } });
+		// Kullanıcı yankı engellemeyi açmış (varsayılan kapalı): kulaklık kipi onu kulaklıkta kapatır.
+		const t = kur({ dokunmatik: true, android: true, depo: { anahtar: 'f'.repeat(128), ad: 'taha', 'ses-ayarlari': JSON.stringify({ yankiEngel: true }) } });
 		const tw = t.window;
 		const td = t.d;
 		const tgel = (m) => t.oc.ws.onmessage({ data: JSON.stringify(m) });
@@ -2274,7 +2275,7 @@ const ICE = { iceServers: [{ urls: ['stun:1.2.3.4:3478'] }, { urls: ['turn:1.2.3
 		tw.eval("ayar.mikId = ''");
 		await cik();
 		// Android değilse (iPhone gibi) bir şey değişmez.
-		const u = kur({ dokunmatik: true, depo: { anahtar: 'f'.repeat(128), ad: 'taha' } });
+		const u = kur({ dokunmatik: true, depo: { anahtar: 'f'.repeat(128), ad: 'taha', 'ses-ayarlari': JSON.stringify({ yankiEngel: true }) } });
 		await bekle(40);
 		u.oc.ws.onmessage({ data: JSON.stringify({ type: 'hazir', ad: 'taha', kanallar, kimler: [{ ad: 'taha' }], max: 10, maxKullanici: 10, beyazListe: 1, beyazListeAdlari: ['taha'], sunulanDosyalar: [], ice: ICE, surum: 'v1' }) });
 		await bekle(40);
@@ -2340,12 +2341,12 @@ const ICE = { iceServers: [{ urls: ['stun:1.2.3.4:3478'] }, { urls: ['turn:1.2.3
 			['ayar-mik-red', 'ayar-yayin-red'].every((id) => redKutu(id).k.disabled && !redKutu(id).k.checked && redKutu(id).e.classList.contains('kapali') && /desteklemiyor/.test(redKutu(id).e.title)),
 			redKutu('ayar-yayin-red').e.title,
 		);
-		// Paylaşılan ses "Sistem kalitesi"ne (510) çıkar.
+		// Paylaşılan ses en yükseğe (320, Spotify'ın en yükseği) çıkar.
 		const bOnce = sdpler('bora').length;
-		sec('ayar-yayin-kalite', '510');
+		sec('ayar-yayin-kalite', '320');
 		await bekle(30);
-		denetle('Chrome yolu: paylaşılan sesin tavanı hemen 510 kbps', sp(bPc).maxBitrate === 510000 && sp(zPc).maxBitrate === 510000, JSON.stringify([sp(bPc), sp(zPc)]));
-		denetle('seçim kalıcı', JSON.parse(tw.localStorage.getItem('ses-ayarlari')).yayinSes === 510);
+		denetle('Chrome yolu: paylaşılan sesin tavanı hemen 320 kbps', sp(bPc).maxBitrate === 320000 && sp(zPc).maxBitrate === 320000, JSON.stringify([sp(bPc), sp(zPc)]));
+		denetle('seçim kalıcı', JSON.parse(tw.localStorage.getItem('ses-ayarlari')).yayinSes === 320);
 		denetle('yeniden anlaşma hemen değil (art arda seçim beklenir)', sdpler('bora').length === bOnce && istekler('zeynep').length === 0);
 		await bekle(700);
 		denetle('teklif ettiğimiz bağlantıda yeni teklif (aynı oturum)', sdpler('bora').length === bOnce + 1 && sdpler('bora').at(-1).oturum === tw.eval("esler.get('bora').oturum") && bPc.signalingState === 'have-local-offer');
@@ -2355,7 +2356,7 @@ const ICE = { iceServers: [{ urls: ['stun:1.2.3.4:3478'] }, { urls: ['turn:1.2.3
 		// Karşının yeni teklifi (tarayıcı her teklifte oturum sürümünü artırır: metin farklı).
 		tgel({ type: 'sdp', from: 'zeynep', sdp: { type: 'offer', sdp: UC_KANALLI.replace('v=0', 'v=0\r\no=- 1 2 IN IP4 127.0.0.1') }, oturum: 'zoturum12345' });
 		await bekle(60);
-		denetle('Firefox yolu: yeni açıklamalarla Opus hedefi 510 kbps (iki bağlantıda)', /maxaveragebitrate=510000/.test(yayinBolumu(bPc)) && /maxaveragebitrate=510000/.test(yayinBolumu(zPc)) && zPc.signalingState === 'stable', yayinBolumu(zPc));
+		denetle('Firefox yolu: yeni açıklamalarla Opus hedefi 320 kbps (iki bağlantıda)', /maxaveragebitrate=320000/.test(yayinBolumu(bPc)) && /maxaveragebitrate=320000/.test(yayinBolumu(zPc)) && zPc.signalingState === 'stable', yayinBolumu(zPc));
 		// Art arda iki seçim: bir kez yeniden anlaşılır, son seçimle.
 		sec('ayar-yayin-kalite', '96');
 		await bekle(60);
@@ -2415,19 +2416,20 @@ const ICE = { iceServers: [{ urls: ['stun:1.2.3.4:3478'] }, { urls: ['turn:1.2.3
 		tw.eval('yayinDurdur()');
 		tw.eval('sesKapat()');
 		// Kalabalık kanal: paylaşılan ses toplam ~3 Mbit/s'yi geçmesin (kişi başı düşer, en az 64).
-		tw.eval("ayar.yayinSes = 510; for (let i = 0; i < 9; i++) esler.set('kalabalik' + i, { ad: 'kalabalik' + i, bekleniyor: 0 })");
-		denetle('kalabalıkta (9 eş) 510 seçiliyken kişi başı 333 kbps', tw.eval('yayinSesHizi()') === 333, String(tw.eval('yayinSesHizi()')));
+		tw.eval("ayar.yayinSes = 320; for (let i = 0; i < 9; i++) esler.set('kalabalik' + i, { ad: 'kalabalik' + i, bekleniyor: 0 })");
+		denetle('kalabalıkta (9 eş) 320 seçiliyken de 320 (toplam ~3 Mbit/s sınırının altında)', tw.eval('yayinSesHizi()') === 320, String(tw.eval('yayinSesHizi()')));
 		tw.eval('ayar.yayinSes = 256');
 		denetle('256 seçiliyken kalabalıkta da 256', tw.eval('yayinSesHizi()') === 256);
 		tw.eval("for (let i = 0; i < 9; i++) esler.delete('kalabalik' + i)");
 	}
 	// Paylaşamayan tarayıcıda (çoğu telefon) paylaşım seçenekleri gizli; bozuk kayıtlı değer varsayılana döner.
 	{
-		const u = kur({ ekranYok: true, depo: { anahtar: 'f'.repeat(128), ad: 'taha', 'ses-ayarlari': JSON.stringify({ yayinSes: 999 }) } });
+		const u = kur({ ekranYok: true, depo: { anahtar: 'f'.repeat(128), ad: 'taha', 'ses-ayarlari': JSON.stringify({ yayinSes: 999, yanki: true }) } });
 		await bekle(40);
 		u.oc.ws.onmessage({ data: JSON.stringify({ type: 'hazir', ad: 'taha', kanallar, kimler: [{ ad: 'taha' }], max: 10, maxKullanici: 10, beyazListe: 1, beyazListeAdlari: ['taha'], sunulanDosyalar: [], ice: ICE, surum: 'v1' }) });
 		await bekle(40);
 		denetle('bozuk kayıtlı kalite varsayılana döndü', u.window.eval('ayar.yayinSes') === 192);
+		denetle('eski "yankı engelleme açık" kaydı taşınmaz: yeni varsayılan (kapalı)', u.window.eval('ayar.yankiEngel') === false);
 		// RED bilmeyen tarayıcı (Firefox) karşının sırasına dokunmaz (RED'i zaten göndermez).
 		denetle('RED bilmeyen tarayıcı kodek sırasına dokunmaz', u.window.eval('opusAyarla')(RED_ONDE).split('\r\n').filter((x) => x.startsWith('m=audio')).every((x) => / 63 111$/.test(x)));
 		u.d.getElementById('ben-ayarlar').click();
@@ -2453,8 +2455,8 @@ const ICE = { iceServers: [{ urls: ['stun:1.2.3.4:3478'] }, { urls: ['turn:1.2.3
 		denetle('karşının açıklamasında RED yoksa sıra değişmez', uygula(UC_KANALLI).join('|') === '111|111');
 		uw.eval('ayar.mikRed = false');
 		denetle('mikrofonda RED kapalı: yalnız mikrofon m-line\'ında Opus önde', uygula(RED_ONDE).join('|') === '111 63|63 111');
-		uw.eval('ayar.mikRed = true; ayar.yayinSes = 510');
-		denetle('510\'da yedek sığmaz: paylaşımda Opus önde (kutu açık olsa da)', uygula(RED_ONDE).join('|') === '63 111|111 63');
+		uw.eval('ayar.mikRed = true; ayar.yayinSes = 320');
+		denetle('320\'de yedek sığmaz: paylaşımda Opus önde (kutu açık olsa da)', uygula(RED_ONDE).join('|') === '63 111|111 63');
 		uw.eval('ayar.yayinSes = 192');
 		// Arayüz: kutular, kalite değişince kapanıp açılma, üstüne gelince yazan neden.
 		ud.getElementById('ben-ayarlar').click();
@@ -2466,9 +2468,9 @@ const ICE = { iceServers: [{ urls: ['stun:1.2.3.4:3478'] }, { urls: ['turn:1.2.3
 		};
 		denetle('RED kutuları kalite seçimlerinin yanında, açık ve seçili', k('ayar-mik-red').closest('.kalite-satir') === k('ayar-kalite').closest('.kalite-satir') && k('ayar-yayin-red').closest('.kalite-satir') === k('ayar-yayin-kalite').closest('.kalite-satir') && !k('ayar-mik-red').disabled && k('ayar-mik-red').checked && !k('ayar-yayin-red').disabled && k('ayar-yayin-red').checked);
 		denetle('açık kutunun üstüne gelince ne yaptığını söyler', /kopyasını/.test(k('ayar-yayin-red-etiket').title), k('ayar-yayin-red-etiket').title);
-		sec('ayar-yayin-kalite', '510');
+		sec('ayar-yayin-kalite', '320');
 		await bekle(20);
-		denetle('510: paylaşımın RED kutusu kapalı, boş; üstüne gelince "bu kalitede desteklenmiyor"', k('ayar-yayin-red').disabled && !k('ayar-yayin-red').checked && k('ayar-yayin-red-etiket').classList.contains('kapali') && /Bu kalitede desteklenmiyor/.test(k('ayar-yayin-red-etiket').title) && /192/.test(k('ayar-yayin-red-etiket').title), k('ayar-yayin-red-etiket').title);
+		denetle('320: paylaşımın RED kutusu kapalı, boş; üstüne gelince "bu kalitede desteklenmiyor"', k('ayar-yayin-red').disabled && !k('ayar-yayin-red').checked && k('ayar-yayin-red-etiket').classList.contains('kapali') && /Bu kalitede desteklenmiyor/.test(k('ayar-yayin-red-etiket').title) && /192/.test(k('ayar-yayin-red-etiket').title), k('ayar-yayin-red-etiket').title);
 		denetle('mikrofonun kutusu etkilenmez', !k('ayar-mik-red').disabled && k('ayar-mik-red').checked);
 		sec('ayar-yayin-kalite', '256');
 		await bekle(20);
@@ -2506,7 +2508,7 @@ const ICE = { iceServers: [{ urls: ['stun:1.2.3.4:3478'] }, { urls: ['turn:1.2.3
 		tgel({ type: 'ses-girdi', kanal: 'sesli-sohbet', kisiler: ['bora'], ice: ICE, devam: false });
 		await bekle(80);
 		const k = t.oc.micKisit || {};
-		denetle('RNNoise: tarayıcının gürültü bastırması ve otomatik kazancı kapalı, yankı engelleme açık istendi', k.noiseSuppression === false && k.autoGainControl === false && k.echoCancellation === true, JSON.stringify(k));
+		denetle('RNNoise: tarayıcının gürültü bastırması ve otomatik kazancı kapalı istendi (yankı engelleme varsayılan kapalı)', k.noiseSuppression === false && k.autoGainControl === false && k.echoCancellation === false, JSON.stringify(k));
 		denetle('rnnoise.wasm ve gurultu.js yüklendi', t.oc.getirilen.includes('rnnoise.wasm') && t.oc.workletModulu === 'gurultu.js', JSON.stringify([t.oc.getirilen, t.oc.workletModulu]));
 		const dugumler = () => t.oc.workletDugumleri.filter((n) => n.ad === 'gurultu');
 		const dugum = dugumler().at(-1);

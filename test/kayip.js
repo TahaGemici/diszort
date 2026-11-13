@@ -249,9 +249,9 @@ async function olc(sayfa, { red, fmtp, stereo, patlama = 1 }) {
 			['konuşma (mikrofon: mono, 96 kbps)', konusma(60), 'stereo=0;usedtx=0;useinbandfec=1;maxaveragebitrate=96000', false, true, true],
 			// Paylaşımın yedekli en yüksek ayarı 192 kbps: yedek pakete sığar.
 			['müzik (paylaşım, yedekli: stereo, 192 kbps)', muzik(60), 'stereo=1;sprop-stereo=1;usedtx=0;useinbandfec=1;maxaveragebitrate=192000', true, true, true],
-			// "En yüksek" (510): 20 ms'lik çerçeve ~1275 bayt; libwebrtc RED paketi 1200 baytı geçemez ve
-			// 1024 bayttan büyük çerçeveyi yedekleyemez: yedek kendiliğinden atlanır.
-			['müzik (paylaşım "En yüksek": stereo, 510 kbps)', muzik(60), 'stereo=1;sprop-stereo=1;usedtx=0;useinbandfec=1;maxaveragebitrate=510000', true, false],
+			// "En yüksek" (320, Spotify'ın en yükseği): 20 ms'lik çerçeve ~800 bayt; libwebrtc RED paketi 1200
+			// baytı geçemez: önceki çerçevenin kopyası sığmaz, yedek kendiliğinden atlanır.
+			['müzik (paylaşım "En yüksek": stereo, 320 kbps)', muzik(60), 'stereo=1;sprop-stereo=1;usedtx=0;useinbandfec=1;maxaveragebitrate=320000', true, false],
 		]) {
 			const dosya = path.join(klasor, (stereo ? 'muzik' : 'konusma') + '.wav');
 			wavYaz(dosya, ses);
@@ -270,14 +270,17 @@ async function olc(sayfa, { red, fmtp, stereo, patlama = 1 }) {
 				const sayfa = await (await tarayici.newContext({ permissions: ['microphone'] })).newPage();
 				await sayfa.goto(`http://127.0.0.1:${sunucu.address().port}/`);
 				if (!yedekSigar) {
-					await dene(`%${KAYIP * 100} rastgele kayıpta ${tur}: RED yedeği pakete sığmaz, düz Opus gibi`, async () => {
+					await dene(`%${KAYIP * 100} rastgele kayıpta ${tur}: RED'in yedeği çoğu pakete sığmaz, kazancı 192'dekinden çok az`, async () => {
 						const duz = await olc(sayfa, { red: false, fmtp, stereo });
 						const red = await olc(sayfa, { red: true, fmtp, stereo });
 						for (const x of [duz, red]) assert.ok(x.agKaybi > 0.07 && x.agKaybi < 0.13, 'aracı beklenen kadar düşürmedi: ' + yuzde(x.agKaybi));
-						// Opus değişken bit hızlıdır: bu yapay müzikte hedefin ~2/3'ü (gerçek müzikte ~510 ölçüldü).
-						assert.ok(duz.kbps > 250 && red.kbps > 250, 'bit hızı 160 kbps ayarından belirgin yüksek olmalı: ' + duz.kbps + ' / ' + red.kbps);
-						assert.ok(red.kbps < duz.kbps * 1.2, 'yedek gidiyor gibi (beklenmiyordu): ' + red.kbps + ' / ' + duz.kbps + ' kbps');
-						assert.ok(red.uydurulan > duz.uydurulan / 2, 'RED burada kurtarmamalıydı: ' + yuzde(red.uydurulan) + ' / ' + yuzde(duz.uydurulan));
+						// Opus değişken bit hızlıdır: bu yapay müzikte hedefin ~2/3'ü (192 kbps'de ~140 ölçülüyor).
+						assert.ok(duz.kbps > 170 && red.kbps > 170, 'bit hızı 192 kbps ayarından belirgin yüksek olmalı: ' + duz.kbps + ' / ' + red.kbps);
+						// Tam yedekte bit hızı ~2 katı olurdu. Bu yapay müzik hedefin altında kaldığı için çerçevelerin bir
+						// kısmına kopya sığabiliyor (gerçek müzikte 320'de çerçeve ~800 bayt: hiç sığmaz).
+						assert.ok(red.kbps < duz.kbps * 1.6, 'yedek tam gidiyor gibi (beklenmiyordu): ' + red.kbps + ' / ' + duz.kbps + ' kbps');
+						// 192'de uydurulan ses ~10 kat azalıyor; burada en çok birkaç kat.
+						assert.ok(red.uydurulan > duz.uydurulan / 4, 'RED burada bu kadar kurtarmamalıydı: ' + yuzde(red.uydurulan) + ' / ' + yuzde(duz.uydurulan));
 						return `ağ kaybı ${yuzde(duz.agKaybi)} / ${yuzde(red.agKaybi)}; uydurulan: düz Opus ${yuzde(duz.uydurulan)} (${duz.kbps} kbps), RED anlaşılınca ${yuzde(red.uydurulan)} (${red.kbps} kbps, ${red.kodek})`;
 					});
 					continue;

@@ -220,7 +220,7 @@
 			<input id="ayar-esik" type="range" min="0" max="100" step="1" value="10" title="Sesin bu çizginin altındayken gönderilmez (0: kapalı). Konuşurken çubuğun çizgiyi geçtiği, susunca geçmediği bir yer seç.">
 			<p id="ayar-gurultu-durum" class="ayar-not-ic">Gürültü bastırma: RNNoise (hep açık)</p>
 			<p id="ayar-gurultu-sonuc" class="ayar-not-ic"></p>
-			<label class="anahtar"><input id="ayar-yanki" type="checkbox"><span>Yankı engelleme</span></label>
+			<label class="anahtar" title="Hoparlörle konuşuyorsan aç: kanaldakilerin sesi hoparlörden mikrofona dönmesin. Kulaklıkta gerekmez."><input id="ayar-yanki" type="checkbox"><span>Yankı engelleme (hoparlörle konuşuyorsan aç)</span></label>
 		</section>
 		<section class="ayar-bolum">
 			<h3>Hoparlör</h3>
@@ -242,7 +242,7 @@
 				<label class="alan-adi" for="ayar-yayin-kalite">Paylaştığın ses (bilgisayarın sesi)</label>
 				<div class="kalite-satir">
 					<select id="ayar-yayin-kalite">
-						<option value="510">Sistem kalitesi · 510 kbps</option>
+						<option value="320">En yüksek · 320 kbps (Spotify'ın en yükseği)</option>
 						<option value="256">Çok yüksek · 256 kbps</option>
 						<option value="192">Yüksek · 192 kbps</option>
 						<option value="128">Orta · 128 kbps</option>
@@ -253,12 +253,12 @@
 				<label class="alan-adi" for="ayar-yayin-kanal">Paylaştığın sesin kanalları</label>
 				<select id="ayar-yayin-kanal">
 					<option value="2">Stereo (iki kanal)</option>
-					<option value="1">Mono (tek kanal)</option>
+					<option value="1">Mono (tek kanal · müzikte önerilmez: tarayıcı ses kipine geçer, bas azalır)</option>
 				</select>
 			</div>
 			<label class="anahtar"><input id="ayar-sesler" type="checkbox"><span>Giriş / çıkış sesleri</span></label>
 		</section>
-		<p class="ayar-not">Kulaklık kullanıyorsan yankı engellemeyi kapatmak sesi biraz daha doğal yapar. Paylaşılan ses tarayıcıda sıkıştırılmadan gönderilemez; 192 kbps'de de aslından ayırt edilmez. RED: kayıplara karşı yedek; her paket bir öncekinin kopyasını da taşır (bit hızı iki katı). Tek tük kayıpta çok işe yarar, art arda kayıpta az. Yalnızca iki taraf da Chrome tabanlıysa (Chrome, Edge, Samsung Internet…) çalışır; Firefox desteklemez. Kalabalık kanallarda gönderilen kalite kendiliğinden düşürülür. Kısayollar: Ctrl+Shift+M mikrofon, Ctrl+Shift+D sağırlaştır.</p>
+		<p class="ayar-not">Yankı engelleme varsayılan kapalı: hoparlörle konuşuyorsan aç (kanaldakiler kendi seslerini geri duymasın); kulaklıkta gerekmez, kapalıyken ses daha doğal. Paylaşılan ses tarayıcıda sıkıştırılmadan gönderilemez; 192 kbps'de de aslından ayırt edilmez. RED: kayıplara karşı yedek; her paket bir öncekinin kopyasını da taşır (bit hızı iki katı). Tek tük kayıpta çok işe yarar, art arda kayıpta az. Yalnızca iki taraf da Chrome tabanlıysa (Chrome, Edge, Samsung Internet…) çalışır; Firefox desteklemez. Kalabalık kanallarda gönderilen kalite kendiliğinden düşürülür. Kısayollar: Ctrl+Shift+M mikrofon, Ctrl+Shift+D sağırlaştır.</p>
 	</div>
 </div>
 

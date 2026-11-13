@@ -30,8 +30,10 @@ da sunucuya yüklenmez, paylaşandan doğrudan alınır. İçeri yalnızca içer
   **konuşma eşiği** (Discord'daki giriş hassasiyeti; %0 kapalı, varsayılan %10 = −55 dBFS, ayarlardaki
   seviye çubuğuyla aynı ölçek, çubukta çizgi olarak görünür): ses eşiğin altındayken gönderilmez; eşiği
   geçince hemen açılır, altında 300 ms kalınca kapanır (kelime sonları kesilmez). Konuşurken de
-  değiştirilebilir. Otomatik kazanç (AGC) yok (hep kapalı istenir). Bilgisayar sesi (paylaşım) bu
-  yoldan geçmez.
+  değiştirilebilir. Otomatik kazanç (AGC) yok (hep kapalı istenir). **Yankı engelleme** aç/kapa,
+  varsayılan kapalı (çıkış aygıtından bağımsız; eski sürümlerin "açık" kaydı taşınmaz): hoparlörle
+  konuşan açar, yoksa kanaldakiler kendi seslerini geri duyar. RNNoise yankıyı silmez: yankı da konuşma.
+  Bilgisayar sesi (paylaşım) bu yoldan geçmez.
 - **Susturunca mikrofon tamamen kapanır** (her cihazda; sağırlaştırınca da): tarayıcının kayıt
   göstergesi söner. Telefonda açık mikrofon telefonu görüşme kipinde tutar (Bluetooth kulaklık tek
   kanallı, boğuk görüşme sesine geçer; çalan ses telefonun görüşme işlemlerinden geçer): susturulmuş
@@ -44,11 +46,11 @@ da sunucuya yüklenmez, paylaşandan doğrudan alınır. İçeri yalnızca içer
   Kulaklıkla konuşurken çalan ses görüşme kalitesine düşmez: Chrome (Samsung Internet vb. de) Android'de
   yankı engellemeli bir mikrofon açılınca telefonu görüşme kipine alır, Bluetooth kulaklık tek kanallı
   görüşme profiline geçer; yankı engellemesi kapalı mikrofonda almaz (Chromium kaynağı). Kulaklık
-  takılıyken yankı engelleme kapalı istenir (kulaklıkta yankı olmaz); Bluetooth kulaklıkta ses
+  takılıyken yankı engelleme (açılmışsa da) kapalı istenir (kulaklıkta yankı olmaz); Bluetooth kulaklıkta ses
   telefonun kendi mikrofonundan alınır (kulaklığın mikrofonu onu yine görüşme profiline geçirirdi),
   telefon konuşana yakın olmalı. Konuşurken kulaklık takılıp çıkarılırsa (Bluetooth bağlanıp
-  koparsa) mikrofon yeni duruma göre yeniden açılır (kulaklık çıkınca ses hoparlörden çalar, yankı
-  engelleme gerekir). Ses ayarlarında mikrofon seçildiyse ona dokunulmaz. Klasik Bluetooth kulaklık
+  koparsa) mikrofon yeni duruma göre yeniden açılır (kulaklık çıkınca ses hoparlörden çalar: yankı
+  engelleme ayardaki gibi, varsayılan kapalı). Ses ayarlarında mikrofon seçildiyse ona dokunulmaz. Klasik Bluetooth kulaklık
   zaten aynı anda hem stereo müzik çalıp hem mikrofonunu kullanamaz (her uygulamada mikrofon devreye
   girince görüşme sesine düşer); telefonun mikrofonunu kullanmak bunun bilinen çözümüdür. Görüşme
   kipinde Android başka uygulamalarınki de dahil bütün sesleri görüşme yoluna verir, A2DP'yi hiç
@@ -62,7 +64,7 @@ da sunucuya yüklenmez, paylaşandan doğrudan alınır. İçeri yalnızca içer
   karşının açıklamasını uygularken sırayı kendi seçimine göre dizer). Alıcının uydurmak zorunda kaldığı
   ses %10 rastgele kayıpta konuşmada ~%6'dan ~%0,4-1'e, müzikte ~%6'dan ~%0,3-0,8'e iner; bedeli bit
   hızının iki katı. Kayıplar art arda gelince (ortalama 3 paketlik patlamalar, gerçek ağa daha yakın)
-  kazanç az: konuşmada %27-54, müzikte ~%12 (test/kayip.js), çünkü tarayıcının RED'i yalnızca bir
+  kazanç az: konuşmada %27-54, müzikte %5-12 (test/kayip.js), çünkü tarayıcının RED'i yalnızca bir
   önceki çerçeveyi taşır (libwebrtc kRedNumberOfRedundantEncodings = 1; daha derini ya da aralıklısı
   tarayıcının deneme bayrağı ister, sayfa değiştiremez). RED'i bilmeyen tarayıcıyla (Firefox: ne
   gönderir ne alır; kutu kapalı görünür) o bağlantı iki yönde de düz Opus'tur.
@@ -72,15 +74,21 @@ da sunucuya yüklenmez, paylaşandan doğrudan alınır. İçeri yalnızca içer
     kanaldakilerin konuşmasının (sayfanın kendi çaldığı) çıkarılmasıdır: o olmasa herkes kendi sesini
     geri duyardı; kimse konuşmuyorken ses olduğu gibi gider, müzik değişmez (gerçek Chromium denemesi).
     Kanallar: stereo (varsayılan) ya da mono. Gönderilen veri kanal sayısıyla değil bit hızıyla (kbps)
-    belirlenir: Opus aynı kbps'yi mono'da tek kanala verir (daha iyi tek kanal); veriyi azaltan kbps'yi
-    düşürmektir, mono'da daha düşük kbps aynı kaliteyi verir.
+    belirlenir. İki kanal aynıysa (mono içerik) Opus stereo'da kanalların farkına neredeyse bit harcamaz:
+    aynı kbps'de stereo ≈ mono. Tarayıcıda mono müzik için daha kötü: libwebrtc tek kanalı ses kipinde
+    (OPUS_APPLICATION_VOIP) kodluyor, bu kip 60-100 Hz altını kesen bir süzgeç ekliyor. Ölçüm (gerçek
+    müzik, sinyalin aslıyla farkına oranı): ses kipinde mono 160 kbps 1,9 dB (süzgecin faz kayması da
+    sayılır), 20-60 Hz −4 dB; müzik kipinde mono 160 26,9 dB, aynı kanallı stereo 160'ta 26,2, 320'de
+    27,8 dB, bas değişmiyor. Mono yalnızca konuşma için anlamlı.
   - *Kalite* (ses ve paylaşım ayarları). Paylaşılan ses (bilgisayarın sesi; stereo Opus, mikrofon ayrı
-    kanalda, tek kanal): 510 / 256 / 192 (varsayılan) / 128 / 96 kbps, yanında RED kutusu. Tarayıcılar
+    kanalda, tek kanal): 320 / 256 / 192 (varsayılan) / 128 / 96 kbps, yanında RED kutusu. Tarayıcılar
     sesi sıkıştırmadan gönderemez (Firefox'ta Opus'tan başka müzik kodeği yok); kodlayıcıya giden ses
-    her tarayıcıda 16 bit. 510, Opus'un tek çerçevesinin üst sınırından gelir (20 ms'de 1275 bayt).
-    Yedek aynı pakette gider ve tarayıcıda paket 1200 baytı geçemez: gerçek müzikte 192'de sığıyor (%10
-    rastgele kayıpta uydurulan ses %3,1 → %0,4), 256'da çoğu zaman sığmıyor (%3,6 → %1,5), 510'da hiç;
-    bu yüzden 256 ve 510'da RED kutusu kapalı (üstüne gelince nedenini yazar), seçim saklanır. 192 de
+    her tarayıcıda 16 bit. En yükseği 320: Spotify'ın en yüksek kayıplı kalitesi ("Çok yüksek", Ogg Vorbis
+    320 kbps; Opus aynı hızda daha verimli). Opus'un kendi sınırı 510 (tek çerçeve en çok 1275 bayt);
+    Spotify'ın kayıpsız (FLAC) kalitesinin tarayıcıda karşılığı yok. Yedek aynı pakette gider ve
+    tarayıcıda paket 1200 baytı geçemez: gerçek müzikte 192'de sığıyor (%10 rastgele kayıpta uydurulan
+    ses %3,1 → %0,4), 256'da çoğu zaman sığmıyor (%3,6 → %1,5), 320'de (çerçeve ~800 bayt) sığmıyor;
+    bu yüzden 256 ve 320'de RED kutusu kapalı (üstüne gelince nedenini yazar), seçim saklanır. 192 de
     aslından ayırt edilmez. Yedek yalnızca iki taraf da Chrome tabanlıysa (Chrome, Edge, Samsung
     Internet…) çalışır: Firefox RED'i hiç bilmez (en yenisi 160'ta da yok), o yüzden Firefox'la her
     bağlantı (konuşma da) yedeksizdir. Linux'ta bilgisayarın sesini ancak Firefox paylaşabilir (Chrome
@@ -241,9 +249,8 @@ açıklanmıştır.
   ~10 kişi. Ekran paylaşan, izleyen her kişiye ayrı görüntü gönderir (tavan yok, her bağlantının hızını
   tarayıcı ağa göre ayarlar; sunucu üzerinden (TURN) giden bağlantıda en çok 3 Mbit/s); görüntüyü
   kapatana ve ekransız paylaşımda kimseye gönderilmez. Paylaşılan ses kişi
-  başı varsayılan 192 kbps (yedekle hatta ~390), 510 seçilirse yedeksiz 510 (toplam ~3 Mbit/s'yi
-  geçmesin diye 510 altı kişiden kalabalıkta düşer): telefonla mobil veriden dinleyen için saatte
-  ~175 MB ya da ~230 MB. Konuşma RED'le hatta ~150-190 kbps. Daha
+  başı varsayılan 192 kbps (yedekle hatta ~390), en çok 320 (yedeksiz): telefonla mobil veriden
+  dinleyen için saatte ~175 MB ya da ~145 MB. Konuşma RED'le hatta ~150-190 kbps. Daha
   kalabalık odalar için SFU gerekir.
 - Ekran ve ses paylaşımı tarayıcıya bağlıdır: Chrome/Edge'de en iyisi (sekmenin sesi her işletim
   sisteminde, tüm bilgisayarın sesi Windows'ta "Tüm ekran" seçilince). Firefox ve Safari ekranla
@@ -258,5 +265,5 @@ açıklanmıştır.
 - P2P dosya, paylaşanın sayfası açıkken alınabilir. Chrome/Edge (masaüstü) büyük dosyayı doğrudan seçilen
   yere yazar; diğer tarayıcılar önce tarayıcının dosya alanına (kotası diskin bir kısmı) yazar.
 - TURN'den geçen ses ve görüntü sunucunun bant genişliğini kullanır (kişi başı konuşma ~200 kbps,
-  paylaşılan ses 510 kbps'ye kadar, ekran en çok 3 Mbit/s); TURN'den geçen dosya aktarımı ~0,5 MB/sn
+  paylaşılan ses ~390 kbps'ye kadar, ekran en çok 3 Mbit/s); TURN'den geçen dosya aktarımı ~0,5 MB/sn
   ile sınırlıdır (doğrudan bağlanabilenler sınırsız). Yalnızca IPv4.
