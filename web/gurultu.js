@@ -24,7 +24,7 @@ class Gurultu extends AudioWorkletProcessor {
 		const o = (secenek && secenek.processorOptions) || {};
 		this.kazanc = typeof o.kazanc === 'number' ? o.kazanc : 1;
 		this.esik = typeof o.esik === 'number' ? o.esik : null;
-		this.tutma = Math.round((0.3 * sampleRate) / 1);
+		this.tutma = Math.round(0.3 * sampleRate);
 		this.acilisAdim = 1 / Math.max(1, Math.round(0.002 * sampleRate));
 		this.kapanisAdim = 1 / Math.max(1, Math.round(0.02 * sampleRate));
 		this.kapi = this.esik === null ? 1 : 0;

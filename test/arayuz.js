@@ -2366,21 +2366,7 @@ const ICE = { iceServers: [{ urls: ['stun:1.2.3.4:3478'] }, { urls: ['turn:1.2.3
 		tgel({ type: 'sdp', from: 'bora', sdp: { type: 'answer', sdp: UC_KANALLI }, oturum: sdpler('bora').at(-1).oturum });
 		await bekle(40);
 		denetle('son seçim geçerli: 256 kbps', /maxaveragebitrate=256000/.test(yayinBolumu(bPc)) && sp(bPc).maxBitrate === 256000);
-		// Kanal sayısı: mono seçilince paylaşılan ses tek kanal kodlanır (yeniden anlaşmayla, iki yönde).
-		denetle('kanal seçimi varsayılan stereo', td.getElementById('ayar-yayin-kanal').value === '2' && /stereo=1;sprop-stereo=1/.test(yayinBolumu(bPc)));
-		const bKanal = sdpler('bora').length;
-		sec('ayar-yayin-kanal', '1');
-		await bekle(700);
-		denetle('mono: yeniden anlaşma istendi (teklif ettiğimizde yeni teklif, yanıtladığımızda yenile+teklif)', sdpler('bora').length === bKanal + 1 && istekler('zeynep').at(-1).teklif === true);
-		tgel({ type: 'sdp', from: 'bora', sdp: { type: 'answer', sdp: UC_KANALLI }, oturum: sdpler('bora').at(-1).oturum });
-		tgel({ type: 'sdp', from: 'zeynep', sdp: { type: 'offer', sdp: UC_KANALLI.replace('v=0', 'v=0\r\no=- 3 4 IN IP4 127.0.0.1') }, oturum: 'zoturum12345' });
-		await bekle(60);
-		denetle('mono: paylaşılan sesin Opus\'u tek kanal (stereo=0), mikrofon etkilenmez, kalıcı', /stereo=0;sprop-stereo=0/.test(yayinBolumu(bPc)) && /stereo=0;sprop-stereo=0/.test(yayinBolumu(zPc)) && /stereo=0/.test(String(bPc.remoteDescription.sdp).split('m=').slice(1)[0]) && JSON.parse(tw.localStorage.getItem('ses-ayarlari')).yayinKanal === 1, yayinBolumu(bPc));
-		sec('ayar-yayin-kanal', '2');
-		await bekle(700);
-		tgel({ type: 'sdp', from: 'bora', sdp: { type: 'answer', sdp: UC_KANALLI }, oturum: sdpler('bora').at(-1).oturum });
-		await bekle(40);
-		denetle('stereoya dönünce stereo=1', /stereo=1;sprop-stereo=1/.test(yayinBolumu(bPc)));
+		denetle('paylaşılan ses hep stereo (kanal seçeneği yok)', !td.getElementById('ayar-yayin-kanal') && /stereo=1;sprop-stereo=1/.test(yayinBolumu(bPc)) && /stereo=1;sprop-stereo=1/.test(yayinBolumu(zPc)));
 		// Karşıdan "kalitemi değiştirdim, yeni teklif ver" (teklif eden bizsek): yalnızca yeni teklif.
 		let secenek = 'yok';
 		const asilTeklif = bPc.createOffer.bind(bPc);

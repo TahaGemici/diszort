@@ -64,7 +64,7 @@ da sunucuya yüklenmez, paylaşandan doğrudan alınır. İçeri yalnızca içer
   karşının açıklamasını uygularken sırayı kendi seçimine göre dizer). Alıcının uydurmak zorunda kaldığı
   ses %10 rastgele kayıpta konuşmada ~%6'dan ~%0,4-1'e, müzikte ~%6'dan ~%0,3-0,8'e iner; bedeli bit
   hızının iki katı. Kayıplar art arda gelince (ortalama 3 paketlik patlamalar, gerçek ağa daha yakın)
-  kazanç az: konuşmada %27-54, müzikte %5-12 (test/kayip.js), çünkü tarayıcının RED'i yalnızca bir
+  kazanç az: konuşmada %27-54, müzikte %5-27 (test/kayip.js), çünkü tarayıcının RED'i yalnızca bir
   önceki çerçeveyi taşır (libwebrtc kRedNumberOfRedundantEncodings = 1; daha derini ya da aralıklısı
   tarayıcının deneme bayrağı ister, sayfa değiştiremez). RED'i bilmeyen tarayıcıyla (Firefox: ne
   gönderir ne alır; kutu kapalı görünür) o bağlantı iki yönde de düz Opus'tur.
@@ -73,13 +73,13 @@ da sunucuya yüklenmez, paylaşandan doğrudan alınır. İçeri yalnızca içer
     kapalı istenir; RNNoise ve konuşma eşiği uygulanmaz. Tek işlem, bilgisayarın sesine karışan
     kanaldakilerin konuşmasının (sayfanın kendi çaldığı) çıkarılmasıdır: o olmasa herkes kendi sesini
     geri duyardı; kimse konuşmuyorken ses olduğu gibi gider, müzik değişmez (gerçek Chromium denemesi).
-    Kanallar: stereo (varsayılan) ya da mono. Gönderilen veri kanal sayısıyla değil bit hızıyla (kbps)
-    belirlenir. İki kanal aynıysa (mono içerik) Opus stereo'da kanalların farkına neredeyse bit harcamaz:
-    aynı kbps'de stereo ≈ mono. Tarayıcıda mono müzik için daha kötü: libwebrtc tek kanalı ses kipinde
-    (OPUS_APPLICATION_VOIP) kodluyor, bu kip 60-100 Hz altını kesen bir süzgeç ekliyor. Ölçüm (gerçek
-    müzik, sinyalin aslıyla farkına oranı): ses kipinde mono 160 kbps 1,9 dB (süzgecin faz kayması da
-    sayılır), 20-60 Hz −4 dB; müzik kipinde mono 160 26,9 dB, aynı kanallı stereo 160'ta 26,2, 320'de
-    27,8 dB, bas değişmiyor. Mono yalnızca konuşma için anlamlı.
+    Hep stereo. Gönderilen veri kanal sayısıyla değil bit hızıyla (kbps) belirlenir: iki kanal aynıysa
+    (mono içerik) Opus kanalların farkına neredeyse bit harcamaz, değişken bit hızında daha az da gönderir
+    (ölçüm, gerçek müzik, libopus: 160 ayarında gerçek stereo 182, aynı kanallı stereo 143, mono 173
+    kbps; 320 ayarında 344 / 308). Mono seçeneği yok: libwebrtc tek kanalı konuşma kipinde
+    (OPUS_APPLICATION_VOIP) kodluyor, bu kip 60-100 Hz altını kesiyor (ölçüm: 20-60 Hz −4 dB); mono veri
+    kazandırmadan bası azaltırdı. Mikrofon ise mono: kaynağı tek kanal ve konuşmada o süzgeç işe yarar
+    (uğultu, masa darbesi, "p" patlaması).
   - *Kalite* (ses ve paylaşım ayarları). Paylaşılan ses (bilgisayarın sesi; stereo Opus, mikrofon ayrı
     kanalda, tek kanal): 320 / 256 / 192 (varsayılan) / 128 / 96 kbps, yanında RED kutusu. Tarayıcılar
     sesi sıkıştırmadan gönderemez (Firefox'ta Opus'tan başka müzik kodeği yok); kodlayıcıya giden ses

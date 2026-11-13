@@ -587,9 +587,16 @@ function durumYayinla() {
 	}
 }
 
-function yayinBitir(ws) {
-	ws.yayin = null;
+// Hız sınırı: s sayacında son pencere (ms) içindeki deneme sayısı sınırı aşmadıysa true.
+function sayac(s, pencereMs, sinir, simdi = Date.now()) {
+	if (simdi - s.bas > pencereMs) {
+		s.bas = simdi;
+		s.adet = 0;
+	}
+	return ++s.adet <= sinir;
 }
+// Bağlantının adlı sayacı (yazı, dosya, sinyal, kişi, kanal).
+const wsSayaci = (ws, ad, pencereMs, sinir) => sayac(((ws.sayaclar ||= {})[ad] ||= { bas: 0, adet: 0 }), pencereMs, sinir);
 
 // Sesli kanaldan kalıcı olarak çıkar (kendi isteğiyle, kanal değiştirince ya da askı süresi dolunca).
 function koltukBirak(kanal, ad, ws) {
@@ -597,7 +604,7 @@ function koltukBirak(kanal, ad, ws) {
 	if (!uyeler || uyeler.get(ad) !== ws) return false;
 	clearTimeout(ws.askiZamani);
 	ws.askida = false;
-	yayinBitir(ws);
+	ws.yayin = null;
 	uyeler.delete(ad);
 	if (!uyeler.size) sesliKanallar.delete(kanal);
 	else kanalHerkes(kanal, { type: 'ses-kisi-cikti', kanal, ad });
@@ -608,7 +615,7 @@ function sesCikar(ws) {
 	const kanal = ws.sesKanal;
 	if (!kanal) return;
 	ws.sesKanal = null;
-	yayinBitir(ws);
+	ws.yayin = null;
 	if (ws.ad && koltukBirak(kanal, ws.ad, ws)) console.log(`[ses] ${kanal}: ${ws.ad} çıktı`);
 }
 
@@ -673,7 +680,7 @@ function adSahibi(ad) {
 // üretilir (istemci localStorage'ında saklar). Reddedilirse ya da kimse içeride değilse giremez.
 
 const bekleyenler = new Map(); // istek id -> { ad, ip, zaman, ws, kimlik }
-const kapiDenemeleri = new Map(); // ip -> { baslangic, adet } (dakikalık giriş denemesi sayacı)
+const kapiDenemeleri = new Map(); // ip -> { bas, adet } (dakikalık giriş denemesi sayacı)
 const beklemeSuresi = 120000; // 2 dakika içinde karar verilmezse düşer
 
 function temizAd(ham) {
@@ -700,11 +707,10 @@ function oturumAc(ws, ad, kimlik, anahtar, sesDevam) {
 	if (eski && eski !== ws) eskiOturumuKapat(eski, kimlik);
 	ws.ad = ad;
 	ws.kimlik = kimlik || '';
-	ws.yaziPencere = 0;
-	ws.yaziAdet = 0;
+	if (ws.sayaclar) delete ws.sayaclar.yazi;
 	ws.sessiz = false;
 	ws.sagir = false;
-	yayinBitir(ws);
+	ws.yayin = null;
 	ws.sunulan = new Set(); // istemci 'dosya-sun' ile bildirir
 	ws.dosyaKuyruk = Promise.resolve(); // dosya-paylas / dosya-sun sırayla işlensin
 	// Askıdaki sesli kanal yeri: istemci o kanala devam etmeyecekse hemen bırak (diğerleri boşuna beklemesin).
@@ -773,18 +779,9 @@ async function kapiCal(ws, ad, anahtarGecersiz) {
 	if (ip) {
 		const ayniIp = [...bekleyenler.values()].filter((b) => b.ip === ip);
 		if (ayniIp.length >= 3) return girisRed(ws, 'Çok fazla istek; biraz bekle.', 'cok-istek');
-		const simdi = Date.now();
-		const kayit = kapiDenemeleri.get(ip) || { baslangic: simdi, adet: 0 };
-		if (simdi - kayit.baslangic > 60000) {
-			kayit.baslangic = simdi;
-			kayit.adet = 0;
-		}
+		if (!kapiDenemeleri.has(ip)) kapiDenemeleri.set(ip, { bas: Date.now(), adet: 0 });
 		// Dakikada 600 deneme: insan trafiği için bol, otomatik flood için sınır.
-		if (++kayit.adet > 600) {
-			kapiDenemeleri.set(ip, kayit);
-			return girisRed(ws, 'Çok fazla giriş denemesi; bir dakika bekle.', 'cok-istek');
-		}
-		kapiDenemeleri.set(ip, kayit);
+		if (!sayac(kapiDenemeleri.get(ip), 60000, 600)) return girisRed(ws, 'Çok fazla giriş denemesi; bir dakika bekle.', 'cok-istek');
 	}
 	// Aynı ad için eski bekleyen isteği düşür.
 	for (const [id, b] of bekleyenler) if (b.ad === ad) istekKapat(id, false, ad);
@@ -1011,12 +1008,7 @@ async function yaziGonder(ws, m) {
 		.trim();
 	if (!metin) return;
 	if (metin.length > 2000) metin = metin.slice(0, 2000);
-	const simdi = Date.now();
-	if (simdi - (ws.yaziPencere || 0) > 10000) {
-		ws.yaziPencere = simdi;
-		ws.yaziAdet = 0;
-	}
-	if (++ws.yaziAdet > 12) return gonder(ws, { type: 'hata', message: 'Çok hızlı yazıyorsun; birkaç saniye bekle.' });
+	if (!wsSayaci(ws, 'yazi', 10000, 12)) return gonder(ws, { type: 'hata', message: 'Çok hızlı yazıyorsun; birkaç saniye bekle.' });
 	try {
 		const mesaj = await db.mesajEkle({ kanal, ad: ws.ad, metin });
 		herkes({ type: 'yazi', kanal, mesaj });
@@ -1066,7 +1058,7 @@ function sesGir(ws, m) {
 		clearTimeout(askida.ws.askiZamani);
 		askida.ws.askida = false;
 		askida.ws.sesKanal = null;
-		yayinBitir(askida.ws);
+		askida.ws.yayin = null;
 		uyeler.delete(ws.ad);
 	}
 	const digerleri = [...uyeler.keys()];
@@ -1164,12 +1156,7 @@ function dosyaPaylas(ws, m) {
 	if (!P2P_KIMLIK.test(id)) return gonder(ws, { type: 'hata', message: 'Dosya kimliği geçersiz.' });
 	const boyut = Number(m.boyut);
 	if (!Number.isSafeInteger(boyut) || boyut <= 0) return gonder(ws, { type: 'hata', message: 'Boş dosya paylaşılamaz.' });
-	const simdi = Date.now();
-	if (simdi - (ws.dosyaPencere || 0) > 10000) {
-		ws.dosyaPencere = simdi;
-		ws.dosyaAdet = 0;
-	}
-	if (++ws.dosyaAdet > 20) return gonder(ws, { type: 'hata', message: 'Çok hızlı dosya paylaşıyorsun; birkaç saniye bekle.' });
+	if (!wsSayaci(ws, 'dosya', 10000, 20)) return gonder(ws, { type: 'hata', message: 'Çok hızlı dosya paylaşıyorsun; birkaç saniye bekle.' });
 	const dosyaAd = guvenliAd(String(m.ad ?? 'dosya'));
 	const hamTur = String(m.tur ?? '').trim().slice(0, 100);
 	const tur = ONIZLEME_TURLERI[uzanti(dosyaAd)] || (MIME_KALIBI.test(hamTur) ? hamTur.toLowerCase() : 'application/octet-stream');
@@ -1219,12 +1206,7 @@ function dosyaSinyal(ws, m) {
 	if (!ws.ad) return;
 	const veri = m.veri;
 	if (!veri || typeof veri !== 'object' || Array.isArray(veri)) return;
-	const simdi = Date.now();
-	if (simdi - (ws.sinyalPencere || 0) > 10000) {
-		ws.sinyalPencere = simdi;
-		ws.sinyalAdet = 0;
-	}
-	if (++ws.sinyalAdet > 600) return;
+	if (!wsSayaci(ws, 'sinyal', 10000, 600)) return;
 	const hedefAd = String(m.to ?? '').slice(0, 32);
 	const hedef = adSahibi(hedefAd);
 	if (!hedef || hedef === ws) {
@@ -1282,29 +1264,14 @@ async function sohbetTemizle(ws, m) {
 
 // Atma işlemleri kanal işlemlerinden ayrı sayılır (temizlik sırasında 10/dk sınırına takılmasın).
 function kisiHizi(ws) {
-	const simdi = Date.now();
-	if (simdi - (ws.kisiPencere || 0) > 60000) {
-		ws.kisiPencere = simdi;
-		ws.kisiAdet = 0;
-	}
-	if (++ws.kisiAdet > 60) {
-		gonder(ws, { type: 'hata', message: 'Çok sık atma işlemi; biraz bekle.' });
-		return false;
-	}
-	return true;
+	if (wsSayaci(ws, 'kisi', 60000, 60)) return true;
+	gonder(ws, { type: 'hata', message: 'Çok sık atma işlemi; biraz bekle.' });
+	return false;
 }
-
 function kanalHizi(ws) {
-	const simdi = Date.now();
-	if (simdi - (ws.kanalPencere || 0) > 60000) {
-		ws.kanalPencere = simdi;
-		ws.kanalAdet = 0;
-	}
-	if (++ws.kanalAdet > 10) {
-		gonder(ws, { type: 'hata', message: 'Çok sık kanal işlemi; biraz bekle.' });
-		return false;
-	}
-	return true;
+	if (wsSayaci(ws, 'kanal', 60000, 10)) return true;
+	gonder(ws, { type: 'hata', message: 'Çok sık kanal işlemi; biraz bekle.' });
+	return false;
 }
 
 async function kanalEkleHandler(ws, m) {
@@ -1596,18 +1563,11 @@ const sunucu = http.createServer((req, res) => {
 			turnAdresi: turnAdresi || null,
 			veritabani: db ? 'açık' : 'kapalı',
 		};
+		const yaz = (veri) => yanit(res, iyi ? 200 : 503, JSON.stringify(veri) + '\n', { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
 		const sayilar = db ? Promise.all([db.sayilar(), db.kisiSayisi(), db.boyut()]) : Promise.resolve([{ mesaj: 0, dosya: 0 }, 0, 0]);
 		return sayilar.then(
-			([s, kisiSayisi, boyut]) =>
-				yanit(res, iyi ? 200 : 503, JSON.stringify({ ...govde, mesaj: s.mesaj, dosya: s.dosya, beyazListe: kisiSayisi, veritabaniBayt: boyut }) + '\n', {
-					'Content-Type': 'application/json; charset=utf-8',
-					'Cache-Control': 'no-store',
-				}),
-			() =>
-				yanit(res, iyi ? 200 : 503, JSON.stringify(govde) + '\n', {
-					'Content-Type': 'application/json; charset=utf-8',
-					'Cache-Control': 'no-store',
-				}),
+			([s, kisiSayisi, boyut]) => yaz({ ...govde, mesaj: s.mesaj, dosya: s.dosya, beyazListe: kisiSayisi, veritabaniBayt: boyut }),
+			() => yaz(govde),
 		);
 	}
 	dosyaSun(req, res, yol);

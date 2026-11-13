@@ -28,34 +28,47 @@ function depoOku(ad, varsayilan = '') {
 	}
 }
 function depoYaz(ad, deger) {
+	dene(() => (deger == null ? localStorage.removeItem(ad) : localStorage.setItem(ad, String(deger))));
+}
+// Sekmenin deposu (sayfa yenilenince kalır, sekme kapanınca gider): JSON; okununca silinir.
+function oturumAl(ad) {
 	try {
-		if (deger === null || deger === undefined) localStorage.removeItem(ad);
-		else localStorage.setItem(ad, String(deger));
-	} catch {}
+		const v = JSON.parse(sessionStorage.getItem(ad) || 'null');
+		sessionStorage.removeItem(ad);
+		return v;
+	} catch {
+		return null;
+	}
+}
+function oturumYaz(ad, deger) {
+	dene(() => (deger == null ? sessionStorage.removeItem(ad) : sessionStorage.setItem(ad, JSON.stringify(deger))));
 }
 const medyaSorgu = (q) => typeof window.matchMedia === 'function' && window.matchMedia(q).matches;
 const dokunmatik = () => medyaSorgu('(pointer: coarse)');
+const rastgeleBayt = (n) => crypto.getRandomValues(new Uint8Array(n));
 function rastgeleKimlik(n = 12) {
 	const harf = 'abcdefghijklmnopqrstuvwxyz0123456789';
-	const dizi = new Uint8Array(n);
-	try {
-		crypto.getRandomValues(dizi);
-	} catch {
-		for (let i = 0; i < n; i++) dizi[i] = Math.floor(Math.random() * 256);
-	}
 	let s = '';
-	for (const b of dizi) s += harf[b % harf.length];
+	for (const b of rastgeleBayt(n)) s += harf[b % harf.length];
 	return s;
 }
-function rastgeleHex(n = 24) {
-	const dizi = new Uint8Array(Math.ceil(n / 2));
+const rastgeleHex = (n = 24) => [...rastgeleBayt(Math.ceil(n / 2))].map((b) => b.toString(16).padStart(2, '0')).join('').slice(0, n);
+// Hata verirse yok say (kapanmış bir şeyi kapatmak, her tarayıcıda olmayan bir özellik gibi zararsız
+// durumlar için).
+function dene(is) {
 	try {
-		crypto.getRandomValues(dizi);
-	} catch {
-		for (let i = 0; i < dizi.length; i++) dizi[i] = Math.floor(Math.random() * 256);
-	}
-	return [...dizi].map((b) => b.toString(16).padStart(2, '0')).join('').slice(0, n);
+		return is();
+	} catch {}
 }
+// Düğme (type=button: bir formun içindeyse formu göndermesin).
+function dugme(sinif, metin, tikla, baslik) {
+	const d = el('button', sinif, metin);
+	d.type = 'button';
+	if (baslik) d.title = baslik;
+	if (tikla) d.onclick = tikla;
+	return d;
+}
+const hataYazi = (h) => String((h && h.message) || h || '');
 // play() bazı ortamlarda söz döndürmez ya da hemen hata atar; hep söz döndür.
 function oynat(ses) {
 	try {
@@ -120,9 +133,7 @@ function ikon(ad, sinif) {
 	svg.setAttribute('aria-hidden', 'true');
 	svg.setAttribute('focusable', 'false');
 	svg.setAttribute('class', 'ikon' + (sinif ? ' ' + sinif : ''));
-	try {
-		svg.innerHTML = SIMGELER[ad] || '';
-	} catch {}
+	svg.innerHTML = SIMGELER[ad] || '';
 	return svg;
 }
 function ikonKoy(e, ad) {
@@ -148,7 +159,6 @@ function durum(metin, hata = false) {
 }
 function girisDurum(metin, hata = false, bekliyor = false) {
 	const e = $('giris-durum');
-	if (!e) return;
 	e.textContent = metin || '';
 	e.classList.toggle('hata', !!hata);
 	e.classList.toggle('bekliyor', !!bekliyor && !!metin);
@@ -169,7 +179,7 @@ const YAYIN_SES_SECENEKLERI = [320, 256, 192, 128, 96];
 // bir önceki: kRedNumberOfRedundantEncodings = 1; sayfa değiştiremez). Paket 1200 baytı geçemez:
 // gerçek müzikte 192'de sığıyor (%10 rastgele kayıpta uydurulan ses %3,1 → %0,4), 256'da çoğu zaman
 // sığmıyor (%3,6 → %1,5), 320'de (çerçeve ~800 bayt) hiç. Kayıplar art arda gelince (ortalama 3 paket) kazancı az:
-// konuşmada %27-54, müzikte %5-12 (test/kayip.js). Firefox RED'i hiç bilmiyor (ne gönderir ne alır).
+// konuşmada %27-54, müzikte %5-27 (test/kayip.js). Firefox RED'i hiç bilmiyor (ne gönderir ne alır).
 const RED_SIGAN_HIZ = 192;
 
 const AYAR_VARSAYILAN = {
@@ -186,7 +196,6 @@ const AYAR_VARSAYILAN = {
 	yayinSes: 192, // paylaşılan sesin bit hızı (kbps): YAYIN_SES_SECENEKLERI'nden biri
 	mikRed: true, // mikrofonda kayıplara karşı yedek (RED; tarayıcı ve karşısı biliyorsa)
 	yayinRed: true, // paylaşılan seste kayıplara karşı yedek (yalnızca RED_SIGAN_HIZ ve altında)
-	yayinKanal: 2, // paylaşılan sesin kanal sayısı: 2 stereo, 1 mono
 	sesler: true, // giriş/çıkış sesleri
 	mikKapali: false, // kendini susturdun (kanala girerken de geçerli; susturulmuşken mikrofon kapalıdır)
 	sagir: false, // gelen sesleri kapattın
@@ -205,19 +214,13 @@ ayar.mikSeviye = Math.min(200, Math.max(0, Math.round(ayar.mikSeviye / 5) * 5));
 if (![48, 96, 128].includes(ayar.kalite)) ayar.kalite = AYAR_VARSAYILAN.kalite;
 if (!YAYIN_SES_SECENEKLERI.includes(ayar.yayinSes)) ayar.yayinSes = AYAR_VARSAYILAN.yayinSes;
 ayar.esik = Number.isFinite(ayar.esik) ? Math.min(100, Math.max(0, Math.round(ayar.esik))) : AYAR_VARSAYILAN.esik;
-if (![1, 2].includes(ayar.yayinKanal)) ayar.yayinKanal = AYAR_VARSAYILAN.yayinKanal;
 const ayarKaydet = () => depoYaz('ses-ayarlari', JSON.stringify(ayar));
 
 // ---------------------------------------------------------------- durum
 
 // Aynı sekme yeniden bağlanınca sunucu eski bağlantıyı tanısın.
-let SEKME = '';
-try {
-	SEKME = sessionStorage.getItem('sekme') || rastgeleKimlik(16);
-	sessionStorage.setItem('sekme', SEKME);
-} catch {
-	SEKME = rastgeleKimlik(16);
-}
+const SEKME = dene(() => sessionStorage.getItem('sekme')) || rastgeleKimlik(16);
+dene(() => sessionStorage.setItem('sekme', SEKME));
 
 let ws = null; // geçerli WebSocket (eskilerinin işleyicileri kendini yok sayar)
 let bagliyim = false; // sunucuya girildi ('hazir') ve bağlantı açık
@@ -252,8 +255,8 @@ let sesKanal = ''; // içinde olduğum sesli kanal
 let sesHedef = ''; // girmeye çalıştığım kanal ('ses-girdi' bekleniyor)
 let sesGiriliyor = false;
 let mikrofon = null; // getUserMedia akışı
-let mikIslem = null; // mikrofon seviyesi %100 değilse: { kaynak, kazanc, hedef }
-let gidenIz = null; // eşlere gönderilen iz (mikrofon izi ya da kazançlı iz)
+let mikIslem = null; // mikrofonun yolu: RNNoise ({ dugum, ... }) ya da, RNNoise yokken, kazanç ({ kazanc, ... })
+let gidenIz = null; // eşlere gönderilen iz: yolun çıkışı ya da ham mikrofon
 let mikHatasi = ''; // mikrofon alınamadıysa nedeni (yalnızca dinleme)
 let mikBirakildi = false; // susturulduğu için mikrofon bırakıldı; açınca yeniden alınır
 let mikAliniyor = null; // susturma kalkınca mikrofon yeniden alınıyor (söz)
@@ -267,9 +270,7 @@ const konusanlar = new Set(); // şu an konuşanlar (benim kanalımda, ben dahil
 function soketBirak(sok) {
 	if (!sok) return;
 	sok.onopen = sok.onmessage = sok.onclose = sok.onerror = null;
-	try {
-		sok.close();
-	} catch {}
+	dene(() => sok.close());
 	if (ws === sok) ws = null;
 }
 
@@ -415,25 +416,16 @@ function gorunurlukTanisi() {
 	};
 	setTimeout(yolla, 6000);
 }
-try {
-	if (navigator.connection && navigator.connection.addEventListener) navigator.connection.addEventListener('change', uyandi);
-} catch {}
+navigator.connection?.addEventListener?.('change', uyandi);
 
 // Sesli kanaldayken sayfa arka planda tarayıcı tarafından kapatılırsa (bellek için; bazı telefonlarda
 // sık olur) geri dönülünce sesli kanala kendiliğinden girilir. Sayfa arka plana geçerken kanal not
 // edilir; öne gelince, kanaldan çıkınca ya da sayfa normal kapanınca not silinir.
 function sesDevamKaydet() {
-	try {
-		if (document.visibilityState === 'hidden' && sesKanal) sessionStorage.setItem('ses-devam', JSON.stringify({ kanal: sesKanal, zaman: Date.now() }));
-		else sessionStorage.removeItem('ses-devam');
-	} catch {}
+	oturumYaz('ses-devam', document.visibilityState === 'hidden' && sesKanal ? { kanal: sesKanal, zaman: Date.now() } : null);
 }
 function kapatildiysaSeseDon() {
-	let kayit = null;
-	try {
-		kayit = JSON.parse(sessionStorage.getItem('ses-devam') || 'null');
-		sessionStorage.removeItem('ses-devam');
-	} catch {}
+	const kayit = oturumAl('ses-devam');
 	if (!kayit || !kayit.kanal || !(Date.now() - kayit.zaman < 10 * 60000) || sesKanal || sesGiriliyor) return;
 	if (!kanalBilgi(kayit.kanal)) return;
 	durum('Sesli kanala geri dönülüyor…');
@@ -583,20 +575,14 @@ let girisKovasi = 1;
 // Sunucu yeni sürüme geçti (yeniden bağlanınca 'hazir.surum' değişti): eski arayüz yeni sunucuyla
 // konuşmasın diye sayfayı yenile. Sesli kanal ve yazılmakta olan mesaj yenilemeden sonra geri gelir.
 function surumYenile() {
-	try {
-		sessionStorage.setItem('surum-yenile', JSON.stringify({ ses: sesKanal || '', taslak: $('metin').value || '' }));
-	} catch {}
+	oturumYaz('surum-yenile', { ses: sesKanal || '', taslak: $('metin').value || '' });
 	durum('Sunucu güncellendi; sayfa yenileniyor…');
 	if (sesKanal) gonder({ type: 'ses-cik' });
 	durduruldu = true;
 	setTimeout(() => location.reload(), 600);
 }
 function surumYenilemesindenDon() {
-	let kayit = null;
-	try {
-		kayit = JSON.parse(sessionStorage.getItem('surum-yenile') || 'null');
-		sessionStorage.removeItem('surum-yenile');
-	} catch {}
+	const kayit = oturumAl('surum-yenile');
 	if (!kayit) return;
 	if (kayit.taslak && !$('metin').value) $('metin').value = kayit.taslak;
 	if (kayit.ses && kanalBilgi(kayit.ses)) setTimeout(() => sesAc(kayit.ses), 300);
@@ -819,20 +805,20 @@ function cevrimiciSayaci() {
 
 function kanalSatiri(kanal, parcalar, { aktif, okunmamisVar }, tikla) {
 	const satir = el('div', 'kanal-satir');
-	const d = el('button', 'kanal' + (aktif ? ' aktif' : '') + (okunmamisVar ? ' okunmamis' : ''));
-	d.type = 'button';
+	const d = dugme('kanal' + (aktif ? ' aktif' : '') + (okunmamisVar ? ' okunmamis' : ''), null, tikla);
 	d.append(...parcalar);
-	d.onclick = tikla;
 	if (aktif) d.setAttribute('aria-current', 'true');
-	const sil = el('button', 'kanal-sil');
-	sil.type = 'button';
-	sil.title = 'Kanalı sil';
+	const sil = dugme(
+		'kanal-sil',
+		null,
+		(e) => {
+			e.stopPropagation();
+			kanalSilIste(kanal);
+		},
+		'Kanalı sil',
+	);
 	sil.setAttribute('aria-label', `${kanal.ad} kanalını sil`);
 	sil.append(ikon('x'));
-	sil.onclick = (e) => {
-		e.stopPropagation();
-		kanalSilIste(kanal);
-	};
 	satir.append(d, sil);
 	return satir;
 }
@@ -906,12 +892,9 @@ function uyeSatiri(ad, k, cevrimdisi) {
 	bilgi.append(alt);
 	d.append(av, bilgi);
 	if (!ben) {
-		const at = el('button', 'uye-at');
-		at.type = 'button';
-		at.title = cevrimdisi ? 'Beyaz listeden çıkar (anahtarı iptal edilir)' : 'Sunucudan at (anahtarı iptal edilir)';
+		const at = dugme('uye-at', null, () => kisiAtIste(ad), cevrimdisi ? 'Beyaz listeden çıkar (anahtarı iptal edilir)' : 'Sunucudan at (anahtarı iptal edilir)');
 		at.setAttribute('aria-label', ad + ' kişisini sunucudan at');
 		at.append(ikon('x'));
-		at.onclick = () => kisiAtIste(ad);
 		d.append(at);
 	}
 	return d;
@@ -959,19 +942,11 @@ function istekEkle(id, ad, kayitli) {
 		kart.append(u);
 	}
 	const dugmeler = el('div', 'istek-dugmeler');
-	const kabul = el('button', null, 'Kabul et');
-	kabul.type = 'button';
-	kabul.onclick = () => {
-		gonder({ type: 'giris-karari', id, kabul: true });
+	const karar = (kabul) => () => {
+		gonder({ type: 'giris-karari', id, kabul });
 		istekSil(id);
 	};
-	const red = el('button', 'red', 'Reddet');
-	red.type = 'button';
-	red.onclick = () => {
-		gonder({ type: 'giris-karari', id, kabul: false });
-		istekSil(id);
-	};
-	dugmeler.append(kabul, red);
+	dugmeler.append(dugme(null, 'Kabul et', karar(true)), dugme('red', 'Reddet', karar(false)));
 	kart.append(dugmeler, el('div', 'istek-sure'));
 	$('istekler').append(kart);
 	istekler.set(id, { ad, kart });
@@ -1306,7 +1281,6 @@ function mesajlariCiz(dibe) {
 // Dipte kalma: dipteyken (dibeYapisik) yeni mesaj, yüklenen resim ya da mesaj alanının küçülmesi
 // (ses kartı açıldı, telefonda klavye açıldı, yazı kutusu büyüdü) seni dipte tutar. Dipten yalnızca
 // kullanıcı yukarı kaydırınca ayrılınır; yukarıda okuyan kişi bölünmez ("Yeni mesaj ↓" çıkar).
-// Eskiden yalnızca "dibe 120 px'ten yakın mıyım" bakılıyordu: alan küçülünce bu bozuluyordu.
 let dibeYapisik = true;
 let sonKaydirma = 0;
 function dibeYakin() {
@@ -1648,14 +1622,8 @@ function bagKapat(bag, neden, karsiKapatti = false) {
 		if (akt.yon === 'gelen') aktarimKoptu(akt, neden || 'Bağlantı koptu');
 		else gonderimBitti(akt, neden || 'bağlantı koptu');
 	}
-	for (const k of bag.kanallar) {
-		try {
-			k.close();
-		} catch {}
-	}
-	try {
-		bag.pc.close();
-	} catch {}
+	for (const k of bag.kanallar) dene(() => k.close());
+	dene(() => bag.pc.close());
 }
 
 // Bağlantı TURN üzerinden mi? (Aktarımda "yavaş olabilir" bilgisi için.)
@@ -1788,9 +1756,7 @@ function gidenKanal(bag, kanal) {
 }
 
 function kanalaYaz(kanal, nesne) {
-	try {
-		if (kanal.readyState === 'open') kanal.send(JSON.stringify(nesne));
-	} catch {}
+	dene(() => kanal.readyState === 'open' && kanal.send(JSON.stringify(nesne)));
 }
 
 async function gonderimDongusu(akt) {
@@ -1850,11 +1816,7 @@ function gonderimBitti(akt, hata) {
 function gonderimiIptalEt(akt) {
 	kanalaYaz(akt.kanal, { hata: 'iptal' });
 	gonderimBitti(akt, 'iptal edildi');
-	setTimeout(() => {
-		try {
-			akt.kanal.close();
-		} catch {}
-	}, 300);
+	setTimeout(() => dene(() => akt.kanal.close()), 300);
 }
 
 // --- indiren: yazıcı (dosyanın gideceği yer) seç, kanal aç, gelen parçaları sırayla yaz
@@ -2000,7 +1962,7 @@ async function dosyaIndir(id, { onizleme = false } = {}) {
 		akt.yazici = await yaziciSozu;
 	} catch (h) {
 		indirmeler.delete(id);
-		if (!(h && h.name === 'AbortError')) durum('Dosya kaydedilemiyor: ' + ((h && h.message) || h), true);
+		if (!(h && h.name === 'AbortError')) durum('Dosya kaydedilemiyor: ' + hataYazi(h), true);
 		dosyaKartlariniGuncelle(id);
 		aktarimlariCiz();
 		return;
@@ -2085,7 +2047,7 @@ function indirmeMesaji(akt, kanal, veri) {
 				if (akt.kanal) kanalaYaz(akt.kanal, { onay: akt.yazilan });
 			}
 		})
-		.catch((h) => indirmeBitti(akt, 'Diske yazılamadı: ' + ((h && h.message) || h)));
+		.catch((h) => indirmeBitti(akt, 'Diske yazılamadı: ' + hataYazi(h)));
 	ilerlemeGuncelle(akt, akt.alinan);
 }
 
@@ -2095,11 +2057,7 @@ function aktarimKoptu(akt, neden) {
 	clearTimeout(akt.acilisZamani);
 	const kanal = akt.kanal;
 	akt.kanal = null;
-	if (kanal) {
-		try {
-			kanal.close();
-		} catch {}
-	}
+	if (kanal) dene(() => kanal.close());
 	if (akt.bag) akt.bag.aktarimlar.delete(akt);
 	akt.bag = null;
 	if (akt.sonGeldi) return; // son parça geldi, yazılıp kapanıyor
@@ -2158,11 +2116,7 @@ function indirmeBitti(akt, hata) {
 	akt.bitti = true;
 	clearTimeout(akt.acilisZamani);
 	clearTimeout(akt.yenidenZaman);
-	if (akt.kanal) {
-		try {
-			akt.kanal.close();
-		} catch {}
-	}
+	if (akt.kanal) dene(() => akt.kanal.close());
 	akt.kanal = null;
 	if (akt.bag) akt.bag.aktarimlar.delete(akt);
 	if (akt.yazici) akt.yazici.iptal().catch(() => {});
@@ -2249,10 +2203,10 @@ function aktarimMetni(akt) {
 	return parcalar.join(' · ');
 }
 
+const ilerlemeGenisligi = (akt) => (akt.boyut ? Math.min(100, (akt.ilerleme / akt.boyut) * 100) : 0).toFixed(1) + '%';
 const aktarimSatirlari = new Map(); // aktarım -> satır öğeleri
 function aktarimlariCiz() {
 	const kap = $('aktarimlar');
-	if (!kap) return;
 	const liste = [...indirmeler.values()].filter((a) => !a.onizleme).concat([...gonderimler]);
 	for (const [akt, s] of aktarimSatirlari) {
 		if (!liste.includes(akt)) {
@@ -2273,12 +2227,9 @@ function aktarimlariCiz() {
 		const dolgu = el('div');
 		cubuk.append(dolgu);
 		bilgi.append(ust, cubuk, metin);
-		const iptal = el('button', 'aktarim-iptal');
-		iptal.type = 'button';
-		iptal.title = 'Aktarımı durdur';
+		const iptal = dugme('aktarim-iptal', null, () => (akt.yon === 'gelen' ? indirmeBitti(akt, '') : gonderimiIptalEt(akt)), 'Aktarımı durdur');
 		iptal.setAttribute('aria-label', akt.ad + ' aktarımını durdur');
 		iptal.append(ikon('x'));
-		iptal.onclick = () => (akt.yon === 'gelen' ? indirmeBitti(akt, '') : gonderimiIptalEt(akt));
 		kok.append(isaret, bilgi, iptal);
 		kap.append(kok);
 		aktarimSatirlari.set(akt, { kok, metin, dolgu });
@@ -2290,7 +2241,7 @@ function aktarimSatiriGuncelle(akt) {
 	const s = aktarimSatirlari.get(akt);
 	if (!s) return;
 	s.metin.textContent = aktarimMetni(akt);
-	s.dolgu.style.width = (akt.boyut ? Math.min(100, (akt.ilerleme / akt.boyut) * 100) : 0).toFixed(1) + '%';
+	s.dolgu.style.width = ilerlemeGenisligi(akt);
 }
 
 // Gönderim ya da indirme sürerken sayfa kapatılmak istenirse uyar.
@@ -2322,10 +2273,7 @@ function p2pDosyaElemani(dosya, sahip) {
 // id verilirse yalnızca o dosyanın kartları, verilmezse tüm P2P kartlar yeniden çizilir (durumu
 // değişmeyen kart dokunulmadan kalır: önizleme titremesin).
 function dosyaKartlariniGuncelle(id) {
-	const kok = $('mesajlar');
-	if (!kok) return;
-	const secici = id ? `.p2p-dosya[data-dosya="${id}"]` : '.p2p-dosya';
-	for (const kap of kok.querySelectorAll(secici)) p2pDosyaCiz(kap);
+	for (const kap of $('mesajlar').querySelectorAll(id ? `.p2p-dosya[data-dosya="${id}"]` : '.p2p-dosya')) p2pDosyaCiz(kap);
 }
 
 function p2pDosyaCiz(kap) {
@@ -2393,33 +2341,27 @@ function p2pDosyaCiz(kap) {
 	bilgi.append(el('b', null, b.ad));
 	const alt = el('small', 'dosya-durum');
 	const dugmeler = el('span', 'dosya-dugmeler');
-	const dugme = (metin, fn, sinif = '') => {
-		const d = el('button', 'dosya-dugme' + (sinif ? ' ' + sinif : ''), metin);
-		d.type = 'button';
-		d.onclick = fn;
-		dugmeler.append(d);
-		return d;
-	};
+	const ekle = (metin, fn, sinif = '') => dugmeler.appendChild(dugme('dosya-dugme' + (sinif ? ' ' + sinif : ''), metin, fn));
 	const nokta = (acik) => el('span', 'dosya-nokta' + (acik ? ' acik' : ''));
 	if (gorunenAkt) {
 		alt.append(document.createTextNode(boyutYaz(b.boyut) + ' · '), el('span', 'dosya-ilerleme-metin', aktarimMetni(gorunenAkt)));
 		const cubuk = el('div', 'ilerleme');
 		cubuk.append(el('div'));
 		bilgi.append(alt, cubuk);
-		dugme('İptal', () => indirmeBitti(gorunenAkt, ''), 'ikincil');
+		ekle('İptal', () => indirmeBitti(gorunenAkt, ''), 'ikincil');
 	} else if (benim) {
 		alt.append(nokta(!!yerel), document.createTextNode(boyutYaz(b.boyut) + (yerel ? ' · senin paylaşımın; sayfan açıkken indirilebilir' : ' · bu sekmede artık sunulmuyor')));
 		bilgi.append(alt);
-		if (yerel) dugme('Paylaşımı durdur', () => paylasimiBirak(id), 'ikincil');
-		else dugme('Yeniden paylaş', () => yenidenPaylas(id));
+		if (yerel) ekle('Paylaşımı durdur', () => paylasimiBirak(id), 'ikincil');
+		else ekle('Yeniden paylaş', () => yenidenPaylas(id));
 	} else if (alinan) {
 		alt.append(document.createTextNode(boyutYaz(b.boyut) + (alinan.disk ? ' · indirildi, kaydedildi' : alinan.onizleme ? ' · paylaşandan doğrudan alındı' : ' · indirildi')));
 		bilgi.append(alt);
-		if (alinan.url && !alinan.disk) dugme('Kaydet', () => dosyayiKaydet(id));
+		if (alinan.url && !alinan.disk) ekle('Kaydet', () => dosyayiKaydet(id));
 	} else {
 		alt.append(nokta(sunuluyor), document.createTextNode(boyutYaz(b.boyut) + (sunuluyor ? ` · ${b.sahip} çevrimiçi, doğrudan alınır` : ` · ${b.sahip} şu an sunmuyor`)));
 		bilgi.append(alt);
-		const d = dugme('İndir', () => dosyaIndir(id));
+		const d = ekle('İndir', () => dosyaIndir(id));
 		d.disabled = !sunuluyor || !bagliyim;
 		if (!sunuluyor) d.title = 'Paylaşan sayfasını açınca indirilebilir';
 	}
@@ -2429,13 +2371,12 @@ function p2pDosyaCiz(kap) {
 }
 
 function kartIlerlemesi(akt) {
-	const kok = $('mesajlar');
-	if (!kok || akt.onizleme) return;
-	for (const kap of kok.querySelectorAll(`.p2p-dosya[data-dosya="${akt.id}"]`)) {
+	if (akt.onizleme) return;
+	for (const kap of $('mesajlar').querySelectorAll(`.p2p-dosya[data-dosya="${akt.id}"]`)) {
 		const metin = kap.querySelector('.dosya-ilerleme-metin');
 		if (metin) metin.textContent = aktarimMetni(akt);
 		const dolgu = kap.querySelector('.ilerleme > div');
-		if (dolgu) dolgu.style.width = (akt.boyut ? Math.min(100, (akt.ilerleme / akt.boyut) * 100) : 0).toFixed(1) + '%';
+		if (dolgu) dolgu.style.width = ilerlemeGenisligi(akt);
 	}
 }
 
@@ -2448,9 +2389,7 @@ let buyutecTam = null; // null: karar resim yüklenince verilir
 // Geçmişe bu sayfada eklenen büyüteç girdisi (yalnızca kendi eklediğimiz geri alınır: büyüteç açıkken
 // sayfa yenilenmişse eski girdiye "geri" gitmek sayfayı baştan yüklerdi).
 let buyutecGecmisi = false;
-try {
-	if (history.state && history.state.buyutec) history.replaceState(null, '');
-} catch {}
+if (history.state && history.state.buyutec) dene(() => history.replaceState(null, ''));
 
 function buyutecDuzenle(ilk) {
 	const r = $('buyutec-resim');
@@ -2484,16 +2423,13 @@ function buyutecAc(url, ad) {
 	$('buyutec').hidden = false;
 	$('buyutec-kaydir').scrollTop = 0;
 	if (r.complete && r.naturalWidth) buyutecDuzenle(true);
-	try {
-		$('buyutec-kapat').focus({ preventScroll: true });
-	} catch {}
+	dene(() => $('buyutec-kapat').focus({ preventScroll: true }));
 	// Telefonda geri tuşu siteden çıkmasın, büyüteci kapatsın.
-	try {
-		if (!buyutecGecmisi) {
+	if (!buyutecGecmisi)
+		dene(() => {
 			history.pushState({ buyutec: true }, '');
 			buyutecGecmisi = true;
-		}
-	} catch {}
+		});
 }
 $('buyutec-resim').addEventListener('load', () => {
 	if (!$('buyutec').hidden && buyutecTam === null) buyutecDuzenle(true);
@@ -2508,9 +2444,7 @@ function buyutecKapat(gecmistenGeldi = false) {
 	if ($('buyutec').contains(document.activeElement)) document.activeElement.blur();
 	if (gecmistenGeldi || !buyutecGecmisi) return;
 	buyutecGecmisi = false;
-	try {
-		history.back();
-	} catch {}
+	dene(() => history.back());
 }
 window.addEventListener('popstate', () => {
 	buyutecGecmisi = false;
@@ -2681,9 +2615,7 @@ function mikrofonuKullan(akis) {
 	mikHatasi = '';
 	const iz = akis.getAudioTracks()[0];
 	if (iz) {
-		try {
-			iz.contentHint = 'speech';
-		} catch {}
+		dene(() => (iz.contentHint = 'speech'));
 		iz.addEventListener('ended', () => {
 			if (mikrofon === akis) mikrofonBitti();
 		});
@@ -2741,12 +2673,11 @@ function mikrofonBitti() {
 function islemiKapat() {
 	if (!mikIslem) return;
 	if (mikIslem.dugum) mikYoluKapat(mikIslem);
-	else {
-		try {
+	else
+		dene(() => {
 			mikIslem.kaynak.disconnect();
 			mikIslem.kazanc.disconnect();
-		} catch {}
-	}
+		});
 	mikIslem = null;
 }
 
@@ -2777,7 +2708,7 @@ function rnnoiseYukle() {
 			})
 			.catch((h) => {
 				rnnoiseYok = true;
-				taniGonder({ olay: 'rnnoise-yok', neden: 'dosya', metin: String((h && h.message) || h).slice(0, 160) });
+				taniGonder({ olay: 'rnnoise-yok', neden: 'dosya', metin: hataYazi(h).slice(0, 160) });
 				return false;
 			});
 	}
@@ -2796,7 +2727,7 @@ function gurultuModulu(ac) {
 				(h) => {
 					m.durum = 'yok';
 					rnnoiseYok = true;
-					taniGonder({ olay: 'rnnoise-yok', neden: 'modul', metin: String((h && h.message) || h).slice(0, 160) });
+					taniGonder({ olay: 'rnnoise-yok', neden: 'modul', metin: hataYazi(h).slice(0, 160) });
 				},
 			);
 		} catch {
@@ -2840,16 +2771,16 @@ function mikYoluKur(akis, ac, hazir) {
 		dugum.port.onmessage = (e) => gurultuIletisi(yol, e.data || {});
 		return yol;
 	} catch (h) {
-		taniGonder({ olay: 'rnnoise-yok', neden: 'dugum', metin: String((h && h.message) || h).slice(0, 160) });
+		taniGonder({ olay: 'rnnoise-yok', neden: 'dugum', metin: hataYazi(h).slice(0, 160) });
 		return null;
 	}
 }
 function mikYoluKapat(yol) {
-	try {
+	dene(() => {
 		yol.dugum.port.postMessage({ tur: 'kapat' });
 		yol.kaynak.disconnect();
 		yol.dugum.disconnect();
-	} catch {}
+	});
 }
 const mikYoluAyarla = (yol) => yol.dugum.port.postMessage({ tur: 'ayar', kazanc: ayar.mikSeviye / 100, esik: esikDb() });
 function gurultuIletisi(yol, v) {
@@ -2884,40 +2815,44 @@ function gurultuDurumuYaz() {
 // (yol yükleniyor ya da kurulamıyor) mikrofon seviyesi %100 ise mikrofon izinin kendisi, değilse
 // WebAudio kazancından geçen iz. Yankı engelleme mikrofonda (yakalamada) uygulanır.
 function gidenIzKur() {
-	const mikIz = mikrofon && mikrofon.getAudioTracks()[0];
-	let iz = mikIz || null;
+	const mikIz = (mikrofon && mikrofon.getAudioTracks()[0]) || null;
 	// Ses bağlamı çalışmıyorsa (kullanıcı etkileşimi olmadan açıldı, iOS arka plana aldı) WebAudio yolu
 	// SESSİZLİK üretir: o durumda ham mikrofon izi gönderilir, bağlam açılınca yol kurulur.
 	const ac = mikIz ? sesBaglami() : null;
+	const calisiyor = !!ac && ac.state === 'running';
 	const ayni = !!mikIslem && mikIslem.akis === mikrofon && mikIslem.ac === ac;
-	const yol = mikIz && ac && ac.state === 'running' && !(ayni && mikIslem.dugum) ? mikYoluKur(mikrofon, ac, () => { if (mikrofon && mikrofon.getAudioTracks()[0] === mikIz) gidenIzKur(); }) : null;
-	if (mikIz && ac && ac.state === 'running' && ayni && mikIslem.dugum) {
+	let iz = mikIz;
+	if (calisiyor && ayni && mikIslem.dugum) {
 		mikYoluAyarla(mikIslem);
 		iz = mikIslem.iz;
-	} else if (yol) {
-		islemiKapat();
-		mikIslem = yol;
-		iz = yol.iz;
-	} else if (mikIz && ayar.mikSeviye !== 100 && ac && ac.state === 'running') {
-		if (ayni && mikIslem.kazanc) {
-			mikIslem.kazanc.gain.value = ayar.mikSeviye / 100;
-			iz = mikIslem.iz;
-		} else if (ac.createMediaStreamDestination) {
+	} else {
+		const yol = calisiyor ? mikYoluKur(mikrofon, ac, () => mikrofon && mikrofon.getAudioTracks()[0] === mikIz && gidenIzKur()) : null;
+		if (yol) {
 			islemiKapat();
-			try {
-				const kaynak = ac.createMediaStreamSource(mikrofon);
-				const kazanc = ac.createGain();
-				kazanc.gain.value = ayar.mikSeviye / 100;
-				const hedef = ac.createMediaStreamDestination();
-				kaynak.connect(kazanc);
-				kazanc.connect(hedef);
-				mikIslem = { kaynak, kazanc, hedef, akis: mikrofon, ac, iz: hedef.stream.getAudioTracks()[0] };
+			mikIslem = yol;
+			iz = yol.iz;
+		} else if (calisiyor && ayar.mikSeviye !== 100) {
+			// RNNoise yok (ya da henüz hazır değil): mikrofon seviyesi WebAudio kazancıyla.
+			if (ayni && mikIslem.kazanc) {
+				mikIslem.kazanc.gain.value = ayar.mikSeviye / 100;
 				iz = mikIslem.iz;
-			} catch {
-				mikIslem = null;
+			} else {
+				islemiKapat();
+				try {
+					const kaynak = ac.createMediaStreamSource(mikrofon);
+					const kazanc = ac.createGain();
+					kazanc.gain.value = ayar.mikSeviye / 100;
+					const hedef = ac.createMediaStreamDestination();
+					kaynak.connect(kazanc);
+					kazanc.connect(hedef);
+					mikIslem = { kaynak, kazanc, hedef, akis: mikrofon, ac, iz: hedef.stream.getAudioTracks()[0] };
+					iz = mikIslem.iz;
+				} catch {
+					mikIslem = null;
+				}
 			}
-		}
-	} else islemiKapat();
+		} else islemiKapat();
+	}
 	gidenIz = iz;
 	mikDurumuUygula();
 	for (const es of esler.values()) esIzBagla(es);
@@ -3006,7 +2941,7 @@ async function sesAc(kanal) {
 	if (!bagliyim) return durum('Sunucuya bağlanmadan sesli kanala girilmez.', true);
 	sesGiriliyor = true;
 	sesHedef = kanal;
-	sesKilidiAc(); // ses bağlamını bu tıklamayla başlat (tarayıcı otomatik oynatma kuralı)
+	sesBaglami(); // ses bağlamını bu tıklamayla başlat (tarayıcı otomatik oynatma kuralı)
 	if (mikBirakilsin()) {
 		// Susturulmuş giriliyor ve susturulunca mikrofon bırakılıyor: mikrofon (telefonda görüşme kipi)
 		// ancak açınca alınır.
@@ -3184,8 +3119,8 @@ function esYap(ad) {
 		sonKurtarma: 0,
 		sonYenile: 0,
 		bekleniyor: 0, // listede yok ama geri dönmesi bekleniyor (zaman)
-		seviye: 100,
-		susturuldu: false,
+		seviye: kayitliSeviye('ses-seviye-' + ad),
+		susturuldu: depoOku('ses-sustur-' + ad) === '1',
 		konusuyor: false,
 		ses: null,
 		olcer: null,
@@ -3194,30 +3129,31 @@ function esYap(ad) {
 		trGoruntu: null,
 		izliyor: true, // o, benim ekranımı izliyor (görüntüyü kapatırsa ona gönderilmez; ses gider)
 		izliyorum: true, // ben onun ekranını izliyorum
-		yayinSeviye: 100, // paylaştığı sesin seviyesi, yalnızca bende
-		yayinSusturuldu: false, // paylaştığı sesi kendim için susturdum
+		yayinSeviye: kayitliSeviye('yayin-seviye-' + ad), // paylaştığı sesin seviyesi, yalnızca bende
+		yayinSusturuldu: depoOku('yayin-sustur-' + ad) === '1', // paylaştığı sesi kendim için susturdum
 		yayinSesOgesi: null,
 		yayinAkis: null, // paylaştığı sesin akışı (seviye ölçeri için)
 		yayinOlcer: null,
 		goruntuOgesi: null,
 		uzakGoruntu: null,
 	};
-	const kayitliSeviye = Number(depoOku('ses-seviye-' + ad, '100'));
-	if (Number.isFinite(kayitliSeviye) && kayitliSeviye >= 0 && kayitliSeviye <= 100) es.seviye = kayitliSeviye;
-	const yayinSeviye = Number(depoOku('yayin-seviye-' + ad, '100'));
-	if (Number.isFinite(yayinSeviye) && yayinSeviye >= 0 && yayinSeviye <= 100) es.yayinSeviye = yayinSeviye;
-	es.susturuldu = depoOku('ses-sustur-' + ad, '') === '1';
-	es.yayinSusturuldu = depoOku('yayin-sustur-' + ad, '') === '1';
-	// Gelen sesin <audio>'su: görünmez ama çizilir (iOS display:none'u çalmıyor).
-	const ses = el('audio', 'ses-akis');
-	ses.autoplay = true;
-	ses.setAttribute('playsinline', '');
-	ses.setAttribute('webkit-playsinline', '');
-	ses.controls = false;
-	$('ses-akislari').append(ses);
-	es.ses = ses;
+	es.ses = sesOgesi('ses-akis');
 	esSesUygula(es);
 	return es;
+}
+// Kayıtlı ses seviyesi (%0-100; yoksa ya da bozuksa 100).
+function kayitliSeviye(anahtar) {
+	const n = Number(depoOku(anahtar, '100'));
+	return Number.isFinite(n) && n >= 0 && n <= 100 ? n : 100;
+}
+// Gelen sesin <audio>'su: görünmez ama çizilir (iOS display:none'u çalmıyor).
+function sesOgesi(sinif) {
+	const a = el('audio', sinif);
+	a.autoplay = true;
+	a.setAttribute('playsinline', '');
+	a.setAttribute('webkit-playsinline', '');
+	$('ses-akislari').append(a);
+	return a;
 }
 
 // Eş kanala girdi (devam: bağlantılar sürüyor olabilir, yeniden kurma).
@@ -3265,9 +3201,7 @@ function pcKapat(es) {
 		const pc = es.pc;
 		es.pc = null;
 		pc.onicecandidate = pc.ontrack = pc.onconnectionstatechange = pc.onnegotiationneeded = pc.onicecandidateerror = null;
-		try {
-			pc.close();
-		} catch {}
+		dene(() => pc.close());
 	}
 	es.tr = es.trSes = es.trGoruntu = null;
 	if (es.olcer) es.olcer.dur();
@@ -3379,6 +3313,8 @@ function pcAyari() {
 }
 
 const esKapandi = (es) => !es.pc || es.pc.signalingState === 'closed';
+// Açıklamamızı (teklif ya da yanıt) karşıya gönder; kaybolduysa aynısını yinele.
+const aciklamaGonder = (es) => gonder({ type: 'sdp', to: es.ad, sdp: es.pc.localDescription, oturum: es.oturum });
 function esSaglikli(es) {
 	if (esKapandi(es)) return false;
 	const d = es.pc.connectionState;
@@ -3394,7 +3330,7 @@ async function teklifVer(es, iceYenidenBaslat = false) {
 		if (es.pc !== pc || pc.signalingState !== 'stable') return;
 		await pc.setLocalDescription(teklif);
 		es.teklifZamani = Date.now();
-		gonder({ type: 'sdp', to: es.ad, sdp: pc.localDescription, oturum: es.oturum });
+		aciklamaGonder(es);
 	} catch (h) {
 		console.warn('teklif', es.ad, h);
 		// Bağlam (teşhis): ICE yenilemesi miydi, hangi durumda, açıklamalardaki m-line'lar (mid sırası).
@@ -3402,7 +3338,7 @@ async function teklifVer(es, iceYenidenBaslat = false) {
 		taniGonder({
 			olay: 'teklif-hata',
 			es: es.ad,
-			metin: String((h && h.message) || h).slice(0, 160),
+			metin: hataYazi(h).slice(0, 160),
 			iceYenile: iceYenidenBaslat,
 			sinyal: pc.signalingState,
 			yerel: midler(pc.localDescription),
@@ -3421,7 +3357,7 @@ function sdpGeldi(ad, sdp, oturum) {
 		.then(() => sdpIsle(es, sdp, String(oturum || '')))
 		.catch((h) => {
 			console.warn('sdp', ad, h);
-			taniGonder({ olay: 'sdp-hata', es: ad, tur: sdp.type, metin: String((h && h.message) || h).slice(0, 200) });
+			taniGonder({ olay: 'sdp-hata', es: ad, tur: sdp.type, metin: hataYazi(h).slice(0, 200) });
 		});
 }
 
@@ -3436,10 +3372,7 @@ async function sdpIsle(es, sdp, oturum) {
 		// Aynı teklif yeniden geldi (yanıtımız kayboldu ya da iki istek çakıştı): yeniden UYGULAMA,
 		// yanıtı yinele. Aynı ICE yenileme teklifini ikinci kez uygulamak, yeni aday çifti seçildiği
 		// halde sesin akmamasına yol açıyordu.
-		if (es.sonTeklif === sdp.sdp && pc.signalingState === 'stable' && pc.localDescription && pc.localDescription.type === 'answer') {
-			gonder({ type: 'sdp', to: es.ad, sdp: pc.localDescription, oturum: es.oturum });
-			return;
-		}
+		if (es.sonTeklif === sdp.sdp && pc.signalingState === 'stable' && pc.localDescription && pc.localDescription.type === 'answer') return aciklamaGonder(es);
 		if (pc.signalingState !== 'stable') {
 			// Yarım kalmış bir anlaşma: geri al ve yeni teklifi uygula.
 			try {
@@ -3458,9 +3391,7 @@ async function sdpIsle(es, sdp, oturum) {
 		const k = kanallariBul(es.pc);
 		if (!k.mik || !k.ses || !k.goruntu) throw new Error('teklifte mikrofon, yayın sesi ve görüntü kanalları yok');
 		const bagla = async (t, iz) => {
-			try {
-				t.direction = 'sendrecv';
-			} catch {}
+			dene(() => (t.direction = 'sendrecv'));
 			if (t.sender.track !== iz) await t.sender.replaceTrack(iz || null).catch(() => {});
 		};
 		es.tr = k.mik;
@@ -3473,7 +3404,7 @@ async function sdpIsle(es, sdp, oturum) {
 		await bagla(k.goruntu, gidenGoruntu(es));
 		const yanit = await es.pc.createAnswer();
 		await es.pc.setLocalDescription(yanit);
-		gonder({ type: 'sdp', to: es.ad, sdp: es.pc.localDescription, oturum: es.oturum });
+		aciklamaGonder(es);
 		bitHiziAyarla(es);
 		taniGonder({ olay: 'yanit', es: es.ad, yon: k.mik.direction, mid: k.mik.mid != null ? String(k.mik.mid) : null, iz: !!k.mik.sender.track });
 	} else if (sdp.type === 'answer') {
@@ -3546,8 +3477,7 @@ function yenileGeldi(ad, oturum, tam = false, teklif = false) {
 	if (pc && !esKapandi(es) && pc.signalingState === 'have-local-offer' && pc.localDescription) {
 		// Teklifimiz zaten yolda (iki taraf aynı anda davrandı ya da teklif kayboldu): aynısını yinele.
 		// Burada baştan kurmak, süren ICE yenilemesini yarıda keserdi.
-		gonder({ type: 'sdp', to: es.ad, sdp: pc.localDescription, oturum: es.oturum });
-		return;
+		return aciklamaGonder(es);
 	}
 	if (pc && !esKapandi(es) && oturum && oturum === es.oturum && pc.remoteDescription && pc.signalingState === 'stable' && es.kurtarma < 2) {
 		// Aynı bağlantı, karşıda sorun var: ICE'yi yenile (DTLS ve ses bağlantısı korunur).
@@ -3593,15 +3523,13 @@ function esGeriDondu(es) {
 	// O yokken gönderdiğimiz teklif sunucuda düştü: yinele.
 	if (es.teklifci && es.pc.signalingState === 'have-local-offer' && es.pc.localDescription) {
 		es.teklifZamani = Date.now();
-		gonder({ type: 'sdp', to: es.ad, sdp: es.pc.localDescription, oturum: es.oturum });
+		aciklamaGonder(es);
 	}
 }
 
 function pcSunuculariniTazele(pc) {
 	if (!pc || pc.signalingState === 'closed' || !(ice.iceServers || []).length) return;
-	try {
-		pc.setConfiguration({ ...pc.getConfiguration(), iceServers: ice.iceServers });
-	} catch {}
+	dene(() => pc.setConfiguration({ ...pc.getConfiguration(), iceServers: ice.iceServers }));
 }
 
 // ICE takıldıysa yeni adaylarla (taze TURN şifresiyle) yeniden dene; DTLS/ses bağlantısı korunur.
@@ -3681,7 +3609,7 @@ function kurtarmaTuru() {
 		// Teklif yolda kayboldu (sunucu o sırada kapalıydı): yinele.
 		if (es.teklifci && es.pc.signalingState === 'have-local-offer' && simdi - (es.teklifZamani || 0) > 8000 && es.pc.localDescription) {
 			es.teklifZamani = simdi;
-			gonder({ type: 'sdp', to: es.ad, sdp: es.pc.localDescription, oturum: es.oturum });
+			aciklamaGonder(es);
 		}
 		if (!es.sorunBasi) es.sorunBasi = simdi;
 		const esik = d === 'failed' || d === 'closed' ? 0 : d === 'disconnected' ? 5000 : 12000;
@@ -3738,17 +3666,11 @@ const GORUNTU_KARE = 120;
 //
 // Her ses paketi bir önceki Opus çerçevesinin kopyasını da taşır: tek tük düşen paket bir sonrakinden
 // yerine konur, alıcı ses uydurmak zorunda kalmaz. Opus'un kendi yedeği (FEC) bunu ancak kodlayıcı
-// kaybı öğrendikten sonra ve düşük kalitede yapar (müzikte çoğu zaman hiç). Ölçüm (gerçek Chromium,
-// iki bağlantı arasında paketlerin bir kısmını düşüren UDP aracısı; test/kayip.js): %10 rastgele
-// kayıpta uydurulan ses konuşmada %5,4 → %0,9, müzikte %5,7 → %0,7; %5'te ~%5 → ~%0,2; %20'de %12 → %5.
-// Bedeli bit hızının ~iki katı. Art arda iki-üç paket düşerse (patlama) kopyası da gider: orada kazanç
-// az (%10 kayıp, ortalama 2,5 paketlik patlamalar: %5,8 → %4,8). Alıcının tamponunu büyütmek
-// (jitterBufferTarget 60-120 ms) ne düz Opus'ta ne RED'de uydurmayı azalttı: tampon gecikmeye
-// karşıdır, kayba değil.
-// SDP'mizde RED'i Opus'un önüne yazarız; karşı taraf bize o sırayla gönderir: RED gönderebilen
-// tarayıcı (Chrome/Edge) RED, gönderemeyen düz Opus gönderir, RED'i hiç bilmeyenle anlaşma düz Opus'a
-// iner (eski sürümler de böyle anlaşır). Bir eşten gelen ses RED'le çözülemiyorsa (istatistikTuru:
-// paket geliyor, ses hep uyduruluyor) o eşte RED bırakılır.
+// kaybı öğrendikten sonra ve düşük kalitede yapar (müzikte çoğu zaman hiç). Ölçümler RED_SIGAN_HIZ'ın
+// yanında (test/kayip.js). Alıcının tamponunu büyütmek (jitterBufferTarget 60-120 ms) uydurmayı
+// azaltmadı: tampon gecikmeye karşıdır, kayba değil. Açıklamalarımızda RED Opus'un önünde; RED'i hiç
+// bilmeyenle anlaşma düz Opus'a iner. Bir eşten gelen ses RED'le çözülemiyorsa (istatistikTuru: paket
+// geliyor, ses hep uyduruluyor) o eşte RED bırakılır.
 function kodekSirasi(red) {
 	try {
 		if (typeof RTCRtpReceiver === 'undefined' || typeof RTCRtpReceiver.getCapabilities !== 'function') return null;
@@ -3801,20 +3723,10 @@ function redBirak(es, neden) {
 // kodlayıcımızı ayarlar. maxaveragebitrate olmadan tarayıcılar ~32 kbps'de kalıyor (ölçüm: 28 kbps);
 // setParameters(maxBitrate) yalnızca Chrome'da işe yarıyor, bu yol Firefox/Safari'de de geçerli.
 // useinbandfec=1: kayıpta yedek veri; usedtx=0: sessizlikte kesip açma (cızırtı) yok.
-// Her ses m-line'ı ayrı ayarlanır: birincisi mikrofon (mono, konuşma), ikincisi yayın sesi (stereo,
-// müzik kalitesi). Eskiden SDP'nin tamamına tek ayar uygulanıyordu.
-const mikOpusu = () => ({ minptime: '10', useinbandfec: '1', usedtx: '0', stereo: '0', maxplaybackrate: '48000', maxaveragebitrate: String(gonderimHizi() * 1000) });
-// Paylaşılan ses stereo ya da mono (ayar). Mono'da kodlayıcı iki kanalı birleştirir. Gönderilen veri
-// kanal sayısıyla değil bit hızıyla (kbps) belirlenir: aynı kbps'de mono tek kanala daha çok bit ayırır.
-const yayinOpusu = () => ({
-	minptime: '10',
-	useinbandfec: '1',
-	usedtx: '0',
-	stereo: ayar.yayinKanal === 1 ? '0' : '1',
-	'sprop-stereo': ayar.yayinKanal === 1 ? '0' : '1',
-	maxplaybackrate: '48000',
-	maxaveragebitrate: String(yayinSesHizi() * 1000),
-});
+// Her ses m-line'ı ayrı ayarlanır: birincisi mikrofon (mono: tarayıcı konuşma kipinde kodlar, 60-100
+// Hz altını keser), ikincisi paylaşılan ses (hep stereo: iki kanal aynıysa Opus farklarına bit
+// harcamaz; mono olsa müzikte bas azalırdı).
+const opusHedefi = (kbps, stereo) => ({ minptime: '10', useinbandfec: '1', usedtx: '0', stereo: stereo ? '1' : '0', ...(stereo && { 'sprop-stereo': '1' }), maxplaybackrate: '48000', maxaveragebitrate: String(kbps * 1000) });
 // Karşının açıklamasındaki ses m-line'ında kodek sırası: RED istiyorsak RED Opus'un önüne, istemiyorsak
 // arkasına (listede kalır: karşı bize RED gönderebilir). Diğer kodeklerin sırası değişmez.
 function redSirasi(satirlar, red) {
@@ -3843,7 +3755,7 @@ function opusAyarla(sdp, es = null) {
 		for (const b of bolumler) {
 			if (!b.length || !b[0].startsWith('m=audio')) continue;
 			const mik = sesSirasi++ === 0;
-			opusBolumu(b, mik ? mikOpusu() : yayinOpusu());
+			opusBolumu(b, mik ? opusHedefi(gonderimHizi(), false) : opusHedefi(yayinSesHizi(), true));
 			if (redDestegi()) redSirasi(b, mik ? mikRedIstegi(es) : yayinRedIstegi(es));
 		}
 		return bolumler.flat().join('\r\n');
@@ -3946,14 +3858,7 @@ function uzakSesBagla(es, iz) {
 // sessizdir): telefonda sonradan başlayan paylaşımın sesi için yeniden dokunmak gerekmez.
 function uzakYayinSesiBagla(es, iz) {
 	if (!iz) return;
-	if (!es.yayinSesOgesi) {
-		const a = el('audio', 'ses-akis yayin-akis');
-		a.autoplay = true;
-		a.setAttribute('playsinline', '');
-		a.setAttribute('webkit-playsinline', '');
-		$('ses-akislari').append(a);
-		es.yayinSesOgesi = a;
-	}
+	if (!es.yayinSesOgesi) es.yayinSesOgesi = sesOgesi('ses-akis yayin-akis');
 	let akis;
 	try {
 		akis = new MediaStream([iz]);
@@ -3974,11 +3879,7 @@ function uzakGoruntuBagla(es, iz) {
 	if (!iz) return;
 	es.uzakGoruntu = iz;
 	iz.onmute = iz.onunmute = () => yayinlarCiz();
-	if (es.goruntuOgesi) {
-		try {
-			es.goruntuOgesi.srcObject = new MediaStream([iz]);
-		} catch {}
-	}
+	if (es.goruntuOgesi) dene(() => (es.goruntuOgesi.srcObject = new MediaStream([iz])));
 	yayinlarCiz();
 }
 
@@ -4023,7 +3924,7 @@ function sesAcDugmesiGuncelle() {
 // zaten engelliyordu ve iOS'ta arka plandaki müziği durdurabilirdi).
 function sesleriAc() {
 	if (!sesKanal) return;
-	sesKilidiAc();
+	sesBaglami();
 	for (const es of esler.values()) for (const a of gelenSesler(es)) if (a.paused && !a.muted) oynat(a).catch(() => {});
 	for (const v of document.querySelectorAll('#yayinlar video')) if (v.paused && v.srcObject) oynat(v).catch(() => {});
 	setTimeout(sesAcDugmesiGuncelle, 300);
@@ -4141,15 +4042,13 @@ function arkaPlanBirak() {
 	arkaPlanSesi = null;
 	if (k) {
 		k.birakiliyor = true;
-		try {
+		dene(() => {
 			k.oge.pause();
 			k.oge.removeAttribute('src');
 			k.oge.load();
 			k.oge.remove();
-		} catch {}
-		try {
-			URL.revokeObjectURL(k.adres);
-		} catch {}
+		});
+		dene(() => URL.revokeObjectURL(k.adres));
 	}
 	medyaOturumuKapat();
 }
@@ -4168,11 +4067,7 @@ function medyaOturumuKur() {
 			});
 		}
 	} catch {}
-	const isleyici = (eylem, fn) => {
-		try {
-			ms.setActionHandler(eylem, fn);
-		} catch {}
-	};
+	const isleyici = (eylem, fn) => dene(() => ms.setActionHandler(eylem, fn));
 	isleyici('play', () => arkaPlandaTut(true));
 	isleyici('pause', () => medyaOturumuDurumu()); // bilerek bir şey yapmaz (bkz. yukarıda)
 	medyaOturumuDurumu();
@@ -4180,22 +4075,16 @@ function medyaOturumuKur() {
 function medyaOturumuDurumu() {
 	const ms = navigator.mediaSession;
 	if (!ms || !arkaPlanSesi) return;
-	try {
-		ms.playbackState = arkaPlanSesi.oge.paused ? 'paused' : 'playing';
-	} catch {}
+	dene(() => (ms.playbackState = arkaPlanSesi.oge.paused ? 'paused' : 'playing'));
 }
 function medyaOturumuKapat() {
 	const ms = navigator.mediaSession;
 	if (!ms) return;
-	try {
+	dene(() => {
 		ms.metadata = null;
 		ms.playbackState = 'none';
-	} catch {}
-	for (const eylem of ['play', 'pause']) {
-		try {
-			ms.setActionHandler(eylem, null);
-		} catch {}
-	}
+	});
+	for (const eylem of ['play', 'pause']) dene(() => ms.setActionHandler(eylem, null));
 }
 
 // Telefon arka plandan dönünce: ses bağlamını uyandır (iOS 'interrupted' yapar), durmuş gelen
@@ -4231,9 +4120,6 @@ function sesBaglami() {
 	}
 	return baglam;
 }
-function sesKilidiAc() {
-	sesBaglami();
-}
 // Bağlam durdu → kazanç zincirinden (ve paylaşımdaki çıkarıcıdan) vazgeç (ham iz); yeniden
 // çalıştı → zinciri kur.
 function baglamDurumuDegisti() {
@@ -4259,7 +4145,6 @@ function seviyeOlcer(akis, geri) {
 		return { dur() {} };
 	}
 	const veri = new Float32Array(analiz.fftSize || 1024);
-	let konusuyor = false;
 	let sonSes = 0;
 	const zaman = setInterval(() => {
 		let rms = 0;
@@ -4272,17 +4157,12 @@ function seviyeOlcer(akis, geri) {
 		const db = rms > 0 ? 20 * Math.log10(rms) : -100;
 		const simdi = Date.now();
 		if (db > -48) sonSes = simdi;
-		const yeni = simdi - sonSes < 350;
-		const seviye = Math.max(0, Math.min(1, (db + 60) / 50));
-		if (yeni !== konusuyor) konusuyor = yeni;
-		geri(konusuyor, seviye);
+		geri(simdi - sonSes < 350, Math.max(0, Math.min(1, (db + 60) / 50)));
 	}, 100);
 	return {
 		dur() {
 			clearInterval(zaman);
-			try {
-				kaynak.disconnect();
-			} catch {}
+			dene(() => kaynak.disconnect());
 			geri(false, 0);
 		},
 	};
@@ -4293,8 +4173,7 @@ function kendiSeviye(konusuyor, seviye) {
 	konusmaGuncelle(benimAdim, konusuyor && acik);
 	const dolgu = $('ben-ses-satir').querySelector('.seviye-cubuk > div');
 	if (dolgu) dolgu.style.width = (acik ? Math.round(seviye * 100) : 0) + '%';
-	const ayarDolgu = $('ayar-olcer-dolgu');
-	if (ayarDolgu && !$('ayarlar').hidden && !denemeMik && !(mikIslem && mikIslem.dugum)) ayarDolgu.style.width = Math.round(seviye * 100) + '%';
+	if (!$('ayarlar').hidden && !denemeMik && !(mikIslem && mikIslem.dugum)) $('ayar-olcer-dolgu').style.width = Math.round(seviye * 100) + '%';
 }
 
 // Konuşma göstergesi: eş kutusu, kenar çubuğundaki kanal üyesi ve (bensem) kullanıcı kartı.
@@ -4327,29 +4206,22 @@ function esKutusuOlustur(es) {
 	kutu.dataset.ad = es.ad;
 	const bilgi = el('div', 'ses-kisi-bilgi');
 	const adSatir = el('div', 'ad-satir');
-	const durumIkon = el('span', 'durum-ikon');
+	const durumIkon = durumIkonlari(false, false);
 	adSatir.append(el('b', 'ad', es.ad), durumIkon);
 	const istatistik = el('span', 'ses-istatistik', 'bağlanıyor…');
 	bilgi.append(adSatir, istatistik);
-	const sus = el('button', 'ikon-dugme sus');
-	sus.type = 'button';
-	sus.setAttribute('aria-label', es.ad + ' kişisini sustur veya aç');
-	sus.onclick = () => {
+	const sus = dugme('ikon-dugme sus', null, () => {
 		es.susturuldu = !es.susturuldu;
 		depoYaz('ses-sustur-' + es.ad, es.susturuldu ? '1' : null);
 		esSesUygula(es);
 		konusmaGuncelle(es.ad, es.konusuyor && !es.susturuldu && !ayar.sagir);
-	};
-	const seviye = el('input', 'ses-seviye');
-	Object.assign(seviye, { type: 'range', min: 0, max: 100, step: 1 });
-	seviye.value = String(es.seviye);
-	seviye.title = 'Ses seviyesi (yalnızca sende)';
-	seviye.setAttribute('aria-label', es.ad + ' kişisinin ses seviyesi');
-	seviye.oninput = () => {
-		es.seviye = Number(seviye.value);
+	});
+	sus.setAttribute('aria-label', es.ad + ' kişisini sustur veya aç');
+	const seviye = seviyeKaydirici(es.seviye, es.ad + ' kişisinin ses seviyesi', (v) => {
+		es.seviye = v;
 		esSesUygula(es);
-		depoYaz('ses-seviye-' + es.ad, seviye.value);
-	};
+		depoYaz('ses-seviye-' + es.ad, v);
+	});
 	kutu.append(avatarYap(es.ad, 'avatar orta-avatar'), bilgi, sus, seviye);
 	$('ses-kisiler').append(kutu);
 	Object.assign(es, { kutu, istatistik, susDugme: sus, seviyeGirdi: seviye, durumIkon });
@@ -4360,10 +4232,9 @@ function esKutusuOlustur(es) {
 function esDurumIkonlariCiz(es) {
 	if (!es.durumIkon) return;
 	const d = sesDurumlari.get(es.ad) || {};
-	es.durumIkon.replaceChildren();
-	if (d.sagir) es.durumIkon.append(ikon('kulaklik-kapali'));
-	else if (d.sessiz) es.durumIkon.append(ikon('mik-kapali'));
-	es.durumIkon.title = d.sagir ? 'sağırlaştırılmış' : d.sessiz ? 'mikrofonu kapalı' : '';
+	const yeni = durumIkonlari(d.sessiz, d.sagir);
+	es.durumIkon.replaceWith(yeni);
+	es.durumIkon = yeni;
 	es.kutu.classList.toggle('sessiz', !!(d.sessiz || d.sagir));
 	es.kutu.classList.toggle('askida', !!d.askida);
 	if (es.yayinRozeti) es.yayinRozeti.remove();
@@ -4410,18 +4281,15 @@ function sesUyarisiCiz() {
 		u.hidden = true;
 		return;
 	}
-	u.replaceChildren(document.createTextNode((mikHatasi || 'Mikrofon yok') + '; yalnızca dinliyorsun, seni kimse duymuyor.'));
-	const dugme = el('button', null, 'Tekrar dene');
-	dugme.type = 'button';
-	dugme.onclick = async () => {
+	const tekrar = dugme(null, 'Tekrar dene', async () => {
 		const tamam = await mikrofonHazirla();
 		if (tamam) {
 			durum('Mikrofon açıldı.');
 			gonder({ type: 'sessiz', sessiz: mikSessizMi(), sagir: ayar.sagir });
 		} else durum(mikHatasi, true);
 		mikDugmeleriCiz();
-	};
-	u.append(dugme);
+	});
+	u.replaceChildren(document.createTextNode((mikHatasi || 'Mikrofon yok') + '; yalnızca dinliyorsun, seni kimse duymuyor.'), tekrar);
 	u.hidden = false;
 }
 
@@ -4587,9 +4455,7 @@ function yayinDegisti() {
 
 // Yakalama kısıtı (desteklemeyen tarayıcıda ya da reddedilirse yakalama olduğu gibi sürer).
 function kisitUygula(iz, kisit) {
-	try {
-		if (iz && typeof iz.applyConstraints === 'function') iz.applyConstraints(kisit).catch(() => {});
-	} catch {}
+	if (iz && typeof iz.applyConstraints === 'function') dene(() => iz.applyConstraints(kisit).catch(() => {}));
 }
 
 // Tarayıcının seçim penceresi. sesli: ekranın sesi de istenir (verebilen tarayıcıda); sekme: seçim
@@ -4625,7 +4491,7 @@ async function ekranIste(sesli, sekme) {
 			}
 			return null;
 		}
-		durum('Paylaşım başlatılamadı: ' + ((h && h.message) || h), true);
+		durum('Paylaşım başlatılamadı: ' + hataYazi(h), true);
 		return null;
 	}
 }
@@ -4669,9 +4535,7 @@ async function yayinBaslat(ekransiz) {
 // geliyorsa paylaşım ekransız sürer.
 function yayinGoruntusuTak(goruntu) {
 	yayin.goruntu = goruntu;
-	try {
-		goruntu.contentHint = 'motion'; // oyun/video: akıcılık öncelikli
-	} catch {}
+	dene(() => (goruntu.contentHint = 'motion')); // oyun/video: akıcılık öncelikli
 	goruntu.addEventListener('ended', () => {
 		if (yayin.goruntu !== goruntu) return;
 		if (!yayin.ses || !yayin.aygit) return yayinDurdur();
@@ -4693,9 +4557,7 @@ function yayinSesiTak(ses, aygit = '', aygitAdi = '', isleyici = null) {
 	yayin.yanki = isleyici;
 	yayin.aygit = aygit;
 	yayin.aygitAdi = aygitAdi;
-	try {
-		ses.contentHint = 'music';
-	} catch {}
+	dene(() => (ses.contentHint = 'music'));
 	// Biten, yakalanan izdir (aygıt çıkarıldı, paylaşım durduruldu); çıkarıcının çıkışı kendiliğinden bitmez.
 	ham.addEventListener('ended', () => {
 		if (yayin.hamSes !== ham) return;
@@ -4710,9 +4572,7 @@ function yayinSesiTak(ses, aygit = '', aygitAdi = '', isleyici = null) {
 		if (aygit) durum('Ses aygıtı kapandı; yalnızca ekranın gidiyor.', true);
 	});
 	// Paylaştığım sesin seviyesi kendi kartımda (diğerlerinde de öyle görünür).
-	try {
-		yayin.olcer = seviyeOlcer(new MediaStream([ses]), (caliyor, seviye) => kartSesi('ben', caliyor, seviye));
-	} catch {}
+	dene(() => (yayin.olcer = seviyeOlcer(new MediaStream([ses]), (caliyor, seviye) => kartSesi('ben', caliyor, seviye))));
 }
 
 function yayinSesiniBirak() {
@@ -4852,11 +4712,7 @@ async function sesKaynagiAc() {
 
 function sesKaynaklariniCiz(aygitlar) {
 	const secim = $('ses-kaynagi-aygit');
-	let mikId = '';
-	try {
-		const iz = mikrofon && mikrofon.getAudioTracks()[0];
-		mikId = (iz && iz.getSettings && iz.getSettings().deviceId) || '';
-	} catch {}
+	const mikId = dene(() => mikrofon.getAudioTracks()[0].getSettings().deviceId) || '';
 	const bilgisayar = aygitlar.filter((a) => BILGISAYAR_SESI.test(a.label));
 	const diger = aygitlar.filter((a) => !BILGISAYAR_SESI.test(a.label));
 	secim.replaceChildren();
@@ -4893,7 +4749,7 @@ function aygitHataMetni(h) {
 	const ad = h && h.name;
 	if (ad === 'NotAllowedError' || ad === 'SecurityError') return 'Ses aygıtına izin verilmedi.';
 	if (ad === 'NotFoundError' || ad === 'OverconstrainedError') return 'Ses aygıtı bulunamadı; yeniden seç.';
-	const neden = String((h && h.message) || h || '').slice(0, 120);
+	const neden = hataYazi(h).slice(0, 120);
 	if (ad === 'NotReadableError' || ad === 'AbortError') return 'Ses aygıtı açılamadı' + (neden ? ': ' + neden : ' (başka bir uygulama kullanıyor olabilir).');
 	return 'Ses aygıtı açılamadı: ' + neden;
 }
@@ -4923,7 +4779,6 @@ async function sesKaynagiPaylas() {
 // konuşmada sorun yok). Bu yüzden Firefox'ta mikrofon açıkken aygıttan paylaşım başlatılırsa mikrofon
 // bir an bırakılır, aygıt açılır, mikrofon geri alınır (konuşmada ~0,5 sn boşluk).
 const firefoxMu = () => /Firefox\//.test(navigator.userAgent || '');
-const aygitOnceAcilmali = firefoxMu;
 const GIRIS_KAPANMA_MS = 500; // izler durunca tarayıcının ses girişini gerçekten kapatması için
 let aygitAciliyor = false;
 
@@ -4935,7 +4790,7 @@ async function aygitSesiniPaylas(id, ad, tazele = false) {
 	aygitAciliyor = true;
 	const kisit = { echoCancellation: false, noiseSuppression: false, autoGainControl: false, channelCount: { ideal: 2 }, sampleRate: { ideal: 48000 } };
 	if (id) kisit.deviceId = { exact: id };
-	const mikGeriAl = !!mikrofon && (tazele || aygitOnceAcilmali());
+	const mikGeriAl = !!mikrofon && (tazele || firefoxMu());
 	try {
 		if (tazele) yayinSesiniBirak();
 		if (mikGeriAl) {
@@ -5119,11 +4974,7 @@ function yakalamaSondasi(y = yayin.yanki) {
 		g.connect(ac.destination);
 		osc.start(t0);
 		osc.stop(t0 + SONDA_SURE + 0.01);
-		osc.onended = () => {
-			try {
-				g.disconnect();
-			} catch {}
-		};
+		osc.onended = () => dene(() => g.disconnect());
 		y.dugum.port.postMessage({ tur: 'sonda', t0, sure: SONDA_SURE });
 	} catch {}
 }
@@ -5167,31 +5018,22 @@ function yankiCikariciKapat(y) {
 	clearInterval(y.sondaDongusu);
 	clearTimeout(y.kopuklukZamani);
 	for (const f of y.ozetBekleyen.splice(0)) f(null);
-	try {
-		if (y.dugum) {
+	if (y.dugum)
+		dene(() => {
 			y.dugum.port.postMessage({ tur: 'bitir' });
 			y.dugum.port.onmessage = null;
-		}
-	} catch {}
-	for (const r of y.referans.values()) {
-		try {
-			r.kaynak.disconnect();
-			r.kazanc.disconnect();
-		} catch {}
-	}
+		});
+	for (const r of y.referans.values()) referansiKopar(r);
 	y.referans.clear();
-	for (const d of [y.kaynak, y.dugum]) {
-		try {
-			if (d) d.disconnect();
-		} catch {}
-	}
-	try {
-		if (y.iz) y.iz.stop();
-	} catch {}
-	try {
-		if (y.isci) y.isci.terminate();
-	} catch {}
+	for (const d of [y.kaynak, y.dugum]) if (d) dene(() => d.disconnect());
+	if (y.iz) dene(() => y.iz.stop());
+	if (y.isci) dene(() => y.isci.terminate());
 }
+const referansiKopar = (r) =>
+	dene(() => {
+		r.kaynak.disconnect();
+		r.kazanc.disconnect();
+	});
 
 // Yuvaları çalınanlara uydur: her eşin mikrofonu ve paylaşımı kendi yuvasında, <audio>'su ne
 // çalıyorsa o seviyede (susturulmuş, sağırlaştırılmış ya da henüz çalmayan: 0). Seviye/susturma
@@ -5236,17 +5078,14 @@ function yankiReferansGuncelle(y = yayin.yanki) {
 	}
 	for (const [akis, r] of y.referans) {
 		if (gorulen.has(akis)) continue;
-		try {
-			r.kaynak.disconnect();
-			r.kazanc.disconnect();
-		} catch {}
+		referansiKopar(r);
 		y.referans.delete(akis);
 		// Yuva boşaldı: worklet de tahmin de o yuvanın geçmişini unutsun (yeni akış temiz başlar).
 		y.suzgecler.delete(r.yuva);
-		try {
+		dene(() => {
 			y.dugum.port.postMessage({ tur: 'yuva-bos', yuva: r.yuva });
 			y.isci.postMessage({ tur: 'yuva-bos', yuva: r.yuva });
-		} catch {}
+		});
 	}
 }
 
@@ -5344,7 +5183,6 @@ function kartSesi(anahtar, caliyor, seviye) {
 const yayinKartlari = new Map(); // 'ben' ya da 'es:<ad>' -> { kok, guncelle, es, dolgu }
 function yayinlarCiz() {
 	const kap = $('yayinlar');
-	if (!kap) return;
 	const istenen = [];
 	if (sesKanal) {
 		if (yayinVar()) istenen.push(['ben', null]);
@@ -5384,11 +5222,7 @@ function videoyaBagla(v, iz) {
 		if (v.srcObject) v.srcObject = null;
 		return;
 	}
-	if (mevcut !== iz) {
-		try {
-			v.srcObject = new MediaStream([iz]);
-		} catch {}
-	}
+	if (mevcut !== iz) dene(() => (v.srcObject = new MediaStream([iz])));
 	if (v.paused) oynat(v).catch(() => {});
 }
 function tamEkran(kap, v) {
@@ -5397,13 +5231,18 @@ function tamEkran(kap, v) {
 	else if (v && v.webkitEnterFullscreen) v.webkitEnterFullscreen(); // iPhone
 }
 function ikonDugmesi(ad, baslik, fn, sinif = '') {
-	const d = el('button', 'ikon-dugme' + (sinif ? ' ' + sinif : ''));
-	d.type = 'button';
-	d.title = baslik;
+	const d = dugme('ikon-dugme' + (sinif ? ' ' + sinif : ''), null, fn, baslik);
 	d.setAttribute('aria-label', baslik);
 	d.append(ikon(ad));
-	d.onclick = fn;
 	return d;
+}
+// Kişiye özel ses seviyesi kaydırıcısı (yalnızca sende).
+function seviyeKaydirici(deger, etiket, degisti) {
+	const s = el('input', 'ses-seviye');
+	Object.assign(s, { type: 'range', min: 0, max: 100, step: 1, value: String(deger), title: 'Ses seviyesi (yalnızca sende)' });
+	s.setAttribute('aria-label', etiket);
+	s.oninput = () => degisti(Number(s.value));
+	return s;
 }
 function seviyeCubugu(baslik) {
 	const cubuk = el('div', 'seviye-cubuk');
@@ -5426,9 +5265,7 @@ function yayinKarti(es) {
 	sahne.append(video, bekle);
 	sahne.addEventListener('dblclick', () => tamEkran(sahne, video));
 	const tam = ikonDugmesi('tam-ekran', 'Tam ekran', () => tamEkran(sahne, video));
-	const izle = el('button', 'yayin-dugme');
-	izle.type = 'button';
-	izle.onclick = () => izlemeAyarla(es, !es.izliyorum);
+	const izle = dugme('yayin-dugme', null, () => izlemeAyarla(es, !es.izliyorum));
 	ust.append(el('span', 'canli', 'CANLI'), el('b', null, es.ad), aciklama, el('span', 'bosluk'), tam, izle);
 	const sesSatir = el('div', 'yayin-ses');
 	const sus = ikonDugmesi(
@@ -5443,16 +5280,11 @@ function yayinKarti(es) {
 		'sus',
 	);
 	const { cubuk, dolgu } = seviyeCubugu('Paylaşılan sesin seviyesi');
-	const seviye = el('input', 'ses-seviye');
-	Object.assign(seviye, { type: 'range', min: 0, max: 100, step: 1 });
-	seviye.value = String(es.yayinSeviye);
-	seviye.title = 'Ses seviyesi (yalnızca sende)';
-	seviye.setAttribute('aria-label', es.ad + ' paylaşımının ses seviyesi');
-	seviye.oninput = () => {
-		es.yayinSeviye = Number(seviye.value);
-		depoYaz('yayin-seviye-' + es.ad, seviye.value);
+	const seviye = seviyeKaydirici(es.yayinSeviye, es.ad + ' paylaşımının ses seviyesi', (v) => {
+		es.yayinSeviye = v;
+		depoYaz('yayin-seviye-' + es.ad, v);
 		esSesUygula(es);
-	};
+	});
 	sesSatir.append(sus, cubuk, seviye);
 	kok.append(ust, sahne, sesSatir);
 	const guncelle = () => {
@@ -5485,17 +5317,9 @@ function benimYayinKartim() {
 	const kok = el('div', 'yayin-kart ben');
 	const ust = el('div', 'yayin-ust');
 	const metin = el('span', 'yayin-metin');
-	const sesEkle = el('button', 'yayin-dugme', 'Ses ekle');
-	sesEkle.type = 'button';
-	sesEkle.title = 'Bilgisayarın sesini de paylaş (ses aygıtından)';
-	sesEkle.onclick = () => sesKaynagiAc();
-	const gizle = el('button', 'yayin-dugme');
-	gizle.type = 'button';
-	gizle.onclick = () => ekransizAyarla(!yayin.ekransiz);
-	const durdur = el('button', 'yayin-dugme tehlike', 'Durdur');
-	durdur.type = 'button';
-	durdur.title = 'Paylaşımı durdur';
-	durdur.onclick = () => yayinDurdur();
+	const sesEkle = dugme('yayin-dugme', 'Ses ekle', () => sesKaynagiAc(), 'Bilgisayarın sesini de paylaş (ses aygıtından)');
+	const gizle = dugme('yayin-dugme', null, () => ekransizAyarla(!yayin.ekransiz));
+	const durdur = dugme('yayin-dugme tehlike', 'Durdur', () => yayinDurdur(), 'Paylaşımı durdur');
 	ust.append(el('span', 'canli', 'CANLI'), metin, el('span', 'bosluk'), sesEkle, gizle, durdur);
 	const onizleme = videoYap('kucuk-onizleme');
 	const sesSatir = el('div', 'yayin-ses');
@@ -5533,17 +5357,15 @@ function yayinMenusuCiz() {
 	if (m.hidden) return;
 	m.replaceChildren();
 	const ekle = (ikonAd, baslik, aciklama, fn) => {
-		const o = el('button', 'yayin-menu-oge');
-		o.type = 'button';
+		const o = dugme('yayin-menu-oge', null, () => {
+			yayinMenuKapat();
+			fn();
+		});
 		o.setAttribute('role', 'menuitem');
 		const yazi = el('span', 'yayin-menu-yazi');
 		yazi.append(el('b', null, baslik));
 		if (aciklama) yazi.append(el('small', null, aciklama));
 		o.append(ikon(ikonAd), yazi);
-		o.onclick = () => {
-			yayinMenuKapat();
-			fn();
-		};
 		m.append(o);
 	};
 	// Ekran paylaşımı ses vermeyen tarayıcıda (Firefox, Safari) ses bir ses aygıtından gelir.
@@ -5658,13 +5480,11 @@ function sesGozcuDurdur() {
 // Her eş için: bağlantı türü (P2P / TURN), gecikme, ses kalitesi ve bit hızı (iki ölçüm arasındaki
 // farktan; kümülatif oran eski kayıpları sonsuza dek taşıdığı için yanıltıcı).
 //
-// Ses kalitesi: eskiden tek bir 2 saniyelik ölçümde %5 paket kaybı görülünce "Bağlantı zayıf"
-// (kırmızı) deniyordu. Opus'un yedek verisi (FEC) ve kayıp gizleme bu kadar kısa kayıpları duyulmaz
-// kılar: ses iyiyken uyarı çıkıyordu. Şimdi DUYULAN bozulma ölçülür: alıcının kayıp yüzünden
-// uydurmak zorunda kaldığı ses (concealedSamples; sessiz olanlar hariç) son ~10 saniyede toplam sesin
-// ne kadarı? (Bu ölçü yoksa — eski tarayıcı — 10 sn'lik kayıp oranı.) Bağlantı yeni kurulduysa ya da
-// karşı taraf ses göndermiyorsa karar verilmez. Yalnızca mikrofon kanalının istatistikleri kullanılır
-// (yayın sesi ve görüntü ayrı kanallardadır; eskiden "son ses kaydı" hangisiyse o okunuyordu).
+// Ses kalitesi: paket kaybı değil DUYULAN bozulma ölçülür (kısa kayıpları Opus'un yedek verisi ve kayıp
+// gizleme duyulmaz kılar): alıcının kayıp yüzünden uydurmak zorunda kaldığı ses (concealedSamples;
+// sessiz olanlar hariç) son ~10 saniyede toplam sesin ne kadarı? (Bu ölçü yoksa — eski tarayıcı — 10
+// sn'lik kayıp oranı.) Bağlantı yeni kurulduysa ya da karşı taraf ses göndermiyorsa karar verilmez.
+// Yalnızca mikrofon kanalının istatistikleri kullanılır (yayın sesi ve görüntü ayrı kanallardadır).
 const KALITE_PENCERESI = 5; // ölçüm (2 sn'de bir) → ~10 sn
 const GIZLEME_ORTA = 0.03;
 const GIZLEME_KOTU = 0.1;
@@ -5880,10 +5700,10 @@ function aliciOzeti(d, gelen, oge) {
 function ogeyiYenidenBagla(oge) {
 	const akis = oge.srcObject;
 	if (!akis) return;
-	try {
+	dene(() => {
 		oge.srcObject = null;
 		oge.srcObject = akis;
-	} catch {}
+	});
 	oynat(oge).catch(() => {});
 	setTimeout(sesAcDugmesiGuncelle, 300);
 }
@@ -6171,10 +5991,7 @@ async function taniVeri() {
 async function yayinSesiOzeti() {
 	const iz = yayin.hamSes || yayin.ses;
 	if (!iz) return null;
-	let s = {};
-	try {
-		s = iz.getSettings ? iz.getSettings() : {};
-	} catch {}
+	const s = dene(() => iz.getSettings()) || {};
 	const o = { kaynak: yayin.aygit ? 'aygit' : 'ekran', aygitAdi: String(yayin.aygitAdi || iz.label || '').slice(0, 60), durum: iz.readyState, kanal: s.channelCount ?? null, aec: s.echoCancellation ?? null };
 	if (yayin.aygit) {
 		const y = yayin.yanki;
@@ -6238,7 +6055,6 @@ function ayarlarAc() {
 	esikCiz();
 	gurultuDurumuYaz();
 	$('ayar-olcer-dolgu').classList.remove('kapali');
-	$('ayar-yayin-kanal').value = String(ayar.yayinKanal);
 	$('ayar-mik-seviye').value = String(ayar.mikSeviye);
 	$('ayar-mik-seviye-deger').textContent = '%' + ayar.mikSeviye;
 	$('ayar-kalite').value = String(ayar.kalite);
@@ -6275,7 +6091,7 @@ $('ayarlar').addEventListener('click', (e) => {
 });
 $('ayar-mik-dene').addEventListener('click', async () => {
 	if (denemeMik) return denemeyiBitir();
-	sesKilidiAc();
+	sesBaglami();
 	try {
 		denemeMik = await mikrofonAc();
 	} catch (h) {
@@ -6347,11 +6163,6 @@ $('ayar-esik').addEventListener('input', () => {
 	ayarKaydet();
 	esikCiz();
 	for (const yol of [mikIslem, denemeYolu]) if (yol && yol.dugum) mikYoluAyarla(yol);
-});
-$('ayar-yayin-kanal').addEventListener('change', () => {
-	ayar.yayinKanal = Number($('ayar-yayin-kanal').value) === 1 ? 1 : 2;
-	ayarKaydet();
-	opusHedefleriniYenile();
 });
 $('ayar-mik-seviye').addEventListener('input', () => {
 	ayar.mikSeviye = Number($('ayar-mik-seviye').value);
