@@ -39,31 +39,38 @@ da sunucuya yüklenmez, paylaşandan doğrudan alınır. İçeri yalnızca içer
   kullanmaz (Android ses politikası: frameworks/av, enginedefault/src/Engine.cpp). Bu yol konuşma
   için yapılmıştır (tek kanal, 8 kHz'e kadar): konuşmada bozulma pek fark edilmez, müzikte barizdir.
   Ses bağlamının gecikmesi de bunu gösterir: A2DP'de ~250 ms, görüşme kipinde ~100 ms.
-- **Kayıplara karşı yedek (RED):** her ses paketi (konuşma da paylaşılan ses de) bir öncekinin kopyasını
-  da taşır; tek tük kaybolan paket bir sonrakinden yerine konur. Alıcının uydurmak zorunda kaldığı ses
-  %5 rastgele paket kaybında ~%5'ten ~%0,2'ye, %10'da ~%6'dan ~%1'e iner; bedeli bit hızının iki katı.
-  RED'i bilmeyen tarayıcıyla (Firefox: ne gönderir ne alır) o bağlantı iki yönde de düz Opus'tur
-  (Opus'un kendi, daha zayıf yedeğiyle).
+- **Kayıplara karşı yedek (RED):** ses paketi (konuşma da paylaşılan ses de) bir öncekinin kopyasını da
+  taşır; tek tük kaybolan paket bir sonrakinden yerine konur. Ses ayarlarında kalite seçiminin yanındaki
+  RED kutusuyla mikrofon ve paylaşım için ayrı ayrı açılıp kapanır (varsayılan açık); her gönderen kendi
+  sesine karar verir (tarayıcı RED'i karşının açıklamasında Opus'tan önce geliyorsa kullanır: sayfa
+  karşının açıklamasını uygularken sırayı kendi seçimine göre dizer). Alıcının uydurmak zorunda kaldığı
+  ses %10 rastgele kayıpta konuşmada ~%6'dan ~%0,4-1'e, müzikte ~%6'dan ~%0,3-0,8'e iner; bedeli bit
+  hızının iki katı. Kayıplar art arda gelince (ortalama 3 paketlik patlamalar, gerçek ağa daha yakın)
+  kazanç az: konuşmada %27-54, müzikte ~%12 (test/kayip.js), çünkü tarayıcının RED'i yalnızca bir
+  önceki çerçeveyi taşır (libwebrtc kRedNumberOfRedundantEncodings = 1; daha derini ya da aralıklısı
+  tarayıcının deneme bayrağı ister, sayfa değiştiremez). RED'i bilmeyen tarayıcıyla (Firefox: ne
+  gönderir ne alır; kutu kapalı görünür) o bağlantı iki yönde de düz Opus'tur.
 - **Ekran paylaşımı ve birlikte dinleme** (ses kartındaki paylaş düğmesi):
-  - *Kalite* (ses ve paylaşım ayarları). Paylaşılan ses (stereo Opus; mikrofon ayrı kanalda, tek
-    kanal): varsayılan *Otomatik*: o kişiyle kayıplara karşı yedek (RED) anlaşıldıysa 192 kbps, yoksa
-    Opus'un en yükseği 510 kbps; ayrıca 510, 192, 96 seçilebilir. Tarayıcılar sesi sıkıştırmadan
-    gönderemez (Firefox'ta Opus'tan başka müzik kodeği yok); 510, Opus'un tek çerçevesinin üst
-    sınırından gelir (20 ms'de 1275 bayt). Yedek önceki çerçeveyi aynı pakette taşır ve tarayıcıda
-    paket 1200 baytı geçemez: gerçek müzikte 192'de sığıyor (%10 rastgele kayıpta uydurulan ses
-    %3,1 → %0,4), 256'da çoğu zaman sığmıyor (%3,6 → %1,5), 510'da hiç (test/kayip.js). 192 de
+  - *Kalite* (ses ve paylaşım ayarları). Paylaşılan ses (bilgisayarın sesi; stereo Opus, mikrofon ayrı
+    kanalda, tek kanal): 510 / 256 / 192 (varsayılan) / 128 / 96 kbps, yanında RED kutusu. Tarayıcılar
+    sesi sıkıştırmadan gönderemez (Firefox'ta Opus'tan başka müzik kodeği yok); kodlayıcıya giden ses
+    her tarayıcıda 16 bit. 510, Opus'un tek çerçevesinin üst sınırından gelir (20 ms'de 1275 bayt).
+    Yedek aynı pakette gider ve tarayıcıda paket 1200 baytı geçemez: gerçek müzikte 192'de sığıyor (%10
+    rastgele kayıpta uydurulan ses %3,1 → %0,4), 256'da çoğu zaman sığmıyor (%3,6 → %1,5), 510'da hiç;
+    bu yüzden 256 ve 510'da RED kutusu kapalı (üstüne gelince nedenini yazar), seçim saklanır. 192 de
     aslından ayırt edilmez. Yedek yalnızca iki taraf da Chrome tabanlıysa (Chrome, Edge, Samsung
-    Internet…) çalışır: Firefox RED'i hiç bilmez (en yenisi 160'ta da yok; ne gönderir ne alır), o
-    yüzden Firefox'la her bağlantı (konuşma da) yedeksizdir. Linux'ta bilgisayarın sesini ancak
-    Firefox paylaşabilir (Chrome Linux'ta "Monitor of …" aygıtlarını bilerek gizliyor); Chrome'da
-    sekmenin sesi yedekli gider. Ekran: Düşük (720p, 15 fps, 1 Mbit/s), Standart (1080p, 30 fps,
-    2,5 Mbit/s; varsayılan), Yüksek (1080p, 60 fps, 5 Mbit/s), Akıcı (1080p, 120 fps, 8 Mbit/s), En
-    yüksek (ekranın kendi çözünürlüğü, 60 fps, 10 Mbit/s); paylaşım sürerken değiştirilebilir. 120
-    fps tarayıcıların ekran yakalama sınırı; Firefox'un kodlayıcısı ise 60'ı geçmez
-    (media.navigator.video.max_fr), ~3,1 megapikselden büyük kareyi küçültür (max_fs: 2048×1536
-    kadar) ve 1080p'de en çok ~5 Mbit/s gönderir (ölçüm: 10 Mbit/s tavanda 5,2; 1920×1200 üstünde 10).
-    Ses kalitesi Firefox'ta yalnızca yeniden anlaşmayla değişir: sayfa bunu kendisi yapar
-    (yanıtladığı bağlantıda karşıdan yeni teklif ister), konuşma kesilmez.
+    Internet…) çalışır: Firefox RED'i hiç bilmez (en yenisi 160'ta da yok), o yüzden Firefox'la her
+    bağlantı (konuşma da) yedeksizdir. Linux'ta bilgisayarın sesini ancak Firefox paylaşabilir (Chrome
+    Linux'ta "Monitor of …" aygıtlarını bilerek gizliyor); Chrome'da sekmenin sesi yedekli gider. Ekran:
+    Düşük (720p, 15 fps, 1 Mbit/s), Standart (1080p, 30 fps, 2,5 Mbit/s; varsayılan), Yüksek (1080p,
+    60 fps, 5 Mbit/s), Akıcı (1080p, 120 fps, 8 Mbit/s), En yüksek (ekranın kendi çözünürlüğü, 60 fps,
+    10 Mbit/s); paylaşım sürerken değiştirilebilir. 120 fps tarayıcıların ekran yakalama sınırı;
+    Firefox'un kodlayıcısı ise 60'ı geçmez (media.navigator.video.max_fr), ~3,1 megapikselden büyük
+    kareyi küçültür (max_fs: 2048×1536 kadar) ve 1080p'de en çok ~5 Mbit/s gönderir (ölçüm: 10 Mbit/s
+    tavanda 5,2; 1920×1200 üstünde 10). Görüntüde ayrıca yedek gerekmez: tarayıcılar kayıp paketi yeniden
+    ister (NACK/RTX) ve kayıp görünce düzeltme paketi (ULPFEC) ekler; bit hızını da ağa göre kendileri
+    ayarlar (seçilen değer tavandır). Ses kalitesi ve RED Firefox'ta yalnızca yeniden anlaşmayla değişir:
+    sayfa bunu kendisi yapar (yanıtladığı bağlantıda karşıdan yeni teklif ister), konuşma kesilmez.
   - *Ekranını paylaş*: ekran, pencere ya da sekme; istenirse sesiyle. İstemeyen görüntüyü kapatır
     (ona hiç gönderilmez, ses yine gelir).
   - *Ekransız paylaş*: bilgisayarın ya da Spotify/YouTube çalan sekmenin sesini paylaşmak da bir ekran
@@ -205,9 +212,9 @@ açıklanmıştır.
   ~10 kişi. Ekran paylaşan, izleyen her kişiye ayrı görüntü gönderir (seçilen kalitenin tavanı üç
   izleyiciye kadar tam, daha kalabalıkta toplam üç katı; sunucu üzerinden (TURN) giden bağlantıda en
   çok 3 Mbit/s); görüntüyü kapatana ve ekransız paylaşımda kimseye gönderilmez. Paylaşılan ses kişi
-  başı yedeksiz 510 kbps, yedekliyse 192 (yedekle hatta ~390; toplam ~3 Mbit/s'yi geçmesin diye
-  510 altı kişiden kalabalıkta düşer): telefonla mobil veriden dinleyen için saatte ~230 MB ya da
-  ~175 MB. Konuşma RED'le hatta ~190 kbps. Daha
+  başı varsayılan 192 kbps (yedekle hatta ~390), 510 seçilirse yedeksiz 510 (toplam ~3 Mbit/s'yi
+  geçmesin diye 510 altı kişiden kalabalıkta düşer): telefonla mobil veriden dinleyen için saatte
+  ~175 MB ya da ~230 MB. Konuşma RED'le hatta ~150-190 kbps. Daha
   kalabalık odalar için SFU gerekir.
 - Ekran ve ses paylaşımı tarayıcıya bağlıdır: Chrome/Edge'de en iyisi (sekmenin sesi her işletim
   sisteminde, tüm bilgisayarın sesi Windows'ta "Tüm ekran" seçilince). Firefox ve Safari ekranla

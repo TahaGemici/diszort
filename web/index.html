@@ -228,19 +228,26 @@
 		<section class="ayar-bolum">
 			<h3>Kalite</h3>
 			<label class="alan-adi" for="ayar-kalite">Mikrofonun</label>
-			<select id="ayar-kalite">
-				<option value="48">Standart · 48 kbps</option>
-				<option value="96">Yüksek · 96 kbps</option>
-				<option value="128">En yüksek · 128 kbps (müzik)</option>
-			</select>
-			<div id="ayar-paylasim">
-				<label class="alan-adi" for="ayar-yayin-kalite">Paylaştığın ses</label>
-				<select id="ayar-yayin-kalite">
-					<option value="oto">Otomatik · yedek varsa 192, yoksa 510 kbps</option>
-					<option value="510">En yüksek · 510 kbps (yedek sığmaz)</option>
-					<option value="192">Yüksek · 192 kbps (yedekli)</option>
-					<option value="96">Düşük · 96 kbps (yedekli)</option>
+			<div class="kalite-satir">
+				<select id="ayar-kalite">
+					<option value="48">Standart · 48 kbps</option>
+					<option value="96">Yüksek · 96 kbps</option>
+					<option value="128">En yüksek · 128 kbps (müzik)</option>
 				</select>
+				<label class="anahtar red-kutu" id="ayar-mik-red-etiket"><input id="ayar-mik-red" type="checkbox"><span>RED</span></label>
+			</div>
+			<div id="ayar-paylasim">
+				<label class="alan-adi" for="ayar-yayin-kalite">Paylaştığın ses (bilgisayarın sesi)</label>
+				<div class="kalite-satir">
+					<select id="ayar-yayin-kalite">
+						<option value="510">Sistem kalitesi · 510 kbps</option>
+						<option value="256">Çok yüksek · 256 kbps</option>
+						<option value="192">Yüksek · 192 kbps</option>
+						<option value="128">Orta · 128 kbps</option>
+						<option value="96">Düşük · 96 kbps</option>
+					</select>
+					<label class="anahtar red-kutu" id="ayar-yayin-red-etiket"><input id="ayar-yayin-red" type="checkbox"><span>RED</span></label>
+				</div>
 				<label class="alan-adi" for="ayar-ekran-kalite">Paylaştığın ekran</label>
 				<select id="ayar-ekran-kalite">
 					<option value="dusuk">Düşük · 720p, 15 fps · 1 Mbit/s</option>
@@ -252,7 +259,7 @@
 			</div>
 			<label class="anahtar"><input id="ayar-sesler" type="checkbox"><span>Giriş / çıkış sesleri</span></label>
 		</section>
-		<p class="ayar-not">Kulaklık kullanıyorsan yankı engellemeyi kapatmak sesi biraz daha doğal yapar. Paylaşılan ses tarayıcıda sıkıştırılmadan gönderilemez; 192 kbps'de de aslından ayırt edilmez. Kayıplara karşı yedek (RED) yalnızca iki taraf da Chrome tabanlıysa (Chrome, Edge, Samsung Internet…) çalışır, Firefox desteklemez; 510'da pakete sığmaz. Kalabalık kanallarda gönderilen kalite kendiliğinden düşürülür. Kısayollar: Ctrl+Shift+M mikrofon, Ctrl+Shift+D sağırlaştır.</p>
+		<p class="ayar-not">Kulaklık kullanıyorsan yankı engellemeyi kapatmak sesi biraz daha doğal yapar. Paylaşılan ses tarayıcıda sıkıştırılmadan gönderilemez; 192 kbps'de de aslından ayırt edilmez. RED: kayıplara karşı yedek; her paket bir öncekinin kopyasını da taşır (bit hızı iki katı). Tek tük kayıpta çok işe yarar, art arda kayıpta az. Yalnızca iki taraf da Chrome tabanlıysa (Chrome, Edge, Samsung Internet…) çalışır; Firefox desteklemez. Kalabalık kanallarda gönderilen kalite kendiliğinden düşürülür. Kısayollar: Ctrl+Shift+M mikrofon, Ctrl+Shift+D sağırlaştır.</p>
 	</div>
 </div>
 

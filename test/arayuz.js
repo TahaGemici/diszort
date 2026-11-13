@@ -1033,7 +1033,7 @@ const ICE = { iceServers: [{ urls: ['stun:1.2.3.4:3478'] }, { urls: ['turn:1.2.3
 	denetle('Opus: maxaveragebitrate=96000 + FEC + DTX kapalı', uygulanan && /maxaveragebitrate=96000/.test(uygulanan.sdp) && /useinbandfec=1/.test(uygulanan.sdp) && /usedtx=0/.test(uygulanan.sdp), uygulanan && uygulanan.sdp);
 	const bolumler = uygulanan.sdp.split('m=').slice(1);
 	denetle('mikrofon m-line: mono', /stereo=0/.test(bolumler[0]) && !/sprop-stereo/.test(bolumler[0]), bolumler[0]);
-	denetle('yayın sesi m-line: stereo, 510 kbps (varsayılan: sistem kalitesi)', /stereo=1/.test(bolumler[1]) && /sprop-stereo=1/.test(bolumler[1]) && /maxaveragebitrate=510000/.test(bolumler[1]), bolumler[1]);
+	denetle('yayın sesi m-line: stereo, 192 kbps (varsayılan)', /stereo=1/.test(bolumler[1]) && /sprop-stereo=1/.test(bolumler[1]) && /maxaveragebitrate=192000/.test(bolumler[1]), bolumler[1]);
 	denetle('görüntü m-line değişmedi', !/fmtp/.test(bolumler[2]), bolumler[2]);
 	denetle('gönderici bit hızı tavanı 96 kbps', ilkTr.parametreler && ilkTr.parametreler.encodings[0].maxBitrate === 96000, JSON.stringify(ilkTr.parametreler));
 	// Teklif yoldayken (ICE yenileme) eski oturuma ait yanıt yok sayılır, doğru oturumunki uygulanır.
@@ -2269,8 +2269,8 @@ const ICE = { iceServers: [{ urls: ['stun:1.2.3.4:3478'] }, { urls: ['turn:1.2.3
 		u.window.eval('sesKapat()');
 	}
 
-	// --- 28) paylaşım kalitesi: paylaşılan ses varsayılan olarak otomatik: o eşle kayıplara karşı yedek
-	// (RED) anlaşıldıysa 192 kbps (yedek sığar), anlaşılmadıysa (Firefox) Opus'un en yükseği 510. Chrome'da tavan hemen (setParameters); Firefox'ta
+	// --- 28) paylaşım kalitesi: paylaşılan ses varsayılan 192 kbps (kayıplara karşı yedek sığar), ses
+	// ayarlarından seçilir; yanında RED kutusu (tarayıcı bilmiyorsa ya da yedek sığmıyorsa kapalı). Chrome'da tavan hemen (setParameters); Firefox'ta
 	// Opus hedefi ancak yeniden anlaşmada uygulanır: teklif ettiğimiz bağlantıda yeni teklif,
 	// yanıtladığımızda karşıdan yeni teklif isteği (yenile, teklif; ICE yenilenmez). Ekran kalitesi
 	// (çözünürlük, kare hızı, bit hızı tavanı) seçilir ve paylaşım sürerken de uygulanır; sunucu
@@ -2305,7 +2305,7 @@ const ICE = { iceServers: [{ urls: ['stun:1.2.3.4:3478'] }, { urls: ['turn:1.2.3
 		tgel({ type: 'sdp', from: 'bora', sdp: { type: 'answer', sdp: UC_KANALLI }, oturum: sdpler('bora').at(-1).oturum });
 		await bekle(40);
 		denetle('kalite: iki bağlantı (biri teklif eden, biri yanıtlayan), ikisi de anlaştı', bPc.signalingState === 'stable' && zPc.signalingState === 'stable' && tw.eval("esler.get('bora').teklifci === true && esler.get('zeynep').teklifci === false"));
-		denetle('varsayılan: paylaşılan sesin Opus hedefi 510 kbps, stereo (iki yönde de)', /maxaveragebitrate=510000/.test(yayinBolumu(bPc)) && /stereo=1/.test(yayinBolumu(bPc)) && /maxaveragebitrate=510000/.test(yayinBolumu(zPc)), yayinBolumu(bPc));
+		denetle('varsayılan: paylaşılan sesin Opus hedefi 192 kbps, stereo (iki yönde de)', /maxaveragebitrate=192000/.test(yayinBolumu(bPc)) && /stereo=1/.test(yayinBolumu(bPc)) && /maxaveragebitrate=192000/.test(yayinBolumu(zPc)), yayinBolumu(bPc));
 		// Ekranını sesiyle paylaşır: yakalama seçilen ekran kalitesiyle (varsayılan standart) istenir.
 		t.oc.ekranSesiVer = true;
 		await tw.eval('yayinBaslat(false)');
@@ -2313,16 +2313,22 @@ const ICE = { iceServers: [{ urls: ['stun:1.2.3.4:3478'] }, { urls: ['turn:1.2.3
 		const gIz = t.oc.ekranIzleri[0];
 		const istenen = t.oc.ekranSecenek.video;
 		denetle('standart: yakalama 1080p, 30 kare istendi', istenen.width.max === 1920 && istenen.height.max === 1080 && istenen.frameRate.max === 30, JSON.stringify(istenen));
-		denetle('gönderim tavanları: ses 510 kbps; ekran 2,5 Mbit/s, 30 kare', sp(bPc).maxBitrate === 510000 && sp(zPc).maxBitrate === 510000 && vp(bPc).maxBitrate === 2500000 && vp(bPc).maxFramerate === 30, JSON.stringify([sp(bPc), vp(bPc)]));
+		denetle('gönderim tavanları: ses 192 kbps; ekran 2,5 Mbit/s, 30 kare', sp(bPc).maxBitrate === 192000 && sp(zPc).maxBitrate === 192000 && vp(bPc).maxBitrate === 2500000 && vp(bPc).maxFramerate === 30, JSON.stringify([sp(bPc), vp(bPc)]));
 		td.getElementById('ben-ayarlar').click();
 		await bekle(30);
-		denetle('ayarlarda paylaşım seçenekleri görünür: ses otomatik, ekran standart', td.getElementById('ayar-paylasim').hidden === false && td.getElementById('ayar-yayin-kalite').value === 'oto' && td.getElementById('ayar-ekran-kalite').value === 'standart');
-		// Paylaşılan ses Yüksek'e (192, yedekli) iner.
+		denetle('ayarlarda paylaşım seçenekleri görünür: ses 192, ekran standart', td.getElementById('ayar-paylasim').hidden === false && td.getElementById('ayar-yayin-kalite').value === '192' && td.getElementById('ayar-ekran-kalite').value === 'standart');
+		const redKutu = (id) => ({ k: td.getElementById(id), e: td.getElementById(id + '-etiket') });
+		denetle(
+			'RED bilmeyen tarayıcıda iki RED kutusu da kapalı, üstüne gelince nedenini söyler',
+			['ayar-mik-red', 'ayar-yayin-red'].every((id) => redKutu(id).k.disabled && !redKutu(id).k.checked && redKutu(id).e.classList.contains('kapali') && /desteklemiyor/.test(redKutu(id).e.title)),
+			redKutu('ayar-yayin-red').e.title,
+		);
+		// Paylaşılan ses "Sistem kalitesi"ne (510) çıkar.
 		const bOnce = sdpler('bora').length;
-		sec('ayar-yayin-kalite', '192');
+		sec('ayar-yayin-kalite', '510');
 		await bekle(30);
-		denetle('Chrome yolu: paylaşılan sesin tavanı hemen 192 kbps', sp(bPc).maxBitrate === 192000 && sp(zPc).maxBitrate === 192000, JSON.stringify([sp(bPc), sp(zPc)]));
-		denetle('seçim kalıcı', JSON.parse(tw.localStorage.getItem('ses-ayarlari')).yayinSes === '192');
+		denetle('Chrome yolu: paylaşılan sesin tavanı hemen 510 kbps', sp(bPc).maxBitrate === 510000 && sp(zPc).maxBitrate === 510000, JSON.stringify([sp(bPc), sp(zPc)]));
+		denetle('seçim kalıcı', JSON.parse(tw.localStorage.getItem('ses-ayarlari')).yayinSes === 510);
 		denetle('yeniden anlaşma hemen değil (art arda seçim beklenir)', sdpler('bora').length === bOnce && istekler('zeynep').length === 0);
 		await bekle(700);
 		denetle('teklif ettiğimiz bağlantıda yeni teklif (aynı oturum)', sdpler('bora').length === bOnce + 1 && sdpler('bora').at(-1).oturum === tw.eval("esler.get('bora').oturum") && bPc.signalingState === 'have-local-offer');
@@ -2332,16 +2338,16 @@ const ICE = { iceServers: [{ urls: ['stun:1.2.3.4:3478'] }, { urls: ['turn:1.2.3
 		// Karşının yeni teklifi (tarayıcı her teklifte oturum sürümünü artırır: metin farklı).
 		tgel({ type: 'sdp', from: 'zeynep', sdp: { type: 'offer', sdp: UC_KANALLI.replace('v=0', 'v=0\r\no=- 1 2 IN IP4 127.0.0.1') }, oturum: 'zoturum12345' });
 		await bekle(60);
-		denetle('Firefox yolu: yeni açıklamalarla Opus hedefi 192 kbps (iki bağlantıda)', /maxaveragebitrate=192000/.test(yayinBolumu(bPc)) && /maxaveragebitrate=192000/.test(yayinBolumu(zPc)) && zPc.signalingState === 'stable', yayinBolumu(zPc));
-		// Art arda iki seçim: bir kez yeniden anlaşılır, son seçimle (otomatik: bu eşlerle yedek yok → 510).
+		denetle('Firefox yolu: yeni açıklamalarla Opus hedefi 510 kbps (iki bağlantıda)', /maxaveragebitrate=510000/.test(yayinBolumu(bPc)) && /maxaveragebitrate=510000/.test(yayinBolumu(zPc)) && zPc.signalingState === 'stable', yayinBolumu(zPc));
+		// Art arda iki seçim: bir kez yeniden anlaşılır, son seçimle.
 		sec('ayar-yayin-kalite', '96');
 		await bekle(60);
-		sec('ayar-yayin-kalite', 'oto');
+		sec('ayar-yayin-kalite', '256');
 		await bekle(800);
 		denetle('art arda seçimde bir kez yeniden anlaşılır', istekler('zeynep').length === 2 && sdpler('bora').length === bOnce + 2, `${istekler('zeynep').length} ${sdpler('bora').length - bOnce}`);
 		tgel({ type: 'sdp', from: 'bora', sdp: { type: 'answer', sdp: UC_KANALLI }, oturum: sdpler('bora').at(-1).oturum });
 		await bekle(40);
-		denetle('son seçim geçerli: otomatik, yedeksiz eşe 510 kbps', /maxaveragebitrate=510000/.test(yayinBolumu(bPc)) && sp(bPc).maxBitrate === 510000);
+		denetle('son seçim geçerli: 256 kbps', /maxaveragebitrate=256000/.test(yayinBolumu(bPc)) && sp(bPc).maxBitrate === 256000);
 		// Karşıdan "kalitemi değiştirdim, yeni teklif ver" (teklif eden bizsek): yalnızca yeni teklif.
 		let secenek = 'yok';
 		const asilTeklif = bPc.createOffer.bind(bPc);
@@ -2385,55 +2391,82 @@ const ICE = { iceServers: [{ urls: ['stun:1.2.3.4:3478'] }, { urls: ['turn:1.2.3
 		denetle('düşük: 720p, 15 kare, 1 Mbit/s', gIz.kisit.width.max === 1280 && gIz.kisit.height.max === 720 && gIz.kisit.frameRate.max === 15 && vp(bPc).maxBitrate === 1000000 && vp(bPc).maxFramerate === 15, JSON.stringify([gIz.kisit, vp(bPc)]));
 		denetle('ekran kalitesi kalıcı', JSON.parse(tw.localStorage.getItem('ses-ayarlari')).ekranKalite === 'dusuk');
 		const v = await tw.eval('taniVeri()');
-		const vb = v.esler.find((e) => e.ad === 'bora');
-		denetle('tanı: paylaşım kalitesi (ayar ve eş başına tavan)', v.yayinKalite === 'oto' && v.ekranKalite === 'dusuk' && vb && vb.yayinTavan === 510, JSON.stringify([v.yayinKalite, v.ekranKalite, vb && vb.yayinTavan]));
+		denetle('tanı: paylaşım kalitesi ve RED isteği', v.yayinKalite === 256 && v.ekranKalite === 'dusuk' && v.redAyar && v.redAyar.destek === false && v.redAyar.yayin === false, JSON.stringify([v.yayinKalite, v.ekranKalite, v.redAyar]));
 		td.dispatchEvent(new tw.KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
 		tw.eval('yayinDurdur()');
 		tw.eval('sesKapat()');
 		// Kalabalık kanal: paylaşılan ses toplam ~3 Mbit/s'yi geçmesin (kişi başı düşer, en az 64).
-		tw.eval("ayar.yayinSes = 'oto'; for (let i = 0; i < 9; i++) esler.set('kalabalik' + i, { ad: 'kalabalik' + i, bekleniyor: 0 })");
-		denetle('kalabalıkta (9 eş) yedeksiz paylaşılan ses kişi başı 333 kbps', tw.eval('yayinSesHizi(null, false)') === 333, String(tw.eval('yayinSesHizi(null, false)')));
-		denetle('kalabalıkta yedekli eşe 192', tw.eval('yayinSesHizi(null, true)') === 192);
-		tw.eval("ayar.yayinSes = '192'");
-		denetle('192 seçiliyken kalabalıkta da 192', tw.eval('yayinSesHizi(null, false)') === 192);
+		tw.eval("ayar.yayinSes = 510; for (let i = 0; i < 9; i++) esler.set('kalabalik' + i, { ad: 'kalabalik' + i, bekleniyor: 0 })");
+		denetle('kalabalıkta (9 eş) 510 seçiliyken kişi başı 333 kbps', tw.eval('yayinSesHizi()') === 333, String(tw.eval('yayinSesHizi()')));
+		tw.eval('ayar.yayinSes = 256');
+		denetle('256 seçiliyken kalabalıkta da 256', tw.eval('yayinSesHizi()') === 256);
 		tw.eval("for (let i = 0; i < 9; i++) esler.delete('kalabalik' + i)");
 	}
 	// Paylaşamayan tarayıcıda (çoğu telefon) paylaşım seçenekleri gizli; bozuk kayıtlı değer varsayılana döner.
 	{
-		const u = kur({ ekranYok: true, depo: { anahtar: 'f'.repeat(128), ad: 'taha', 'ses-ayarlari': JSON.stringify({ yayinSes: '999', ekranKalite: 'uydurma' }) } });
+		const u = kur({ ekranYok: true, depo: { anahtar: 'f'.repeat(128), ad: 'taha', 'ses-ayarlari': JSON.stringify({ yayinSes: 999, ekranKalite: 'uydurma' }) } });
 		await bekle(40);
 		u.oc.ws.onmessage({ data: JSON.stringify({ type: 'hazir', ad: 'taha', kanallar, kimler: [{ ad: 'taha' }], max: 10, maxKullanici: 10, beyazListe: 1, beyazListeAdlari: ['taha'], sunulanDosyalar: [], ice: ICE, surum: 'v1' }) });
 		await bekle(40);
-		denetle('bozuk kayıtlı kalite varsayılana döndü', u.window.eval('ayar.yayinSes') === 'oto' && u.window.eval('ayar.ekranKalite') === 'standart');
-		// RED bilmeyen tarayıcı (Firefox): karşının açıklamasında RED önde olsa da paylaşılan ses 510.
-		denetle('RED bilmeyen tarayıcıda otomatik: 510 (yedek gönderemez)', /maxaveragebitrate=510000/.test(u.window.eval('opusAyarla')(RED_ONDE).split('m=').slice(1)[1]));
+		denetle('bozuk kayıtlı kalite varsayılana döndü', u.window.eval('ayar.yayinSes') === 192 && u.window.eval('ayar.ekranKalite') === 'standart');
+		// RED bilmeyen tarayıcı (Firefox) karşının sırasına dokunmaz (RED'i zaten göndermez).
+		denetle('RED bilmeyen tarayıcı kodek sırasına dokunmaz', u.window.eval('opusAyarla')(RED_ONDE).split('\r\n').filter((x) => x.startsWith('m=audio')).every((x) => / 63 111$/.test(x)));
 		u.d.getElementById('ben-ayarlar').click();
 		await bekle(30);
 		denetle('paylaşamayan tarayıcıda paylaşım seçenekleri gizli', u.d.getElementById('ayar-paylasim').hidden === true);
 	}
 
-	// Kayıplara karşı yedeği (RED) bilen tarayıcı: karşının açıklamasında paylaşım m-line'ının ilk kodeki
-	// RED ise (o sırayla göndeririz) otomatikte paylaşılan ses 192 kbps (yedek pakete sığar); RED yoksa ya
-	// da bu eşte bırakıldıysa 510. Anlaşmadan sonra gönderici tavanı da gönderdiğimiz kodeğe göre.
+	// Kayıplara karşı yedeği (RED) bilen tarayıcı. Yedeği gönderen seçer: tarayıcı RED'i karşının
+	// açıklamasında Opus'tan önce geliyorsa kullanır; sayfa karşının açıklamasını uygularken her ses
+	// m-line'ında sırayı kendi isteğine göre dizer (mikrofon: RED kutusu; paylaşım: RED kutusu ve yedeğin
+	// sığdığı hız, en çok 192). RED'i çözemeyen eşte (redKapali) hiç.
 	{
 		const u = kur({ red: true, depo: { anahtar: 'f'.repeat(128), ad: 'taha' } });
 		await bekle(40);
 		const uw = u.window;
-		const yayinFmtp = (sdp) => sdp.split('m=').slice(1)[1] || '';
-		denetle('RED bilen tarayıcı, karşıda RED önde: paylaşılan ses 192 kbps', /maxaveragebitrate=192000/.test(yayinFmtp(uw.eval('opusAyarla')(RED_ONDE, { redKapali: false }))));
-		denetle('karşıda RED yok: 510', /maxaveragebitrate=510000/.test(yayinFmtp(uw.eval('opusAyarla')(UC_KANALLI, { redKapali: false }))));
-		denetle('bu eşte RED bırakıldıysa: 510', /maxaveragebitrate=510000/.test(yayinFmtp(uw.eval('opusAyarla')(RED_ONDE, { redKapali: true }))));
-		denetle('mikrofon m-line etkilenmez', /maxaveragebitrate=96000/.test(uw.eval('opusAyarla')(RED_ONDE, { redKapali: false }).split('m=').slice(1)[0]));
-		uw.eval("ayar.yayinSes = '510'");
-		denetle('"En yüksek" seçiliyse RED önde olsa da 510', /maxaveragebitrate=510000/.test(yayinFmtp(uw.eval('opusAyarla')(RED_ONDE, { redKapali: false }))));
-		uw.eval("ayar.yayinSes = 'oto'");
-		// Anlaşmadan sonra: gönderdiğimiz kodek RED ise gönderici tavanı 192, değilse 510.
-		const es = { trSes: { sender: { getParameters: () => ({ codecs: [{ mimeType: 'audio/red' }, { mimeType: 'audio/opus' }] }) } } };
-		uw.eval('window.denemeEs = null');
-		uw.denemeEs = es;
-		denetle('gönderilen kodek RED: tavan 192', uw.eval('yayinSesHizi(window.denemeEs)') === 192);
-		es.trSes.sender.getParameters = () => ({ codecs: [{ mimeType: 'audio/opus' }] });
-		denetle('gönderilen kodek Opus: tavan 510', uw.eval('yayinSesHizi(window.denemeEs)') === 510);
+		const ud = u.d;
+		const sira = (sdp) => sdp.split('\r\n').filter((x) => x.startsWith('m=audio')).map((x) => x.split(' ').slice(3).join(' '));
+		const OPUS_ONDE = RED_ONDE.replace(/SAVPF 63 111/g, 'SAVPF 111 63');
+		const uygula = (sdp, es = {}) => sira(uw.eval('opusAyarla')(sdp, es));
+		denetle('varsayılan (192, iki kutu açık): iki ses m-line\'ında RED önde', uygula(RED_ONDE).join('|') === '63 111|63 111' && uygula(OPUS_ONDE).join('|') === '63 111|63 111', JSON.stringify(uygula(OPUS_ONDE)));
+		denetle('varsayılan: paylaşılan ses 192 kbps', /maxaveragebitrate=192000/.test(uw.eval('opusAyarla')(RED_ONDE, {}).split('m=').slice(1)[1]));
+		denetle('bu eşte RED bırakıldıysa: Opus önde (RED listede kalır)', uygula(RED_ONDE, { redKapali: true }).join('|') === '111 63|111 63');
+		denetle('karşının açıklamasında RED yoksa sıra değişmez', uygula(UC_KANALLI).join('|') === '111|111');
+		uw.eval('ayar.mikRed = false');
+		denetle('mikrofonda RED kapalı: yalnız mikrofon m-line\'ında Opus önde', uygula(RED_ONDE).join('|') === '111 63|63 111');
+		uw.eval('ayar.mikRed = true; ayar.yayinSes = 510');
+		denetle('510\'da yedek sığmaz: paylaşımda Opus önde (kutu açık olsa da)', uygula(RED_ONDE).join('|') === '63 111|111 63');
+		uw.eval('ayar.yayinSes = 192');
+		// Arayüz: kutular, kalite değişince kapanıp açılma, üstüne gelince yazan neden.
+		ud.getElementById('ben-ayarlar').click();
+		await bekle(30);
+		const k = (id) => ud.getElementById(id);
+		const sec = (id, deger) => {
+			k(id).value = deger;
+			k(id).dispatchEvent(new uw.Event('change', { bubbles: true }));
+		};
+		denetle('RED kutuları kalite seçimlerinin yanında, açık ve seçili', k('ayar-mik-red').closest('.kalite-satir') === k('ayar-kalite').closest('.kalite-satir') && k('ayar-yayin-red').closest('.kalite-satir') === k('ayar-yayin-kalite').closest('.kalite-satir') && !k('ayar-mik-red').disabled && k('ayar-mik-red').checked && !k('ayar-yayin-red').disabled && k('ayar-yayin-red').checked);
+		denetle('açık kutunun üstüne gelince ne yaptığını söyler', /kopyasını/.test(k('ayar-yayin-red-etiket').title), k('ayar-yayin-red-etiket').title);
+		sec('ayar-yayin-kalite', '510');
+		await bekle(20);
+		denetle('510: paylaşımın RED kutusu kapalı, boş; üstüne gelince "bu kalitede desteklenmiyor"', k('ayar-yayin-red').disabled && !k('ayar-yayin-red').checked && k('ayar-yayin-red-etiket').classList.contains('kapali') && /Bu kalitede desteklenmiyor/.test(k('ayar-yayin-red-etiket').title) && /192/.test(k('ayar-yayin-red-etiket').title), k('ayar-yayin-red-etiket').title);
+		denetle('mikrofonun kutusu etkilenmez', !k('ayar-mik-red').disabled && k('ayar-mik-red').checked);
+		sec('ayar-yayin-kalite', '256');
+		await bekle(20);
+		denetle('256: yine kapalı (çoğu pakete sığmıyor)', k('ayar-yayin-red').disabled);
+		sec('ayar-yayin-kalite', '128');
+		await bekle(20);
+		denetle('128: kutu yeniden açık ve seçim geri geldi', !k('ayar-yayin-red').disabled && k('ayar-yayin-red').checked && !k('ayar-yayin-red-etiket').classList.contains('kapali'));
+		k('ayar-yayin-red').checked = false;
+		k('ayar-yayin-red').dispatchEvent(new uw.Event('change', { bubbles: true }));
+		k('ayar-mik-red').checked = false;
+		k('ayar-mik-red').dispatchEvent(new uw.Event('change', { bubbles: true }));
+		await bekle(20);
+		const kayit = JSON.parse(uw.localStorage.getItem('ses-ayarlari'));
+		denetle('RED seçimleri kalıcı', kayit.yayinRed === false && kayit.mikRed === false && kayit.yayinSes === 128, JSON.stringify(kayit));
+		denetle('ikisi de kapalı: iki m-line\'da Opus önde', uygula(RED_ONDE).join('|') === '111 63|111 63');
+		const v = await uw.eval('taniVeri()');
+		denetle('tanı: RED isteği', v.redAyar && v.redAyar.destek === true && v.redAyar.mik === false && v.redAyar.yayin === false, JSON.stringify(v.redAyar));
 	}
 
 	console.log(process.exitCode ? 'BAŞARISIZ' : `Arayüz denemeleri geçti (${gecen}).`);

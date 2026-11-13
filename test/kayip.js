@@ -7,7 +7,8 @@
 // stereo, yedekli 192 kbps; yedeğin sığmadığı 510 ayrıca), düz Opus ve RED'le (kodek sırası ana.js'teki kodekSirasi ile, uygulamadaki gibi).
 // Beklenen: düz Opus'ta kaybın yaklaşık yarısı ile tamamı arası uydurulur (Opus'un kendi yedeği ancak
 // kodlayıcı kaybı öğrenince, düşük kalitede devreye girer), RED'le yalnızca art arda iki paketin birden
-// düştüğü yerler (rastgele %10 kayıpta ~%1).
+// düştüğü yerler (rastgele %10 kayıpta ~%1). Kayıplar art arda gelince (ortalama 3 paketlik
+// patlamalar, gerçek ağa daha yakın) RED'in kazancı çok azalır: kopyası bir önceki pakette.
 //
 //   node test/kayip.js        (playwright gerekir; make kayip)
 'use strict';
@@ -32,6 +33,7 @@ const KOK = path.resolve(__dirname, '..');
 const KODEK_SIRASI = (fs.readFileSync(path.join(KOK, 'web/ana.js'), 'utf8').match(/\nfunction kodekSirasi\(red\) \{[\s\S]*?\n\}\n/) || [])[0];
 if (!KODEK_SIRASI) throw new Error('ana.js içinde kodekSirasi bulunamadı');
 const KAYIP = 0.1;
+const PATLAMA = 3; // patlamalı denemede art arda düşen paket sayısının ortalaması (20 ms'lik paketler: 60 ms)
 const SURE = 12000; // ölçüm (ms), 3 sn ısınmadan sonra
 
 let gecen = 0;
@@ -116,10 +118,15 @@ function muzik(saniye) {
 // Aracı: Y'ye gelen (A'dan) B'ye X'ten, X'e gelen (B'den) A'ya Y'den iletilir. A → B yönünde RTP
 // paketleri (RTCP, STUN ve DTLS değil) tohumlu rastgeleyle düşer. Her arabirimde dinler: adayların
 // yalnızca kapısı değiştirilir (IP'si, hangi arabirimdeyse, aynı kalır).
-function araciKur(kayip, tohum) {
+// patlama > 1: kayıplar tek tek değil art arda gelir (Gilbert-Elliott: "iyi" durumda hiç düşmez, "kötü"
+// durumda hep düşer; kötüye geçiş p = kayip/(1-kayip)/patlama, çıkış 1/patlama). Patlama uzunluğu
+// sabit değil (gerçek ağdaki gibi değişken); ortalaması patlama paket, toplam kayıp yine kayip.
+function araciKur(kayip, tohum, patlama = 1) {
 	const X = dgram.createSocket('udp4');
 	const Y = dgram.createSocket('udp4');
-	const a = { A: null, B: null, giden: 0, dusen: 0 };
+	const a = { A: null, B: null, giden: 0, dusen: 0, patlamalar: 0 };
+	let kotu = false;
+	const gecis = patlama > 1 ? kayip / (1 - kayip) / patlama : 0;
 	let s = tohum >>> 0;
 	const rastgele = () => {
 		s = (s + 0x6d2b79f5) >>> 0;
@@ -134,7 +141,14 @@ function araciKur(kayip, tohum) {
 		if (!a.B) return;
 		if (rtpMi(m)) {
 			a.giden++;
-			if (rastgele() < kayip) {
+			let dus;
+			if (patlama > 1) {
+				kotu = kotu ? rastgele() >= 1 / patlama : rastgele() < gecis;
+				dus = kotu;
+			} else dus = rastgele() < kayip;
+			if (dus && !a.sonDustu) a.patlamalar++; // art arda düşenler tek patlama sayılır
+			a.sonDustu = dus;
+			if (dus) {
 				a.dusen++;
 				return;
 			}
@@ -150,8 +164,8 @@ function araciKur(kayip, tohum) {
 
 // Sayfada: A (gönderen) → B (alan), aracıdan geçerek; red: kodek sırası RED önde. fmtp: B'nin yanıtına
 // eklenen Opus ayarları (uygulamanın opusAyarla'sı gibi: karşının dediği bizim kodlayıcımızı ayarlar).
-async function olc(sayfa, { red, fmtp, stereo }) {
-	const ar = await araciKur(KAYIP, 12345);
+async function olc(sayfa, { red, fmtp, stereo, patlama = 1 }) {
+	const ar = await araciKur(KAYIP, 12345, patlama);
 	try {
 		const r = await sayfa.evaluate(
 			async ({ red, fmtp, stereo, X, Y, sure, kodekSirasiKaynak }) => {
@@ -216,7 +230,7 @@ async function olc(sayfa, { red, fmtp, stereo }) {
 			{ red, fmtp, stereo, X: ar.X, Y: ar.Y, sure: SURE, kodekSirasiKaynak: KODEK_SIRASI },
 		);
 		if (r.hata) throw new Error(r.hata);
-		return { ...r, agKaybi: ar.a.giden ? ar.a.dusen / ar.a.giden : 0 };
+		return { ...r, agKaybi: ar.a.giden ? ar.a.dusen / ar.a.giden : 0, ortPatlama: ar.a.patlamalar ? ar.a.dusen / ar.a.patlamalar : 0 };
 	} finally {
 		ar.kapat();
 	}
@@ -231,10 +245,10 @@ async function olc(sayfa, { red, fmtp, stereo }) {
 	await new Promise((r) => sunucu.listen(0, '127.0.0.1', r));
 	const yuzde = (x) => (x * 100).toFixed(1) + '%';
 	try {
-		for (const [tur, ses, fmtp, stereo, yedekSigar = true] of [
-			['konuşma (mikrofon: mono, 96 kbps)', konusma(60), 'stereo=0;usedtx=0;useinbandfec=1;maxaveragebitrate=96000', false],
-			// Paylaşımın otomatik ayarı yedek anlaşılınca 192 kbps: yedek pakete sığar.
-			['müzik (paylaşım, yedekli: stereo, 192 kbps)', muzik(60), 'stereo=1;sprop-stereo=1;usedtx=0;useinbandfec=1;maxaveragebitrate=192000', true],
+		for (const [tur, ses, fmtp, stereo, yedekSigar = true, patlamaliDa = false] of [
+			['konuşma (mikrofon: mono, 96 kbps)', konusma(60), 'stereo=0;usedtx=0;useinbandfec=1;maxaveragebitrate=96000', false, true, true],
+			// Paylaşımın yedekli en yüksek ayarı 192 kbps: yedek pakete sığar.
+			['müzik (paylaşım, yedekli: stereo, 192 kbps)', muzik(60), 'stereo=1;sprop-stereo=1;usedtx=0;useinbandfec=1;maxaveragebitrate=192000', true, true, true],
 			// "En yüksek" (510): 20 ms'lik çerçeve ~1275 bayt; libwebrtc RED paketi 1200 baytı geçemez ve
 			// 1024 bayttan büyük çerçeveyi yedekleyemez: yedek kendiliğinden atlanır.
 			['müzik (paylaşım "En yüksek": stereo, 510 kbps)', muzik(60), 'stereo=1;sprop-stereo=1;usedtx=0;useinbandfec=1;maxaveragebitrate=510000', true, false],
@@ -280,6 +294,24 @@ async function olc(sayfa, { red, fmtp, stereo }) {
 					assert.ok(red.kbps > duz.kbps * 1.5, 'RED kopyaları gitmiyor gibi: ' + red.kbps + ' / ' + duz.kbps + ' kbps');
 					return `ağ kaybı ${yuzde(duz.agKaybi)} / ${yuzde(red.agKaybi)}; uydurulan: düz Opus ${yuzde(duz.uydurulan)} (${duz.kbps} kbps), RED ${yuzde(red.uydurulan)} (${red.kbps} kbps)`;
 				});
+				if (patlamaliDa) {
+					// Gerçek ağda kayıplar çoğu zaman art arda gelir (Wi-Fi'de parazit, kuyruk taşması): ortalama 3
+					// paketlik (60 ms) patlamalar. Tarayıcının RED'i yalnızca bir önceki çerçeveyi taşır (libwebrtc
+					// kRedNumberOfRedundantEncodings = 1; değiştirmek tarayıcı deneme bayrağı ister): patlamada
+					// kopyası da gider, ancak patlamanın son paketi kurtarılabilir. Ölçüm: konuşmada ~yarıya, müzikte
+					// ancak ~%10 iner. Beklenen: RED kötüleştirmez; kazancı rastgele kayıptakinden çok az.
+					await dene(`%${KAYIP * 100} kayıp, ortalama ${PATLAMA} paketlik patlamalarla, ${tur}: RED az kurtarır`, async () => {
+						const duz = await olc(sayfa, { red: false, fmtp, stereo, patlama: PATLAMA });
+						const red = await olc(sayfa, { red: true, fmtp, stereo, patlama: PATLAMA });
+						for (const x of [duz, red]) {
+							assert.ok(x.agKaybi > 0.05 && x.agKaybi < 0.2, 'aracı beklenen kadar düşürmedi: ' + yuzde(x.agKaybi));
+							assert.ok(x.ortPatlama > 2, 'kayıplar art arda gelmedi: ortalama ' + x.ortPatlama.toFixed(2));
+						}
+						assert.equal(red.kodek, 'audio/red', "RED'li denemede gönderilen kodek RED olmalı");
+						assert.ok(red.uydurulan <= duz.uydurulan * 1.15, 'RED kötüleştirdi: ' + yuzde(red.uydurulan) + ' / ' + yuzde(duz.uydurulan));
+						return `ağ kaybı ${yuzde(duz.agKaybi)} / ${yuzde(red.agKaybi)}, ortalama patlama ${duz.ortPatlama.toFixed(1)} / ${red.ortPatlama.toFixed(1)} paket; uydurulan: düz Opus ${yuzde(duz.uydurulan)}, RED ${yuzde(red.uydurulan)} (${Math.round(100 * (1 - red.uydurulan / Math.max(1e-9, duz.uydurulan)))}% az)`;
+					});
+				}
 			} finally {
 				await tarayici.close();
 			}

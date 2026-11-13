@@ -1145,6 +1145,12 @@ audio.onizleme { width: min(400px, 100%); }
 	cursor: pointer;
 }
 .anahtar span { order: -1; }
+/* Kalite seçimi ve yanında kayıplara karşı yedek (RED) kutusu */
+.kalite-satir { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; }
+.ayar-bolum .kalite-satir select { flex: 1; min-width: 0; margin-bottom: 0; }
+.anahtar.red-kutu { flex: none; gap: 6px; padding: 0; font-size: 13px; justify-content: flex-start; }
+.anahtar.red-kutu.kapali { opacity: 0.5; cursor: not-allowed; }
+.anahtar input:disabled { cursor: not-allowed; }
 .anahtar input {
 	appearance: none;
 	-webkit-appearance: none;
