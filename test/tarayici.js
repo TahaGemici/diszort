@@ -697,7 +697,7 @@ async function sidebarKisileri(k, kanal = 'Sesli Sohbet') {
 		const d2 = await durumu(mert);
 		const kbps = ((d2.esler.taha.yayinGidenBayt - d1.esler.taha.yayinGidenBayt) * 8) / 3000;
 		const kare = d2.esler.taha.goruntuGidenBayt - d1.esler.taha.goruntuGidenBayt;
-		console.log(`     ekransız paylaşımın sesi mert → taha ${kbps.toFixed(1)} kbps (stereo Opus, tavan 160); görüntü ${kare} bayt`);
+		console.log(`     ekransız paylaşımın sesi mert → taha ${kbps.toFixed(1)} kbps (stereo Opus, tavan 510: sistem kalitesi); görüntü ${kare} bayt`);
 		assert.ok(kbps > 48, 'paylaşımın ses bit hızı düşük: ' + kbps.toFixed(1));
 		assert.ok(kare === 0, 'ekransızken görüntü gönderilmemeli: ' + kare + ' bayt');
 		await duyuyor(taha, 'mert', 'paylaşırken mikrofon da ayrıca duyulmalı');

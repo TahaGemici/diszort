@@ -1026,7 +1026,7 @@ const ICE = { iceServers: [{ urls: ['stun:1.2.3.4:3478'] }, { urls: ['turn:1.2.3
 	denetle('Opus: maxaveragebitrate=96000 + FEC + DTX kapalı', uygulanan && /maxaveragebitrate=96000/.test(uygulanan.sdp) && /useinbandfec=1/.test(uygulanan.sdp) && /usedtx=0/.test(uygulanan.sdp), uygulanan && uygulanan.sdp);
 	const bolumler = uygulanan.sdp.split('m=').slice(1);
 	denetle('mikrofon m-line: mono', /stereo=0/.test(bolumler[0]) && !/sprop-stereo/.test(bolumler[0]), bolumler[0]);
-	denetle('yayın sesi m-line: stereo, 160 kbps', /stereo=1/.test(bolumler[1]) && /sprop-stereo=1/.test(bolumler[1]) && /maxaveragebitrate=160000/.test(bolumler[1]), bolumler[1]);
+	denetle('yayın sesi m-line: stereo, 510 kbps (varsayılan: sistem kalitesi)', /stereo=1/.test(bolumler[1]) && /sprop-stereo=1/.test(bolumler[1]) && /maxaveragebitrate=510000/.test(bolumler[1]), bolumler[1]);
 	denetle('görüntü m-line değişmedi', !/fmtp/.test(bolumler[2]), bolumler[2]);
 	denetle('gönderici bit hızı tavanı 96 kbps', ilkTr.parametreler && ilkTr.parametreler.encodings[0].maxBitrate === 96000, JSON.stringify(ilkTr.parametreler));
 	// Teklif yoldayken (ICE yenileme) eski oturuma ait yanıt yok sayılır, doğru oturumunki uygulanır.
@@ -2260,6 +2260,142 @@ const ICE = { iceServers: [{ urls: ['stun:1.2.3.4:3478'] }, { urls: ['turn:1.2.3
 		await bekle(60);
 		denetle('Android değilse kulaklık kipi yok', u.oc.micKisit && u.oc.micKisit.echoCancellation === true && !u.oc.micKisit.deviceId, JSON.stringify(u.oc.micKisit));
 		u.window.eval('sesKapat()');
+	}
+
+	// --- 28) paylaşım kalitesi: paylaşılan ses varsayılan olarak Opus'un en yükseğinde (510 kbps,
+	// stereo) gider, ses ayarlarından düşürülebilir. Chrome'da tavan hemen (setParameters); Firefox'ta
+	// Opus hedefi ancak yeniden anlaşmada uygulanır: teklif ettiğimiz bağlantıda yeni teklif,
+	// yanıtladığımızda karşıdan yeni teklif isteği (yenile, teklif; ICE yenilenmez). Ekran kalitesi
+	// (çözünürlük, kare hızı, bit hızı tavanı) seçilir ve paylaşım sürerken de uygulanır; sunucu
+	// üzerinden (TURN) giden bağlantıda ekran en çok 3 Mbit/s.
+	{
+		const t = kur({ depo: { anahtar: 'f'.repeat(128), ad: 'taha' } });
+		const tw = t.window;
+		const td = t.d;
+		const tgel = (m) => t.oc.ws.onmessage({ data: JSON.stringify(m) });
+		const sec = (id, deger) => {
+			td.getElementById(id).value = deger;
+			td.getElementById(id).dispatchEvent(new tw.Event('change', { bubbles: true }));
+		};
+		const yayinBolumu = (pc) => String(pc.remoteDescription && pc.remoteDescription.sdp).split('m=').slice(1)[1] || '';
+		const sp = (pc) => (pc._transceivers[1].parametreler || { encodings: [{}] }).encodings[0];
+		const vp = (pc) => (pc._transceivers[2].parametreler || { encodings: [{}] }).encodings[0];
+		const sdpler = (ad) => t.oc.gonderilen.filter((m) => m.type === 'sdp' && m.to === ad);
+		const istekler = (ad) => t.oc.gonderilen.filter((m) => m.type === 'yenile' && m.to === ad);
+		await bekle(40);
+		tgel({ type: 'hazir', ad: 'taha', kanallar, kimler: [{ ad: 'taha' }, { ad: 'bora' }, { ad: 'zeynep' }], max: 10, maxKullanici: 10, beyazListe: 3, beyazListeAdlari: ['taha', 'bora', 'zeynep'], sunulanDosyalar: [], ice: ICE, surum: 'v1' });
+		await bekle(40);
+		tw.eval('ayar.mikKapali = true');
+		tw.eval("sesAc('sesli-sohbet')");
+		await bekle(40);
+		tgel({ type: 'ses-girdi', kanal: 'sesli-sohbet', kisiler: ['bora', 'zeynep'], ice: ICE, devam: false });
+		await bekle(60);
+		// bora'ya teklifi taha verir; zeynep'in teklifi gelir (taha yanıtlar).
+		tgel({ type: 'sdp', from: 'zeynep', sdp: { type: 'offer', sdp: UC_KANALLI }, oturum: 'zoturum12345' });
+		await bekle(60);
+		const bPc = tw.eval("esler.get('bora').pc");
+		const zPc = tw.eval("esler.get('zeynep').pc");
+		tgel({ type: 'sdp', from: 'bora', sdp: { type: 'answer', sdp: UC_KANALLI }, oturum: sdpler('bora').at(-1).oturum });
+		await bekle(40);
+		denetle('kalite: iki bağlantı (biri teklif eden, biri yanıtlayan), ikisi de anlaştı', bPc.signalingState === 'stable' && zPc.signalingState === 'stable' && tw.eval("esler.get('bora').teklifci === true && esler.get('zeynep').teklifci === false"));
+		denetle('varsayılan: paylaşılan sesin Opus hedefi 510 kbps, stereo (iki yönde de)', /maxaveragebitrate=510000/.test(yayinBolumu(bPc)) && /stereo=1/.test(yayinBolumu(bPc)) && /maxaveragebitrate=510000/.test(yayinBolumu(zPc)), yayinBolumu(bPc));
+		// Ekranını sesiyle paylaşır: yakalama seçilen ekran kalitesiyle (varsayılan standart) istenir.
+		t.oc.ekranSesiVer = true;
+		await tw.eval('yayinBaslat(false)');
+		await bekle(60);
+		const gIz = t.oc.ekranIzleri[0];
+		const istenen = t.oc.ekranSecenek.video;
+		denetle('standart: yakalama 1080p, 30 kare istendi', istenen.width.max === 1920 && istenen.height.max === 1080 && istenen.frameRate.max === 30, JSON.stringify(istenen));
+		denetle('gönderim tavanları: ses 510 kbps; ekran 2,5 Mbit/s, 30 kare', sp(bPc).maxBitrate === 510000 && sp(zPc).maxBitrate === 510000 && vp(bPc).maxBitrate === 2500000 && vp(bPc).maxFramerate === 30, JSON.stringify([sp(bPc), vp(bPc)]));
+		td.getElementById('ben-ayarlar').click();
+		await bekle(30);
+		denetle('ayarlarda paylaşım seçenekleri görünür: ses 510 (sistem kalitesi), ekran standart', td.getElementById('ayar-paylasim').hidden === false && td.getElementById('ayar-yayin-kalite').value === '510' && td.getElementById('ayar-ekran-kalite').value === 'standart');
+		// Paylaşılan ses Standart'a (160) iner.
+		const bOnce = sdpler('bora').length;
+		sec('ayar-yayin-kalite', '160');
+		await bekle(30);
+		denetle('Chrome yolu: paylaşılan sesin tavanı hemen 160 kbps', sp(bPc).maxBitrate === 160000 && sp(zPc).maxBitrate === 160000, JSON.stringify([sp(bPc), sp(zPc)]));
+		denetle('seçim kalıcı', JSON.parse(tw.localStorage.getItem('ses-ayarlari')).yayinKalite === 160);
+		denetle('yeniden anlaşma hemen değil (art arda seçim beklenir)', sdpler('bora').length === bOnce && istekler('zeynep').length === 0);
+		await bekle(700);
+		denetle('teklif ettiğimiz bağlantıda yeni teklif (aynı oturum)', sdpler('bora').length === bOnce + 1 && sdpler('bora').at(-1).oturum === tw.eval("esler.get('bora').oturum") && bPc.signalingState === 'have-local-offer');
+		const istek = istekler('zeynep');
+		denetle('yanıtladığımız bağlantıda karşıdan yeni teklif istendi (yenile, teklif)', istek.length === 1 && istek[0].teklif === true && !istek[0].tam && istek[0].oturum === 'zoturum12345', JSON.stringify(istek));
+		tgel({ type: 'sdp', from: 'bora', sdp: { type: 'answer', sdp: UC_KANALLI }, oturum: sdpler('bora').at(-1).oturum });
+		// Karşının yeni teklifi (tarayıcı her teklifte oturum sürümünü artırır: metin farklı).
+		tgel({ type: 'sdp', from: 'zeynep', sdp: { type: 'offer', sdp: UC_KANALLI.replace('v=0', 'v=0\r\no=- 1 2 IN IP4 127.0.0.1') }, oturum: 'zoturum12345' });
+		await bekle(60);
+		denetle('Firefox yolu: yeni açıklamalarla Opus hedefi 160 kbps (iki bağlantıda)', /maxaveragebitrate=160000/.test(yayinBolumu(bPc)) && /maxaveragebitrate=160000/.test(yayinBolumu(zPc)) && zPc.signalingState === 'stable', yayinBolumu(zPc));
+		// Art arda iki seçim: bir kez yeniden anlaşılır, son seçimle.
+		sec('ayar-yayin-kalite', '256');
+		await bekle(60);
+		sec('ayar-yayin-kalite', '510');
+		await bekle(800);
+		denetle('art arda seçimde bir kez yeniden anlaşılır', istekler('zeynep').length === 2 && sdpler('bora').length === bOnce + 2, `${istekler('zeynep').length} ${sdpler('bora').length - bOnce}`);
+		tgel({ type: 'sdp', from: 'bora', sdp: { type: 'answer', sdp: UC_KANALLI }, oturum: sdpler('bora').at(-1).oturum });
+		await bekle(40);
+		denetle('son seçim geçerli: 510 kbps', /maxaveragebitrate=510000/.test(yayinBolumu(bPc)) && sp(bPc).maxBitrate === 510000);
+		// Karşıdan "kalitemi değiştirdim, yeni teklif ver" (teklif eden bizsek): yalnızca yeni teklif.
+		let secenek = 'yok';
+		const asilTeklif = bPc.createOffer.bind(bPc);
+		bPc.createOffer = (o) => {
+			secenek = o;
+			return asilTeklif(o);
+		};
+		const bSayi = sdpler('bora').length;
+		tgel({ type: 'yenile', from: 'bora', oturum: 'baskaoturum1', teklif: true });
+		await bekle(30);
+		denetle('başka oturumun teklif isteği yok sayılır', sdpler('bora').length === bSayi && secenek === 'yok');
+		tgel({ type: 'yenile', from: 'bora', oturum: tw.eval("esler.get('bora').oturum"), teklif: true });
+		await bekle(30);
+		denetle('gelen "yenile, teklif": yeni teklif, ICE yenilenmez, bağlantı kurulmaz', sdpler('bora').length === bSayi + 1 && secenek === undefined && !bPc.kapandi && tw.eval("esler.get('bora').pc") === bPc);
+		tgel({ type: 'sdp', from: 'bora', sdp: { type: 'answer', sdp: UC_KANALLI }, oturum: sdpler('bora').at(-1).oturum });
+		await bekle(40);
+		// Ekran kalitesi paylaşım sürerken: yakalama kısıtı ve tavan hemen değişir.
+		sec('ayar-ekran-kalite', 'yuksek');
+		await bekle(30);
+		denetle('yüksek: yakalama 1080p, 60 kare', gIz.kisit.frameRate.max === 60 && gIz.kisit.width.max === 1920 && gIz.kisit.height.max === 1080, JSON.stringify(gIz.kisit));
+		denetle('yüksek: ekran tavanı 5 Mbit/s, 60 kare (iki eşe)', vp(bPc).maxBitrate === 5000000 && vp(bPc).maxFramerate === 60 && vp(zPc).maxBitrate === 5000000, JSON.stringify([vp(bPc), vp(zPc)]));
+		sec('ayar-ekran-kalite', 'kaynak');
+		await bekle(30);
+		denetle('en yüksek: çözünürlük sınırı yok, 60 kare, 10 Mbit/s', !gIz.kisit.width && !gIz.kisit.height && gIz.kisit.frameRate.max === 60 && vp(bPc).maxBitrate === 10000000, JSON.stringify(gIz.kisit));
+		tw.eval("esler.get('bora').sonTip = 'TURN'; bitHiziAyarla(esler.get('bora'))");
+		await bekle(30);
+		denetle('sunucu üzerinden (TURN) giden eşe ekran en çok 3 Mbit/s, öbürü etkilenmez', vp(bPc).maxBitrate === 3000000 && vp(zPc).maxBitrate === 10000000, JSON.stringify([vp(bPc), vp(zPc)]));
+		tw.eval("esler.get('bora').sonTip = 'P2P'; bitHiziAyarla(esler.get('bora'))");
+		await bekle(30);
+		tw.eval('ekransizAyarla(true)');
+		await bekle(30);
+		denetle('ekran gizlenince yakalama saniyede bir kareye iner', gIz.kisit.frameRate.max === 1, JSON.stringify(gIz.kisit));
+		tw.eval('ekransizAyarla(false)');
+		await bekle(30);
+		denetle('gösterilince seçilen kaliteye döner', gIz.kisit.frameRate.max === 60 && !gIz.kisit.width && vp(bPc).maxBitrate === 10000000, JSON.stringify(gIz.kisit));
+		sec('ayar-ekran-kalite', 'dusuk');
+		await bekle(30);
+		denetle('düşük: 720p, 15 kare, 1 Mbit/s', gIz.kisit.width.max === 1280 && gIz.kisit.height.max === 720 && gIz.kisit.frameRate.max === 15 && vp(bPc).maxBitrate === 1000000 && vp(bPc).maxFramerate === 15, JSON.stringify([gIz.kisit, vp(bPc)]));
+		denetle('ekran kalitesi kalıcı', JSON.parse(tw.localStorage.getItem('ses-ayarlari')).ekranKalite === 'dusuk');
+		const v = await tw.eval('taniVeri()');
+		denetle('tanı: paylaşım kalitesi', v.yayinKalite === 510 && v.ekranKalite === 'dusuk', JSON.stringify([v.yayinKalite, v.ekranKalite]));
+		td.dispatchEvent(new tw.KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+		tw.eval('yayinDurdur()');
+		tw.eval('sesKapat()');
+		// Kalabalık kanal: paylaşılan ses toplam ~3 Mbit/s'yi geçmesin (kişi başı düşer, en az 64).
+		tw.eval("ayar.yayinKalite = 510; for (let i = 0; i < 9; i++) esler.set('kalabalik' + i, { ad: 'kalabalik' + i, bekleniyor: 0 })");
+		denetle('kalabalıkta (9 eş) paylaşılan ses kişi başı 333 kbps', tw.eval('yayinSesHizi()') === 333, String(tw.eval('yayinSesHizi()')));
+		tw.eval('ayar.yayinKalite = 160');
+		denetle('160 seçiliyken kalabalıkta da 160', tw.eval('yayinSesHizi()') === 160);
+		tw.eval("for (let i = 0; i < 9; i++) esler.delete('kalabalik' + i)");
+	}
+	// Paylaşamayan tarayıcıda (çoğu telefon) paylaşım seçenekleri gizli; bozuk kayıtlı değer varsayılana döner.
+	{
+		const u = kur({ ekranYok: true, depo: { anahtar: 'f'.repeat(128), ad: 'taha', 'ses-ayarlari': JSON.stringify({ yayinKalite: 999, ekranKalite: 'uydurma' }) } });
+		await bekle(40);
+		u.oc.ws.onmessage({ data: JSON.stringify({ type: 'hazir', ad: 'taha', kanallar, kimler: [{ ad: 'taha' }], max: 10, maxKullanici: 10, beyazListe: 1, beyazListeAdlari: ['taha'], sunulanDosyalar: [], ice: ICE, surum: 'v1' }) });
+		await bekle(40);
+		denetle('bozuk kayıtlı kalite varsayılana döndü', u.window.eval('ayar.yayinKalite') === 510 && u.window.eval('ayar.ekranKalite') === 'standart');
+		u.d.getElementById('ben-ayarlar').click();
+		await bekle(30);
+		denetle('paylaşamayan tarayıcıda paylaşım seçenekleri gizli', u.d.getElementById('ayar-paylasim').hidden === true);
 	}
 
 	console.log(process.exitCode ? 'BAŞARISIZ' : `Arayüz denemeleri geçti (${gecen}).`);

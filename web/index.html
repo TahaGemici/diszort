@@ -69,7 +69,7 @@
 			</span>
 			<button id="ben-mikrofon" class="ikon-dugme" type="button" aria-pressed="false" data-ikon="mik"></button>
 			<button id="ben-sagir" class="ikon-dugme" type="button" aria-pressed="false" data-ikon="kulaklik"></button>
-			<button id="ben-ayarlar" class="ikon-dugme" type="button" title="Ses ayarları" aria-label="Ses ayarları" data-ikon="ayar"></button>
+			<button id="ben-ayarlar" class="ikon-dugme" type="button" title="Ses ve paylaşım ayarları" aria-label="Ses ve paylaşım ayarları" data-ikon="ayar"></button>
 		</div>
 	</aside>
 
@@ -199,11 +199,11 @@
 	</form>
 </div>
 
-<!-- Ses ayarları -->
+<!-- Ses ve paylaşım ayarları -->
 <div id="ayarlar" class="pencere" hidden>
 	<div class="pencere-kart ayar-kart" role="dialog" aria-modal="true" aria-labelledby="ayarlar-baslik">
 		<header class="ayar-ust">
-			<h2 id="ayarlar-baslik">Ses ayarları</h2>
+			<h2 id="ayarlar-baslik">Ses ve paylaşım ayarları</h2>
 			<button id="ayarlar-kapat" class="ikon-dugme" type="button" aria-label="Kapat" data-ikon="x"></button>
 		</header>
 		<section class="ayar-bolum">
@@ -227,15 +227,31 @@
 		</section>
 		<section class="ayar-bolum">
 			<h3>Kalite</h3>
-			<label class="alan-adi" for="ayar-kalite">Gönderdiğin ses</label>
+			<label class="alan-adi" for="ayar-kalite">Mikrofonun</label>
 			<select id="ayar-kalite">
 				<option value="48">Standart · 48 kbps</option>
 				<option value="96">Yüksek · 96 kbps</option>
 				<option value="128">En yüksek · 128 kbps (müzik)</option>
 			</select>
+			<div id="ayar-paylasim">
+				<label class="alan-adi" for="ayar-yayin-kalite">Paylaştığın ses</label>
+				<select id="ayar-yayin-kalite">
+					<option value="510">Sistem kalitesi · 510 kbps (en yüksek)</option>
+					<option value="256">Yüksek · 256 kbps</option>
+					<option value="160">Standart · 160 kbps (kayıplara karşı yedekli)</option>
+					<option value="96">Düşük · 96 kbps</option>
+				</select>
+				<label class="alan-adi" for="ayar-ekran-kalite">Paylaştığın ekran</label>
+				<select id="ayar-ekran-kalite">
+					<option value="dusuk">Düşük · 720p, 15 fps · 1 Mbit/s</option>
+					<option value="standart">Standart · 1080p, 30 fps · 2,5 Mbit/s</option>
+					<option value="yuksek">Yüksek · 1080p, 60 fps · 5 Mbit/s</option>
+					<option value="kaynak">En yüksek · ekranın çözünürlüğü, 60 fps · 10 Mbit/s</option>
+				</select>
+			</div>
 			<label class="anahtar"><input id="ayar-sesler" type="checkbox"><span>Giriş / çıkış sesleri</span></label>
 		</section>
-		<p class="ayar-not">Kulaklık kullanıyorsan yankı engellemeyi kapatmak sesi biraz daha doğal yapar. Kalabalık kanallarda gönderilen kalite kendiliğinden düşürülür. Kısayollar: Ctrl+Shift+M mikrofon, Ctrl+Shift+D sağırlaştır.</p>
+		<p class="ayar-not">Kulaklık kullanıyorsan yankı engellemeyi kapatmak sesi biraz daha doğal yapar. Paylaşılan ses tarayıcıda sıkıştırılmadan gönderilemez; 510 kbps'de aslından ayırt edilmez, ama bağlantı çok kayıplıysa 160'ın kayıplara karşı yedeği işe yarar. Kalabalık kanallarda gönderilen kalite kendiliğinden düşürülür. Kısayollar: Ctrl+Shift+M mikrofon, Ctrl+Shift+D sağırlaştır.</p>
 	</div>
 </div>
 

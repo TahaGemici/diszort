@@ -160,6 +160,23 @@ function ekran(hangi) {
 
 // ---------------------------------------------------------------- kalıcı ses ayarları
 
+// Paylaşılan sesin bit hızı seçenekleri (kbps, stereo Opus). Tarayıcılar sesi sıkıştırmadan
+// gönderemez (Firefox'ta Opus'tan başka müzik kodeği yok); 510 Opus'un en yükseği (tek çerçeve en çok
+// 1275 bayt: 20 ms'de 510 kbit/s), aslından ayırt edilmez. Kayıplara karşı yedek (RED) önceki
+// çerçeveyi aynı pakette taşır ve libwebrtc'de paket 1200 baytı geçemez: ~220 kbps'nin üstünde
+// (256, 510) yedek sığmaz, tarayıcı onu kendiliğinden atlar; 160'ta sığar (test/kayip.js: %10
+// kayıpta uydurulan ses 510'da %7-8, 160'ta %0,7).
+const YAYIN_SES_KALITELERI = [510, 256, 160, 96];
+// Paylaşılan ekran: çözünürlük üst sınırı (0: ekranın kendi çözünürlüğü), kare hızı ve bit hızı
+// tavanı (kbps). Firefox kendi tablosundan yüksek göndermez: 1080p'de en çok 5, daha büyükte en çok
+// 10 Mbit/s (VideoStreamFactory.cpp).
+const EKRAN_KALITELERI = {
+	dusuk: { genislik: 1280, yukseklik: 720, kare: 15, kbps: 1000 },
+	standart: { genislik: 1920, yukseklik: 1080, kare: 30, kbps: 2500 },
+	yuksek: { genislik: 1920, yukseklik: 1080, kare: 60, kbps: 5000 },
+	kaynak: { genislik: 0, yukseklik: 0, kare: 60, kbps: 10000 },
+};
+
 const AYAR_VARSAYILAN = {
 	mikId: '', // seçili mikrofon ('' = sistemin varsayılanı)
 	cikisId: '', // seçili hoparlör ('' = varsayılan)
@@ -167,7 +184,9 @@ const AYAR_VARSAYILAN = {
 	yanki: true, // yankı engelleme
 	kazanc: false, // otomatik kazanç (AGC). Kapalı: AGC konuşma boyunca seviyeyi oynatıyordu.
 	mikSeviye: 100, // gönderilen mikrofon seviyesi (%); 100 dışında WebAudio kazancı devreye girer
-	kalite: 96, // gönderilen Opus bit hızı tavanı (kbps)
+	kalite: 96, // mikrofonun Opus bit hızı tavanı (kbps)
+	yayinKalite: 510, // paylaşılan sesin Opus bit hızı tavanı (kbps, stereo); 510: Opus'un en yükseği
+	ekranKalite: 'standart', // paylaşılan ekran: EKRAN_KALITELERI'nden biri
 	sesler: true, // giriş/çıkış sesleri
 	mikKapali: false, // kendini susturdun (kanala girerken de geçerli; susturulmuşken mikrofon kapalıdır)
 	sagir: false, // gelen sesleri kapattın
@@ -184,6 +203,8 @@ try {
 } catch {}
 ayar.mikSeviye = Math.min(200, Math.max(0, Math.round(ayar.mikSeviye / 5) * 5));
 if (![48, 96, 128].includes(ayar.kalite)) ayar.kalite = AYAR_VARSAYILAN.kalite;
+if (!YAYIN_SES_KALITELERI.includes(ayar.yayinKalite)) ayar.yayinKalite = AYAR_VARSAYILAN.yayinKalite;
+if (!Object.prototype.hasOwnProperty.call(EKRAN_KALITELERI, ayar.ekranKalite)) ayar.ekranKalite = AYAR_VARSAYILAN.ekranKalite;
 const ayarKaydet = () => depoYaz('ses-ayarlari', JSON.stringify(ayar));
 
 // ---------------------------------------------------------------- durum
@@ -523,7 +544,7 @@ function mesaj(m) {
 			iceGeldi(m.from, m.ice, m.oturum);
 			break;
 		case 'yenile':
-			yenileGeldi(m.from, m.oturum, !!m.tam);
+			yenileGeldi(m.from, m.oturum, !!m.tam, !!m.teklif);
 			break;
 		case 'izle':
 			izleGeldi(m.from, !!m.izle);
@@ -3113,6 +3134,7 @@ function pcKapat(es) {
 	es.olcum = es.gidenOlcum = es.yayinOlcum = null;
 	es.alici = es.yayinAlici = null;
 	es.yayinGidenOlcum = es.yayinGiden = null;
+	es.goruntuGidenOlcum = es.goruntuGiden = null;
 	es.pencere = [];
 	es.yayinPencere = [];
 	es.cozulemeyen = {};
@@ -3352,8 +3374,17 @@ function iceGeldi(ad, aday, oturum) {
 // Yanıtlayan taraf "bağlantımız bozuk / bende yok" diyor (yalnızca teklif eden alır).
 // tam: karşı taraf bağlantının baştan kurulmasını istiyor (alıcı tamponunda birikme; bkz.
 // birikmeGozcusu): ICE yenilemek yetmez, yeni bağlantı kurulur.
-function yenileGeldi(ad, oturum, tam = false) {
+function yenileGeldi(ad, oturum, tam = false, teklif = false) {
 	if (!sesKanal || !ad || ad === benimAdim) return;
+	if (teklif) {
+		// Karşı taraf gönderdiği sesin kalitesini değiştirdi: Firefox'ta Opus hedefi yalnızca yeniden
+		// anlaşmada uygulanır (kodlayıcısı bizim teklifimizden ayarlanır). Bağlantı sağlamsa yalnızca
+		// yeni teklif; ICE yenilenmez, bağlantı kurulmaz. Teklifimiz yoldaysa o da yeni değeri taşır.
+		const es = esler.get(ad);
+		const pc = es && es.pc;
+		if (es && es.teklifci && pc && !esKapandi(es) && String(oturum || '') === es.oturum && pc.signalingState === 'stable' && pc.remoteDescription) teklifVer(es);
+		return;
+	}
 	const es = esler.get(ad) || esOlustur(ad);
 	es.bekleniyor = 0;
 	if (!es.teklifci) return;
@@ -3529,11 +3560,20 @@ function gonderimHizi() {
 }
 
 // Yayın bit hızları (kbps), alan kişi sayısına göre (mesh: herkese ayrı akış). Paylaşılan ses
-// (stereo) herkese gider: ~160 kbps (RED'le hatta ~320; altı kişiden kalabalıkta kişi başı düşer);
-// ekran yalnızca izleyene, en fazla 2,5 Mbit/s, toplam ~6 Mbit/s.
+// (stereo) herkese gider: ayardaki tavan (varsayılan 510); toplam ~3 Mbit/s'yi geçmesin diye
+// kalabalıkta kişi başına düşer (510 altı kişiye kadar tam; 256 ve altı hiç düşmez). Ekran yalnızca
+// izleyene: seçilen kalitenin tavanı üç izleyiciye kadar tam, daha kalabalıkta toplam üç katını
+// geçmez. Bağlantı sunucu üzerinden (TURN) gidiyorsa ekran en çok 3 Mbit/s: sunucu aktarım başına
+// ~4 Mbit/s'nin üstünü atar (sunucu.js, max-bps).
 const izleyiciSayisi = () => Math.max(1, [...esler.values()].filter((e) => !e.bekleniyor && e.izliyor).length);
-const yayinSesHizi = () => Math.round(Math.min(160, Math.max(64, 960 / Math.max(1, esSayisi()))));
-const goruntuHizi = () => Math.round(Math.min(2500, Math.max(400, 6000 / izleyiciSayisi())));
+const yayinSesHizi = () => Math.round(Math.min(ayar.yayinKalite, Math.max(64, 3000 / Math.max(1, esSayisi()))));
+const ekranKalitesi = () => EKRAN_KALITELERI[ayar.ekranKalite] || EKRAN_KALITELERI.standart;
+const TURN_GORUNTU_TAVANI = 3000;
+function goruntuHizi(es) {
+	const k = ekranKalitesi();
+	const hiz = Math.min(k.kbps, Math.max(400, (3 * k.kbps) / izleyiciSayisi()));
+	return Math.round(es && es.sonTip === 'TURN' ? Math.min(hiz, TURN_GORUNTU_TAVANI) : hiz);
+}
 
 // --- kayıplara karşı yedek (RED, RFC 2198)
 //
@@ -3666,7 +3706,7 @@ async function bitHiziAyarla(es) {
 	const ayarlar = [
 		[es.tr, gonderimHizi() * 1000, 0],
 		[es.trSes, yayinSesHizi() * 1000, 0],
-		[es.trGoruntu, goruntuHizi() * 1000, 30],
+		[es.trGoruntu, goruntuHizi(es) * 1000, ekranKalitesi().kare],
 	];
 	for (const [tr, hiz, kare] of ayarlar) {
 		const s = tr && tr.sender;
@@ -3683,6 +3723,23 @@ async function bitHiziAyarla(es) {
 }
 function bitHizlariniAyarla() {
 	for (const es of esler.values()) bitHiziAyarla(es);
+}
+// Gönderilen sesin kalitesi değişti. Chrome'da tavan hemen uygulanır (setParameters); Firefox ve
+// Safari'de Opus hedefi yalnızca yeniden anlaşmada, karşının açıklamasından ayarlanır: teklif
+// ettiğimiz bağlantılarda yeni teklif veririz, yanıtladıklarımızda karşıdan yeni teklif isteriz
+// (yenile, teklif: ICE yenilenmez). Seçim art arda değişirse sonuncusundan ~0,6 sn sonra bir kez.
+let opusYenileme = null;
+function opusHedefleriniYenile() {
+	bitHizlariniAyarla();
+	clearTimeout(opusYenileme);
+	opusYenileme = setTimeout(() => {
+		for (const es of esler.values()) {
+			const pc = es.pc;
+			if (!pc || esKapandi(es) || pc.signalingState !== 'stable' || !pc.remoteDescription) continue;
+			if (es.teklifci) teklifVer(es);
+			else if (bagliyim) gonder({ type: 'yenile', to: es.ad, oturum: es.oturum || '', teklif: true });
+		}
+	}, 600);
 }
 
 // ---------------------------------------------------------------- gelen ses
@@ -4297,8 +4354,18 @@ function sesPaneliCiz(ozet) {
 // Telefon tarayıcılarının çoğu hiç yakalayamaz: paylaş düğmesi yalnızca tarayıcı ekran paylaşımı
 // sunuyorsa görünür. Paylaşılanı her cihaz izler ve dinler.
 
-const GORUNTU_KISITI = { frameRate: { ideal: 30, max: 30 }, width: { max: 1920 }, height: { max: 1080 } };
-const EKRANSIZ_KISITI = { ...GORUNTU_KISITI, frameRate: { max: 1 } };
+// Yakalama kısıtı: seçilen ekran kalitesinin çözünürlük üst sınırı (yoksa ekranın kendi
+// çözünürlüğü) ve kare hızı. Ekran gizliyken yakalama sürer ama saniyede bir kareye iner.
+function goruntuKisiti() {
+	const k = ekranKalitesi();
+	const kisit = { frameRate: { ideal: k.kare, max: k.kare } };
+	if (k.genislik) {
+		kisit.width = { max: k.genislik };
+		kisit.height = { max: k.yukseklik };
+	}
+	return kisit;
+}
+const ekransizKisiti = () => ({ ...goruntuKisiti(), frameRate: { max: 1 } });
 
 // goruntu/ses: paylaşılan (gönderilen) izler (biri yoksa null). aygit: ses bir ses aygıtından
 // alınıyorsa onun kimliği ('' = ekran yakalamasının kendi sesi), aygitAdi: o aygıtın adı. ekransiz:
@@ -4359,7 +4426,7 @@ function kisitUygula(iz, kisit) {
 // sekmelerle açılsın. Vazgeçilir ya da reddedilirse null.
 async function ekranIste(sesli, sekme) {
 	const secenek = {
-		video: sekme ? { ...GORUNTU_KISITI, displaySurface: 'browser' } : { ...GORUNTU_KISITI },
+		video: sekme ? { ...goruntuKisiti(), displaySurface: 'browser' } : goruntuKisiti(),
 		audio: false,
 		selfBrowserSurface: 'exclude', // Diszort sekmesinin kendisi seçenek olmasın
 		surfaceSwitching: 'include',
@@ -4418,7 +4485,7 @@ async function yayinBaslat(ekransiz) {
 	if (yayinVar()) yayinDurdur(false);
 	yayin.ekransiz = !!ekransiz;
 	yayinGoruntusuTak(goruntu);
-	if (ekransiz) kisitUygula(goruntu, EKRANSIZ_KISITI);
+	if (ekransiz) kisitUygula(goruntu, ekransizKisiti());
 	if (ses) yayinSesiTak(ses);
 	yayinDegisti();
 	if (ekransiz) durum('Ekransız paylaşıyorsun: yalnızca ses gidiyor. Hoparlörden dinliyorsan mikrofonun da bu sesi alır; kulaklık kullan.');
@@ -4497,7 +4564,7 @@ function ekransizAyarla(ekransiz) {
 	if (!ekransiz && yayin.ses && !yayin.goruntu) return ekranEkle();
 	if (!yayin.goruntu || yayin.ekransiz === ekransiz || (ekransiz && !yayin.ses)) return;
 	yayin.ekransiz = ekransiz;
-	kisitUygula(yayin.goruntu, ekransiz ? EKRANSIZ_KISITI : GORUNTU_KISITI);
+	kisitUygula(yayin.goruntu, ekransiz ? ekransizKisiti() : goruntuKisiti());
 	yayinDegisti();
 	durum(ekransiz ? 'Ekranın gizlendi; yalnızca ses gidiyor.' : 'Ekranın yeniden görünüyor.');
 }
@@ -5665,13 +5732,17 @@ async function istatistikTuru() {
 		const yayinSesVar = !!((sesDurumlari.get(es.ad) || {}).yayin || {}).ses && !!es.trSes;
 		// Paylaştığım ses bu eşe ne hızla gidiyor (teşhis: gönderim düzenli mi).
 		const yayinGidiyor = !!yayin.ses && !!es.trSes && !!es.trSes.sender && !!es.trSes.sender.track;
+		// Paylaştığım ekran bu eşe: çözünürlük, kare hızı, bit hızı ve neyin sınırladığı (teşhis).
+		const goruntuGidiyor = !!es.trGoruntu && !!es.trGoruntu.sender && !!es.trGoruntu.sender.track;
 		let yayinGidenRapor = null;
+		let goruntuGidenRapor = null;
 		try {
-			[gelenRapor, gidenRapor, yayinRapor, yayinGidenRapor] = await Promise.all([
+			[gelenRapor, gidenRapor, yayinRapor, yayinGidenRapor, goruntuGidenRapor] = await Promise.all([
 				kanalRaporu(es.tr && es.tr.receiver, pc),
 				kanalRaporu(es.tr && es.tr.sender, pc),
 				yayinSesVar ? kanalRaporu(es.trSes.receiver, pc) : null,
 				yayinGidiyor ? kanalRaporu(es.trSes.sender, pc) : null,
+				goruntuGidiyor ? kanalRaporu(es.trGoruntu.sender, pc) : null,
 			]);
 		} catch {
 			continue;
@@ -5685,6 +5756,23 @@ async function istatistikTuru() {
 			if (a && simdi - a.zaman > 400) es.yayinGiden = { kbps: Math.round(((o.bayt - a.bayt) * 8) / (simdi - a.zaman)), paketSn: Math.round(((o.paket - a.paket) * 1000) / (simdi - a.zaman)) };
 			es.yayinGidenOlcum = o;
 		} else es.yayinGidenOlcum = es.yayinGiden = null;
+		let goruntuGiden = null;
+		if (goruntuGidenRapor) goruntuGidenRapor.forEach((r) => {
+			if (r.type === 'outbound-rtp' && (r.kind || r.mediaType) === 'video' && !goruntuGiden) goruntuGiden = r;
+		});
+		if (goruntuGiden) {
+			const o = { zaman: simdi, bayt: goruntuGiden.bytesSent || 0 };
+			const a = es.goruntuGidenOlcum;
+			es.goruntuGiden = {
+				kbps: a && simdi - a.zaman > 400 ? Math.round(((o.bayt - a.bayt) * 8) / (simdi - a.zaman)) : null,
+				en: goruntuGiden.frameWidth ?? null,
+				boy: goruntuGiden.frameHeight ?? null,
+				kare: goruntuGiden.framesPerSecond != null ? Math.round(goruntuGiden.framesPerSecond) : null,
+				sinir: goruntuGiden.qualityLimitationReason || null,
+				tavan: goruntuHizi(es),
+			};
+			es.goruntuGidenOlcum = o;
+		} else es.goruntuGidenOlcum = es.goruntuGiden = null;
 		const gelen = sesKaydi(gelenRapor, 'inbound-rtp', es.tr && es.tr.receiver && es.tr.receiver.track);
 		oynatmaOlc(pc, simdi);
 		const giden = sesKaydi(gidenRapor, 'outbound-rtp', es.tr && es.tr.sender && es.tr.sender.track);
@@ -5718,7 +5806,9 @@ async function istatistikTuru() {
 			const yerel = rapor.get(cift.localCandidateId);
 			const uzak = rapor.get(cift.remoteCandidateId);
 			const aktarim = (yerel && yerel.candidateType === 'relay') || (uzak && uzak.candidateType === 'relay');
+			const oncekiTip = es.sonTip;
 			es.sonTip = aktarim ? 'TURN' : 'P2P';
+			if (oncekiTip !== es.sonTip) bitHiziAyarla(es); // sunucu üzerinden giden ekranın tavanı
 			if (aktarim) turnVar = true;
 			parcalar.push(es.sonTip);
 			if (cift.currentRoundTripTime != null) {
@@ -5856,6 +5946,9 @@ async function taniVeri() {
 			yayinGelen: es.yayinSonKbps != null ? { kbps: es.yayinSonKbps, kayip: es.yayinSonKayip ?? null, gizleme: es.yayinSonGizleme ?? null, ...(es.yayinAlici || {}) } : null,
 			// Paylaştığım ses bu eşe: bit hızı, saniyedeki paket (düzenli gönderimde 50).
 			yayinGiden: es.yayinGiden || null,
+			// Paylaştığım ekran bu eşe: bit hızı (kbps), çözünürlük, kare/sn, sınırlayan (cpu, bandwidth),
+			// tavan (kbps).
+			goruntuGiden: es.goruntuGiden || null,
 			yayinKanali: !!(es.trSes && es.trGoruntu),
 			izliyor: es.izliyor,
 			izliyorum: es.izliyorum,
@@ -5887,6 +5980,9 @@ async function taniVeri() {
 		micAyarlar,
 		kazanc: ayar.mikSeviye,
 		kalite: gonderimHizi(),
+		// Paylaşım kalitesi: paylaşılan sesin şu anki tavanı (kbps) ve seçilen ekran kalitesi.
+		yayinKalite: yayinSesHizi(),
+		ekranKalite: ayar.ekranKalite,
 		sesBaglami: baglam ? baglam.state : null,
 		iceSunucu: (ice.iceServers || []).map((s) => [].concat(s.urls || []).join('+')).join(',').slice(0, 200),
 		yayin: yayinBilgisi(),
@@ -5962,6 +6058,10 @@ function ayarlarAc() {
 	$('ayar-mik-seviye').value = String(ayar.mikSeviye);
 	$('ayar-mik-seviye-deger').textContent = '%' + ayar.mikSeviye;
 	$('ayar-kalite').value = String(ayar.kalite);
+	$('ayar-yayin-kalite').value = String(ayar.yayinKalite);
+	$('ayar-ekran-kalite').value = ayar.ekranKalite;
+	// Paylaşım seçenekleri yalnızca paylaşabilen tarayıcıda (çoğu telefon paylaşamaz).
+	$('ayar-paylasim').hidden = !yayinVar() && !ekranPaylasilabilir();
 	$('ayar-sesler').checked = ayar.sesler;
 	$('ayar-mik-dene').hidden = !!sesKanal;
 	$('ayar-olcer-dolgu').style.width = '0%';
@@ -6065,11 +6165,24 @@ $('ayar-cikis').addEventListener('change', () => {
 	}
 });
 $('ayar-kalite').addEventListener('change', () => {
-	ayar.kalite = Number($('ayar-kalite').value) || 96;
+	ayar.kalite = Number($('ayar-kalite').value) || AYAR_VARSAYILAN.kalite;
 	ayarKaydet();
+	opusHedefleriniYenile();
+});
+$('ayar-yayin-kalite').addEventListener('change', () => {
+	const v = Number($('ayar-yayin-kalite').value);
+	ayar.yayinKalite = YAYIN_SES_KALITELERI.includes(v) ? v : AYAR_VARSAYILAN.yayinKalite;
+	ayarKaydet();
+	opusHedefleriniYenile();
+});
+// Ekran kalitesi paylaşım sürerken de hemen uygulanır: yakalamanın kısıtı (çözünürlük, kare hızı) ve
+// her eşe gönderim tavanı (görüntüde setParameters her tarayıcıda geçerli, yeniden anlaşma gerekmez).
+$('ayar-ekran-kalite').addEventListener('change', () => {
+	const v = $('ayar-ekran-kalite').value;
+	ayar.ekranKalite = Object.prototype.hasOwnProperty.call(EKRAN_KALITELERI, v) ? v : AYAR_VARSAYILAN.ekranKalite;
+	ayarKaydet();
+	if (yayin.goruntu) kisitUygula(yayin.goruntu, yayin.ekransiz ? ekransizKisiti() : goruntuKisiti());
 	bitHizlariniAyarla();
-	// Firefox/Safari için Opus hedefi yeniden anlaşmada uygulanır: teklif verdiğimiz bağlantıları yenile.
-	for (const es of esler.values()) if (es.teklifci && es.pc && es.pc.signalingState === 'stable') teklifVer(es);
 });
 $('ayar-sesler').addEventListener('change', () => {
 	ayar.sesler = $('ayar-sesler').checked;

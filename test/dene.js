@@ -680,6 +680,15 @@ async function turnAl(port, kullanici, sifre) {
 		a.yolla({ type: 'yenile', to: 'bora-' + kimlik, oturum: 'o2abc', tam: 'evet' });
 		const yd = await b.bekle((m) => m.type === 'yenile' && m.oturum === 'o2abc');
 		assert.equal(yd.tam, undefined, 'tam yalnızca true olarak iletilir');
+		assert.equal(y.teklif, undefined, 'teklif yalnızca istenince iletilir');
+		// teklif: "ses kalitemi değiştirdim, yalnızca yeni teklif ver"; yalnızca true iletilir.
+		a.yolla({ type: 'yenile', to: 'bora-' + kimlik, oturum: 'o3abc', teklif: true });
+		const yk = await b.bekle((m) => m.type === 'yenile' && m.oturum === 'o3abc');
+		assert.equal(yk.teklif, true, 'teklif iletilmeli');
+		assert.equal(yk.tam, undefined, 'teklif isteği tam taşımaz');
+		a.yolla({ type: 'yenile', to: 'bora-' + kimlik, oturum: 'o4abc', teklif: 1 });
+		const yk2 = await b.bekle((m) => m.type === 'yenile' && m.oturum === 'o4abc');
+		assert.equal(yk2.teklif, undefined, 'teklif yalnızca true olarak iletilir');
 		// Kanal dışındaki birine iletilmez.
 		a.yolla({ type: 'sdp', to: 'taha', sdp: { type: 'offer', sdp: 'v=0' } });
 		await new Promise((r) => setTimeout(r, 150));

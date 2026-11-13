@@ -231,9 +231,12 @@ async function olc(sayfa, { red, fmtp, stereo }) {
 	await new Promise((r) => sunucu.listen(0, '127.0.0.1', r));
 	const yuzde = (x) => (x * 100).toFixed(1) + '%';
 	try {
-		for (const [tur, ses, fmtp, stereo] of [
+		for (const [tur, ses, fmtp, stereo, yedekSigar = true] of [
 			['konuşma (mikrofon: mono, 96 kbps)', konusma(60), 'stereo=0;usedtx=0;useinbandfec=1;maxaveragebitrate=96000', false],
-			['müzik (paylaşım: stereo, 160 kbps)', muzik(60), 'stereo=1;sprop-stereo=1;usedtx=0;useinbandfec=1;maxaveragebitrate=160000', true],
+			['müzik (paylaşım "Standart": stereo, 160 kbps)', muzik(60), 'stereo=1;sprop-stereo=1;usedtx=0;useinbandfec=1;maxaveragebitrate=160000', true],
+			// Paylaşımın varsayılanı (sistem kalitesi): 20 ms'lik çerçeve ~1275 bayt; libwebrtc RED paketi
+			// 1200 baytı geçemez ve 1024 bayttan büyük çerçeveyi yedekleyemez: yedek kendiliğinden atlanır.
+			['müzik (paylaşım "Sistem kalitesi": stereo, 510 kbps)', muzik(60), 'stereo=1;sprop-stereo=1;usedtx=0;useinbandfec=1;maxaveragebitrate=510000', true, false],
 		]) {
 			const dosya = path.join(klasor, (stereo ? 'muzik' : 'konusma') + '.wav');
 			wavYaz(dosya, ses);
@@ -251,6 +254,19 @@ async function olc(sayfa, { red, fmtp, stereo }) {
 			try {
 				const sayfa = await (await tarayici.newContext({ permissions: ['microphone'] })).newPage();
 				await sayfa.goto(`http://127.0.0.1:${sunucu.address().port}/`);
+				if (!yedekSigar) {
+					await dene(`%${KAYIP * 100} rastgele kayıpta ${tur}: RED yedeği pakete sığmaz, düz Opus gibi`, async () => {
+						const duz = await olc(sayfa, { red: false, fmtp, stereo });
+						const red = await olc(sayfa, { red: true, fmtp, stereo });
+						for (const x of [duz, red]) assert.ok(x.agKaybi > 0.07 && x.agKaybi < 0.13, 'aracı beklenen kadar düşürmedi: ' + yuzde(x.agKaybi));
+						// Opus değişken bit hızlıdır: bu yapay müzikte hedefin ~2/3'ü (gerçek müzikte ~510 ölçüldü).
+						assert.ok(duz.kbps > 250 && red.kbps > 250, 'bit hızı 160 kbps ayarından belirgin yüksek olmalı: ' + duz.kbps + ' / ' + red.kbps);
+						assert.ok(red.kbps < duz.kbps * 1.2, 'yedek gidiyor gibi (beklenmiyordu): ' + red.kbps + ' / ' + duz.kbps + ' kbps');
+						assert.ok(red.uydurulan > duz.uydurulan / 2, 'RED burada kurtarmamalıydı: ' + yuzde(red.uydurulan) + ' / ' + yuzde(duz.uydurulan));
+						return `ağ kaybı ${yuzde(duz.agKaybi)} / ${yuzde(red.agKaybi)}; uydurulan: düz Opus ${yuzde(duz.uydurulan)} (${duz.kbps} kbps), RED anlaşılınca ${yuzde(red.uydurulan)} (${red.kbps} kbps, ${red.kodek})`;
+					});
+					continue;
+				}
 				await dene(`%${KAYIP * 100} rastgele kayıpta ${tur}: RED uydurulan sesi kat kat azaltır`, async () => {
 					const duz = await olc(sayfa, { red: false, fmtp, stereo });
 					const red = await olc(sayfa, { red: true, fmtp, stereo });
