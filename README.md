@@ -61,16 +61,19 @@ da sunucuya yüklenmez, paylaşandan doğrudan alınır. İçeri yalnızca içer
     aslından ayırt edilmez. Yedek yalnızca iki taraf da Chrome tabanlıysa (Chrome, Edge, Samsung
     Internet…) çalışır: Firefox RED'i hiç bilmez (en yenisi 160'ta da yok), o yüzden Firefox'la her
     bağlantı (konuşma da) yedeksizdir. Linux'ta bilgisayarın sesini ancak Firefox paylaşabilir (Chrome
-    Linux'ta "Monitor of …" aygıtlarını bilerek gizliyor); Chrome'da sekmenin sesi yedekli gider. Ekran:
-    Düşük (720p, 15 fps, 1 Mbit/s), Standart (1080p, 30 fps, 2,5 Mbit/s; varsayılan), Yüksek (1080p,
-    60 fps, 5 Mbit/s), Akıcı (1080p, 120 fps, 8 Mbit/s), En yüksek (ekranın kendi çözünürlüğü, 60 fps,
-    10 Mbit/s); paylaşım sürerken değiştirilebilir. 120 fps tarayıcıların ekran yakalama sınırı;
-    Firefox'un kodlayıcısı ise 60'ı geçmez (media.navigator.video.max_fr), ~3,1 megapikselden büyük
-    kareyi küçültür (max_fs: 2048×1536 kadar) ve 1080p'de en çok ~5 Mbit/s gönderir (ölçüm: 10 Mbit/s
-    tavanda 5,2; 1920×1200 üstünde 10). Görüntüde ayrıca yedek gerekmez: tarayıcılar kayıp paketi yeniden
-    ister (NACK/RTX) ve kayıp görünce düzeltme paketi (ULPFEC) ekler; bit hızını da ağa göre kendileri
-    ayarlar (seçilen değer tavandır). Ses kalitesi ve RED Firefox'ta yalnızca yeniden anlaşmayla değişir:
-    sayfa bunu kendisi yapar (yanıtladığı bağlantıda karşıdan yeni teklif ister), konuşma kesilmez.
+    Linux'ta "Monitor of …" aygıtlarını bilerek gizliyor); Chrome'da sekmenin sesi yedekli gider.
+    Ekranın ayarı yok: ekranın kendi çözünürlüğünde, tarayıcıların ekran yakalama sınırı olan 120
+    kare/sn'ye kadar yakalanır, bit hızına tavan konmaz; tarayıcı bit hızını, gerekirse çözünürlüğü ve
+    kare hızını ağa ve işlemciye göre kendisi ayarlar. Tavan vermemek yetmiyor (Chrome kendi
+    varsayılanında, HD'de 2,5 Mbit/s'de kalıyor; ölçüm: tavansız 1,6, 100 Mbit/s tavanla 9,5 Mbit/s):
+    pratikte sınırsız bir tavan (100 Mbit/s) verilir. Sunucu üzerinden (TURN) giden bağlantıda en çok 3
+    Mbit/s (sunucu aktarım başına ~4 Mbit/s'nin üstünü atar). Firefox kendi sınırlarının üstüne çıkmaz:
+    kodlayıcısı 60 kare/sn'yi geçmez (media.navigator.video.max_fr, Firefox'un about:config ayarı),
+    ~3,1 megapikselden büyük kareyi küçültür (max_fs: 2048×1536 kadar) ve 1080p'de en çok ~5 Mbit/s
+    gönderir (ölçüm: 10 Mbit/s tavanda 5,2; 1920×1200 üstünde 10). Görüntüde ayrıca yedek gerekmez:
+    tarayıcılar kayıp paketi yeniden ister (NACK/RTX) ve kayıp görünce düzeltme paketi (ULPFEC) ekler.
+    Ses kalitesi ve RED Firefox'ta yalnızca yeniden anlaşmayla değişir: sayfa bunu kendisi yapar
+    (yanıtladığı bağlantıda karşıdan yeni teklif ister), konuşma kesilmez.
   - *Ekranını paylaş*: ekran, pencere ya da sekme; istenirse sesiyle. İstemeyen görüntüyü kapatır
     (ona hiç gönderilmez, ses yine gelir).
   - *Ekransız paylaş*: bilgisayarın ya da Spotify/YouTube çalan sekmenin sesini paylaşmak da bir ekran
@@ -165,7 +168,7 @@ konuşmasının ve paylaşımının gelen bit hızı, kaybı, uydurulan sesi, al
 süre (`hizlandirmaMs`/`yavaslatmaMs`, müzikte duyulur), uydurma olayları, titreşim, çalıyor mu;
 paylaştığım sesin o kişiye gidişi (`yayinGiden`: kbps, paket/sn — düzenliyse 50), ekranımın gidişi
 (`goruntuGiden`: kbps, çözünürlük, kare/sn, sınırlayan — `cpu`/`bandwidth` —, tavan); seçili paylaşım
-kalitesi (`yayinKalite` kbps, `ekranKalite`); sayfa önde mi,
+kalitesi (`yayinKalite` kbps) ve RED isteği (`redAyar`); sayfa önde mi,
 ekran açık mı; mikrofonun ve paylaşılan sesin aygıtı, yakalamadaki kopukluklar (`kopukluk`).
 Olaylar: `arka-plan` / `one-geldi` (dönüşten ~6 sn sonra durumun tamamı, `arkaPlanSn`),
 `birikme` / `yeniden-kur-istendi`, `calma-takildi`, `durum`, `yeniden-kur`, `teklif-hata`. Ses
@@ -209,9 +212,9 @@ açıklanmıştır.
 ## Sınırlar
 
 - Ses ve yayın mesh ile taşınır: herkes kanaldaki herkese ayrı akış gönderir, bu yüzden kanal başına
-  ~10 kişi. Ekran paylaşan, izleyen her kişiye ayrı görüntü gönderir (seçilen kalitenin tavanı üç
-  izleyiciye kadar tam, daha kalabalıkta toplam üç katı; sunucu üzerinden (TURN) giden bağlantıda en
-  çok 3 Mbit/s); görüntüyü kapatana ve ekransız paylaşımda kimseye gönderilmez. Paylaşılan ses kişi
+  ~10 kişi. Ekran paylaşan, izleyen her kişiye ayrı görüntü gönderir (tavan yok, her bağlantının hızını
+  tarayıcı ağa göre ayarlar; sunucu üzerinden (TURN) giden bağlantıda en çok 3 Mbit/s); görüntüyü
+  kapatana ve ekransız paylaşımda kimseye gönderilmez. Paylaşılan ses kişi
   başı varsayılan 192 kbps (yedekle hatta ~390), 510 seçilirse yedeksiz 510 (toplam ~3 Mbit/s'yi
   geçmesin diye 510 altı kişiden kalabalıkta düşer): telefonla mobil veriden dinleyen için saatte
   ~175 MB ya da ~230 MB. Konuşma RED'le hatta ~150-190 kbps. Daha

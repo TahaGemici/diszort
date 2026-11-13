@@ -170,18 +170,6 @@ const YAYIN_SES_SECENEKLERI = [510, 256, 192, 128, 96];
 // sığmıyor (%3,6 → %1,5), 510'da hiç. Kayıplar art arda gelince (ortalama 3 paket) kazancı az:
 // konuşmada %27-54, müzikte ~%12 (test/kayip.js). Firefox RED'i hiç bilmiyor (ne gönderir ne alır).
 const RED_SIGAN_HIZ = 192;
-// Paylaşılan ekran: çözünürlük üst sınırı (0: ekranın kendi çözünürlüğü), kare hızı ve bit hızı
-// tavanı (kbps). Firefox kendi tablosundan yüksek göndermez: 1080p'de en çok 5, daha büyükte en çok
-// 10 Mbit/s (VideoStreamFactory.cpp).
-const EKRAN_KALITELERI = {
-	dusuk: { genislik: 1280, yukseklik: 720, kare: 15, kbps: 1000 },
-	standart: { genislik: 1920, yukseklik: 1080, kare: 30, kbps: 2500 },
-	yuksek: { genislik: 1920, yukseklik: 1080, kare: 60, kbps: 5000 },
-	// 120: tarayıcıların ekran yakalama sınırı (Chromium kMaxScreenCastFrameRate, Firefox cap = 120).
-	// Firefox'un VP8 kodlayıcısı 60'ı geçmez (media.navigator.video.max_fr = 60): orada 60 kalır.
-	akici: { genislik: 1920, yukseklik: 1080, kare: 120, kbps: 8000 },
-	kaynak: { genislik: 0, yukseklik: 0, kare: 60, kbps: 10000 },
-};
 
 const AYAR_VARSAYILAN = {
 	mikId: '', // seçili mikrofon ('' = sistemin varsayılanı)
@@ -194,7 +182,6 @@ const AYAR_VARSAYILAN = {
 	yayinSes: 192, // paylaşılan sesin bit hızı (kbps): YAYIN_SES_SECENEKLERI'nden biri
 	mikRed: true, // mikrofonda kayıplara karşı yedek (RED; tarayıcı ve karşısı biliyorsa)
 	yayinRed: true, // paylaşılan seste kayıplara karşı yedek (yalnızca RED_SIGAN_HIZ ve altında)
-	ekranKalite: 'standart', // paylaşılan ekran: EKRAN_KALITELERI'nden biri
 	sesler: true, // giriş/çıkış sesleri
 	mikKapali: false, // kendini susturdun (kanala girerken de geçerli; susturulmuşken mikrofon kapalıdır)
 	sagir: false, // gelen sesleri kapattın
@@ -212,7 +199,6 @@ try {
 ayar.mikSeviye = Math.min(200, Math.max(0, Math.round(ayar.mikSeviye / 5) * 5));
 if (![48, 96, 128].includes(ayar.kalite)) ayar.kalite = AYAR_VARSAYILAN.kalite;
 if (!YAYIN_SES_SECENEKLERI.includes(ayar.yayinSes)) ayar.yayinSes = AYAR_VARSAYILAN.yayinSes;
-if (!Object.prototype.hasOwnProperty.call(EKRAN_KALITELERI, ayar.ekranKalite)) ayar.ekranKalite = AYAR_VARSAYILAN.ekranKalite;
 const ayarKaydet = () => depoYaz('ses-ayarlari', JSON.stringify(ayar));
 
 // ---------------------------------------------------------------- durum
@@ -3569,11 +3555,7 @@ function gonderimHizi() {
 
 // Yayın bit hızları (kbps), alan kişi sayısına göre (mesh: herkese ayrı akış). Paylaşılan ses
 // (stereo) herkese gider: ayardaki tavan; toplam ~3 Mbit/s'yi geçmesin diye kalabalıkta kişi başına
-// düşer (510 altı kişiye kadar tam; 256 ve altı hiç düşmez). Ekran yalnızca
-// izleyene: seçilen kalitenin tavanı üç izleyiciye kadar tam, daha kalabalıkta toplam üç katını
-// geçmez. Bağlantı sunucu üzerinden (TURN) gidiyorsa ekran en çok 3 Mbit/s: sunucu aktarım başına
-// ~4 Mbit/s'nin üstünü atar (sunucu.js, max-bps).
-const izleyiciSayisi = () => Math.max(1, [...esler.values()].filter((e) => !e.bekleniyor && e.izliyor).length);
+// düşer (510 altı kişiye kadar tam; 256 ve altı hiç düşmez).
 const yayinSesHizi = () => Math.round(Math.min(ayar.yayinSes, Math.max(64, 3000 / Math.max(1, esSayisi()))));
 // Kayıplara karşı yedek (RED) isteği. Gönderen kendisi seçer: tarayıcı RED'i karşının açıklamasında
 // Opus'tan önce geliyorsa kullanır ("RED codec needs to be negotiated before the actual codec",
@@ -3583,13 +3565,20 @@ const redDestegi = () => !!kodekSirasi(true); // tarayıcı RED biliyor mu (Fire
 const yayinRedSigar = () => ayar.yayinSes <= RED_SIGAN_HIZ;
 const mikRedIstegi = (es) => ayar.mikRed && !(es && es.redKapali);
 const yayinRedIstegi = (es) => ayar.yayinRed && yayinRedSigar() && !(es && es.redKapali);
-const ekranKalitesi = () => EKRAN_KALITELERI[ayar.ekranKalite] || EKRAN_KALITELERI.standart;
+// Paylaşılan ekran (yalnızca izleyene): ayar yok, tavan yok. Tarayıcı bit hızını, gerekirse çözünürlüğü
+// ve kare hızını ağa ve işlemciye göre kendisi ayarlar (tıkanıklık denetimi). Tavan vermemek yetmez:
+// Chrome o zaman kendi varsayılan tavanında kalır (GetMaxDefaultVideoBitrateKbps, HD'de 2,5 Mbit/s;
+// ölçüm: tavansız 1,6, 100 Mbit/s tavanla 9,5 Mbit/s gönderdi): pratikte sınırsız bir tavan verilir.
+// Firefox kendi sınırının üstüne çıkmaz: 1080p'de ~5, daha büyükte ~10 Mbit/s (VideoStreamFactory.cpp).
+// Bağlantı sunucu üzerinden (TURN) gidiyorsa en çok 3 Mbit/s: sunucu aktarım başına ~4 Mbit/s'nin
+// üstünü atar (sunucu.js, max-bps).
+const GORUNTU_TAVANI = 100000; // kbps
 const TURN_GORUNTU_TAVANI = 3000;
-function goruntuHizi(es) {
-	const k = ekranKalitesi();
-	const hiz = Math.min(k.kbps, Math.max(400, (3 * k.kbps) / izleyiciSayisi()));
-	return Math.round(es && es.sonTip === 'TURN' ? Math.min(hiz, TURN_GORUNTU_TAVANI) : hiz);
-}
+const goruntuHizi = (es) => (es && es.sonTip === 'TURN' ? TURN_GORUNTU_TAVANI : GORUNTU_TAVANI);
+// Kare hızı: tarayıcıların ekran yakalama sınırı (Chromium kMaxScreenCastFrameRate = 120, Firefox
+// MediaEngineRemoteVideoSource cap = 120). Firefox'un kodlayıcısı yine en çok 60 gönderir
+// (media.navigator.video.max_fr; Firefox'un kendi about:config ayarı).
+const GORUNTU_KARE = 120;
 
 // --- kayıplara karşı yedek (RED, RFC 2198)
 //
@@ -3739,7 +3728,7 @@ async function bitHiziAyarla(es) {
 	const ayarlar = [
 		[es.tr, gonderimHizi() * 1000, 0],
 		[es.trSes, yayinSesHizi() * 1000, 0],
-		[es.trGoruntu, goruntuHizi(es) * 1000, ekranKalitesi().kare],
+		[es.trGoruntu, goruntuHizi(es) * 1000, GORUNTU_KARE],
 	];
 	for (const [tr, hiz, kare] of ayarlar) {
 		const s = tr && tr.sender;
@@ -4387,18 +4376,10 @@ function sesPaneliCiz(ozet) {
 // Telefon tarayıcılarının çoğu hiç yakalayamaz: paylaş düğmesi yalnızca tarayıcı ekran paylaşımı
 // sunuyorsa görünür. Paylaşılanı her cihaz izler ve dinler.
 
-// Yakalama kısıtı: seçilen ekran kalitesinin çözünürlük üst sınırı (yoksa ekranın kendi
-// çözünürlüğü) ve kare hızı. Ekran gizliyken yakalama sürer ama saniyede bir kareye iner.
-function goruntuKisiti() {
-	const k = ekranKalitesi();
-	const kisit = { frameRate: { ideal: k.kare, max: k.kare } };
-	if (k.genislik) {
-		kisit.width = { max: k.genislik };
-		kisit.height = { max: k.yukseklik };
-	}
-	return kisit;
-}
-const ekransizKisiti = () => ({ ...goruntuKisiti(), frameRate: { max: 1 } });
+// Yakalama kısıtı: ekranın kendi çözünürlüğü (sınır yok), kare hızı tarayıcının yakalama sınırına
+// kadar. Ekran gizliyken yakalama sürer ama saniyede bir kareye iner.
+const goruntuKisiti = () => ({ frameRate: { ideal: GORUNTU_KARE, max: GORUNTU_KARE } });
+const ekransizKisiti = () => ({ frameRate: { max: 1 } });
 
 // goruntu/ses: paylaşılan (gönderilen) izler (biri yoksa null). aygit: ses bir ses aygıtından
 // alınıyorsa onun kimliği ('' = ekran yakalamasının kendi sesi), aygitAdi: o aygıtın adı. ekransiz:
@@ -6013,11 +5994,10 @@ async function taniVeri() {
 		micAyarlar,
 		kazanc: ayar.mikSeviye,
 		kalite: gonderimHizi(),
-		// Paylaşım kalitesi: paylaşılan sesin şu anki tavanı (kbps), seçilen ekran kalitesi; kayıplara
-		// karşı yedek isteği (tarayıcı biliyor mu, mikrofonda, paylaşımda — sığdığı hızda mı). Gerçekte
-		// gönderilen eş başına: red.mik / red.yayin.
+		// Paylaşım kalitesi: paylaşılan sesin şu anki tavanı (kbps); kayıplara karşı yedek isteği
+		// (tarayıcı biliyor mu, mikrofonda, paylaşımda — sığdığı hızda mı). Gerçekte gönderilen eş başına:
+		// red.mik / red.yayin. Ekranın gidişi eş başına: goruntuGiden.
 		yayinKalite: yayinSesHizi(),
-		ekranKalite: ayar.ekranKalite,
 		redAyar: { destek: redDestegi(), mik: ayar.mikRed, yayin: ayar.yayinRed && yayinRedSigar() },
 		sesBaglami: baglam ? baglam.state : null,
 		iceSunucu: (ice.iceServers || []).map((s) => [].concat(s.urls || []).join('+')).join(',').slice(0, 200),
@@ -6097,7 +6077,6 @@ function ayarlarAc() {
 	$('ayar-yayin-kalite').value = String(ayar.yayinSes);
 	$('ayar-mik-red').checked = ayar.mikRed;
 	redKutulariniCiz();
-	$('ayar-ekran-kalite').value = ayar.ekranKalite;
 	// Paylaşım seçenekleri yalnızca paylaşabilen tarayıcıda (çoğu telefon paylaşamaz).
 	$('ayar-paylasim').hidden = !yayinVar() && !ekranPaylasilabilir();
 	$('ayar-sesler').checked = ayar.sesler;
@@ -6242,15 +6221,6 @@ $('ayar-yayin-red').addEventListener('change', () => {
 	ayar.yayinRed = $('ayar-yayin-red').checked;
 	ayarKaydet();
 	opusHedefleriniYenile();
-});
-// Ekran kalitesi paylaşım sürerken de hemen uygulanır: yakalamanın kısıtı (çözünürlük, kare hızı) ve
-// her eşe gönderim tavanı (görüntüde setParameters her tarayıcıda geçerli, yeniden anlaşma gerekmez).
-$('ayar-ekran-kalite').addEventListener('change', () => {
-	const v = $('ayar-ekran-kalite').value;
-	ayar.ekranKalite = Object.prototype.hasOwnProperty.call(EKRAN_KALITELERI, v) ? v : AYAR_VARSAYILAN.ekranKalite;
-	ayarKaydet();
-	if (yayin.goruntu) kisitUygula(yayin.goruntu, yayin.ekransiz ? ekransizKisiti() : goruntuKisiti());
-	bitHizlariniAyarla();
 });
 $('ayar-sesler').addEventListener('change', () => {
 	ayar.sesler = $('ayar-sesler').checked;

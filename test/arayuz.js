@@ -1202,7 +1202,7 @@ const ICE = { iceServers: [{ urls: ['stun:1.2.3.4:3478'] }, { urls: ['turn:1.2.3
 		kartDugmesi(benimKart(), 'Ekranı göster').click();
 		await bekle(30);
 		denetle('ekran gösterilince görüntü herkese takıldı, yeniden seçim istenmedi', goruntusu(ilkPc) === gIz && goruntusu(zPc) === gIz && s.oc.ekranSayisi === secimSayisi);
-		denetle('görüntü yeniden 30 kareye çıktı', gIz.kisit.frameRate.max === 30, JSON.stringify(gIz.kisit));
+		denetle('görüntü yeniden tam kare hızına (120) çıktı', gIz.kisit.frameRate.max === 120, JSON.stringify(gIz.kisit));
 		denetle('bildirildi: görüntü + ses', son('yayin').yayin.goruntu === true && son('yayin').yayin.ses === true, JSON.stringify(son('yayin')));
 		denetle(
 			'kendi kartım: önizleme ve izleyen sayısı',
@@ -1210,7 +1210,7 @@ const ICE = { iceServers: [{ urls: ['stun:1.2.3.4:3478'] }, { urls: ['turn:1.2.3
 			benimKart().textContent,
 		);
 		const vk = ilkPc._transceivers[2].parametreler;
-		denetle('ekran için bit hızı tavanı ve 30 kare', !!vk && vk.encodings[0].maxBitrate > 0 && vk.encodings[0].maxFramerate === 30, JSON.stringify(vk));
+		denetle('ekran için pratikte sınırsız tavan ve 120 kare', !!vk && vk.encodings[0].maxBitrate === 100000000 && vk.encodings[0].maxFramerate === 120, JSON.stringify(vk));
 		gelsin({ type: 'izle', from: 'bora', izle: false });
 		await bekle(30);
 		denetle('görüntüyü kapatana görüntü gitmez, ses gider; diğerine ikisi de', goruntusu(ilkPc) === null && yayinSesi(ilkPc) === sIz && goruntusu(zPc) === gIz);
@@ -2270,11 +2270,12 @@ const ICE = { iceServers: [{ urls: ['stun:1.2.3.4:3478'] }, { urls: ['turn:1.2.3
 	}
 
 	// --- 28) paylaşım kalitesi: paylaşılan ses varsayılan 192 kbps (kayıplara karşı yedek sığar), ses
-	// ayarlarından seçilir; yanında RED kutusu (tarayıcı bilmiyorsa ya da yedek sığmıyorsa kapalı). Chrome'da tavan hemen (setParameters); Firefox'ta
-	// Opus hedefi ancak yeniden anlaşmada uygulanır: teklif ettiğimiz bağlantıda yeni teklif,
-	// yanıtladığımızda karşıdan yeni teklif isteği (yenile, teklif; ICE yenilenmez). Ekran kalitesi
-	// (çözünürlük, kare hızı, bit hızı tavanı) seçilir ve paylaşım sürerken de uygulanır; sunucu
-	// üzerinden (TURN) giden bağlantıda ekran en çok 3 Mbit/s.
+	// ayarlarından seçilir; yanında RED kutusu (tarayıcı bilmiyorsa ya da yedek sığmıyorsa kapalı).
+	// Chrome'da tavan hemen (setParameters); Firefox'ta Opus hedefi ancak yeniden anlaşmada uygulanır:
+	// teklif ettiğimiz bağlantıda yeni teklif, yanıtladığımızda karşıdan yeni teklif isteği (yenile,
+	// teklif; ICE yenilenmez). Ekranın ayarı yok: çözünürlük sınırsız, kare 120'ye kadar, bit hızı
+	// tavanı pratikte sınırsız (tarayıcı ağa göre ayarlar); sunucu üzerinden (TURN) giden bağlantıda
+	// en çok 3 Mbit/s.
 	{
 		const t = kur({ depo: { anahtar: 'f'.repeat(128), ad: 'taha' } });
 		const tw = t.window;
@@ -2312,11 +2313,11 @@ const ICE = { iceServers: [{ urls: ['stun:1.2.3.4:3478'] }, { urls: ['turn:1.2.3
 		await bekle(60);
 		const gIz = t.oc.ekranIzleri[0];
 		const istenen = t.oc.ekranSecenek.video;
-		denetle('standart: yakalama 1080p, 30 kare istendi', istenen.width.max === 1920 && istenen.height.max === 1080 && istenen.frameRate.max === 30, JSON.stringify(istenen));
-		denetle('gönderim tavanları: ses 192 kbps; ekran 2,5 Mbit/s, 30 kare', sp(bPc).maxBitrate === 192000 && sp(zPc).maxBitrate === 192000 && vp(bPc).maxBitrate === 2500000 && vp(bPc).maxFramerate === 30, JSON.stringify([sp(bPc), vp(bPc)]));
+		denetle('ekran sınırsız istendi: çözünürlük sınırı yok, kare 120\'ye kadar', !istenen.width && !istenen.height && istenen.frameRate.ideal === 120 && istenen.frameRate.max === 120, JSON.stringify(istenen));
+		denetle('gönderim tavanları: ses 192 kbps; ekran pratikte sınırsız (100 Mbit/s, tarayıcı ağa göre ayarlar), 120 kare', sp(bPc).maxBitrate === 192000 && sp(zPc).maxBitrate === 192000 && vp(bPc).maxBitrate === 100000000 && vp(zPc).maxBitrate === 100000000 && vp(bPc).maxFramerate === 120, JSON.stringify([sp(bPc), vp(bPc)]));
 		td.getElementById('ben-ayarlar').click();
 		await bekle(30);
-		denetle('ayarlarda paylaşım seçenekleri görünür: ses 192, ekran standart', td.getElementById('ayar-paylasim').hidden === false && td.getElementById('ayar-yayin-kalite').value === '192' && td.getElementById('ayar-ekran-kalite').value === 'standart');
+		denetle('ayarlarda paylaşılan ses seçimi görünür (192); ekran için ayar yok', td.getElementById('ayar-paylasim').hidden === false && td.getElementById('ayar-yayin-kalite').value === '192' && !td.getElementById('ayar-ekran-kalite'));
 		const redKutu = (id) => ({ k: td.getElementById(id), e: td.getElementById(id + '-etiket') });
 		denetle(
 			'RED bilmeyen tarayıcıda iki RED kutusu da kapalı, üstüne gelince nedenini söyler',
@@ -2364,34 +2365,21 @@ const ICE = { iceServers: [{ urls: ['stun:1.2.3.4:3478'] }, { urls: ['turn:1.2.3
 		denetle('gelen "yenile, teklif": yeni teklif, ICE yenilenmez, bağlantı kurulmaz', sdpler('bora').length === bSayi + 1 && secenek === undefined && !bPc.kapandi && tw.eval("esler.get('bora').pc") === bPc);
 		tgel({ type: 'sdp', from: 'bora', sdp: { type: 'answer', sdp: UC_KANALLI }, oturum: sdpler('bora').at(-1).oturum });
 		await bekle(40);
-		// Ekran kalitesi paylaşım sürerken: yakalama kısıtı ve tavan hemen değişir.
-		sec('ayar-ekran-kalite', 'yuksek');
-		await bekle(30);
-		denetle('yüksek: yakalama 1080p, 60 kare', gIz.kisit.frameRate.max === 60 && gIz.kisit.width.max === 1920 && gIz.kisit.height.max === 1080, JSON.stringify(gIz.kisit));
-		denetle('yüksek: ekran tavanı 5 Mbit/s, 60 kare (iki eşe)', vp(bPc).maxBitrate === 5000000 && vp(bPc).maxFramerate === 60 && vp(zPc).maxBitrate === 5000000, JSON.stringify([vp(bPc), vp(zPc)]));
-		sec('ayar-ekran-kalite', 'akici');
-		await bekle(30);
-		denetle('akıcı: 1080p, 120 kare, 8 Mbit/s', gIz.kisit.frameRate.max === 120 && gIz.kisit.width.max === 1920 && vp(bPc).maxBitrate === 8000000 && vp(bPc).maxFramerate === 120, JSON.stringify([gIz.kisit, vp(bPc)]));
-		sec('ayar-ekran-kalite', 'kaynak');
-		await bekle(30);
-		denetle('en yüksek: çözünürlük sınırı yok, 60 kare, 10 Mbit/s', !gIz.kisit.width && !gIz.kisit.height && gIz.kisit.frameRate.max === 60 && vp(bPc).maxBitrate === 10000000, JSON.stringify(gIz.kisit));
+		// Sunucu üzerinden (TURN) giden eşe ekran en çok 3 Mbit/s (sunucu aktarım başına ~4 Mbit/s'nin üstünü atar).
 		tw.eval("esler.get('bora').sonTip = 'TURN'; bitHiziAyarla(esler.get('bora'))");
 		await bekle(30);
-		denetle('sunucu üzerinden (TURN) giden eşe ekran en çok 3 Mbit/s, öbürü etkilenmez', vp(bPc).maxBitrate === 3000000 && vp(zPc).maxBitrate === 10000000, JSON.stringify([vp(bPc), vp(zPc)]));
+		denetle('sunucu üzerinden (TURN) giden eşe ekran en çok 3 Mbit/s, öbürü etkilenmez', vp(bPc).maxBitrate === 3000000 && vp(zPc).maxBitrate === 100000000, JSON.stringify([vp(bPc), vp(zPc)]));
 		tw.eval("esler.get('bora').sonTip = 'P2P'; bitHiziAyarla(esler.get('bora'))");
 		await bekle(30);
+		denetle('doğrudan bağlantıya dönünce yine sınırsız', vp(bPc).maxBitrate === 100000000);
 		tw.eval('ekransizAyarla(true)');
 		await bekle(30);
-		denetle('ekran gizlenince yakalama saniyede bir kareye iner', gIz.kisit.frameRate.max === 1, JSON.stringify(gIz.kisit));
+		denetle('ekran gizlenince yakalama saniyede bir kareye iner', gIz.kisit.frameRate.max === 1 && !gIz.kisit.width, JSON.stringify(gIz.kisit));
 		tw.eval('ekransizAyarla(false)');
 		await bekle(30);
-		denetle('gösterilince seçilen kaliteye döner', gIz.kisit.frameRate.max === 60 && !gIz.kisit.width && vp(bPc).maxBitrate === 10000000, JSON.stringify(gIz.kisit));
-		sec('ayar-ekran-kalite', 'dusuk');
-		await bekle(30);
-		denetle('düşük: 720p, 15 kare, 1 Mbit/s', gIz.kisit.width.max === 1280 && gIz.kisit.height.max === 720 && gIz.kisit.frameRate.max === 15 && vp(bPc).maxBitrate === 1000000 && vp(bPc).maxFramerate === 15, JSON.stringify([gIz.kisit, vp(bPc)]));
-		denetle('ekran kalitesi kalıcı', JSON.parse(tw.localStorage.getItem('ses-ayarlari')).ekranKalite === 'dusuk');
+		denetle('gösterilince yine 120\'ye kadar, çözünürlük sınırı yok', gIz.kisit.frameRate.max === 120 && !gIz.kisit.width, JSON.stringify(gIz.kisit));
 		const v = await tw.eval('taniVeri()');
-		denetle('tanı: paylaşım kalitesi ve RED isteği', v.yayinKalite === 256 && v.ekranKalite === 'dusuk' && v.redAyar && v.redAyar.destek === false && v.redAyar.yayin === false, JSON.stringify([v.yayinKalite, v.ekranKalite, v.redAyar]));
+		denetle('tanı: paylaşım kalitesi ve RED isteği', v.yayinKalite === 256 && v.ekranKalite === undefined && v.redAyar && v.redAyar.destek === false && v.redAyar.yayin === false, JSON.stringify([v.yayinKalite, v.redAyar]));
 		td.dispatchEvent(new tw.KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
 		tw.eval('yayinDurdur()');
 		tw.eval('sesKapat()');
@@ -2404,11 +2392,11 @@ const ICE = { iceServers: [{ urls: ['stun:1.2.3.4:3478'] }, { urls: ['turn:1.2.3
 	}
 	// Paylaşamayan tarayıcıda (çoğu telefon) paylaşım seçenekleri gizli; bozuk kayıtlı değer varsayılana döner.
 	{
-		const u = kur({ ekranYok: true, depo: { anahtar: 'f'.repeat(128), ad: 'taha', 'ses-ayarlari': JSON.stringify({ yayinSes: 999, ekranKalite: 'uydurma' }) } });
+		const u = kur({ ekranYok: true, depo: { anahtar: 'f'.repeat(128), ad: 'taha', 'ses-ayarlari': JSON.stringify({ yayinSes: 999 }) } });
 		await bekle(40);
 		u.oc.ws.onmessage({ data: JSON.stringify({ type: 'hazir', ad: 'taha', kanallar, kimler: [{ ad: 'taha' }], max: 10, maxKullanici: 10, beyazListe: 1, beyazListeAdlari: ['taha'], sunulanDosyalar: [], ice: ICE, surum: 'v1' }) });
 		await bekle(40);
-		denetle('bozuk kayıtlı kalite varsayılana döndü', u.window.eval('ayar.yayinSes') === 192 && u.window.eval('ayar.ekranKalite') === 'standart');
+		denetle('bozuk kayıtlı kalite varsayılana döndü', u.window.eval('ayar.yayinSes') === 192);
 		// RED bilmeyen tarayıcı (Firefox) karşının sırasına dokunmaz (RED'i zaten göndermez).
 		denetle('RED bilmeyen tarayıcı kodek sırasına dokunmaz', u.window.eval('opusAyarla')(RED_ONDE).split('\r\n').filter((x) => x.startsWith('m=audio')).every((x) => / 63 111$/.test(x)));
 		u.d.getElementById('ben-ayarlar').click();
