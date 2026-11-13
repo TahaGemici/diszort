@@ -238,6 +238,7 @@ const TURLER = {
 	'.png': 'image/png',
 	'.json': 'application/json',
 	'.txt': 'text/plain; charset=utf-8',
+	'.wasm': 'application/wasm',
 };
 
 // Web klasörü açılışta belleğe alınır: yalnızca buradaki dosyalar sunulur (yol oyunu yapılamaz).
@@ -267,8 +268,10 @@ const GUVENLIK_BASLIKLARI = {
 	// camera=() bilerek yazılmadı: Chrome ekran paylaşımında (getDisplayMedia) kamera kuralına da
 	// bakıyor ve her paylaşımda "Permissions policy violation: camera" hatası basıyor. Kamera hiç istenmez.
 	'Permissions-Policy': 'microphone=(self), display-capture=(self), geolocation=()',
+	// 'wasm-unsafe-eval': yalnızca WebAssembly derlemesine izin verir (mikrofonun gürültü bastırması RNNoise,
+	// web/gurultu.js); JavaScript eval'i yine kapalı.
 	'Content-Security-Policy':
-		"default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; " +
+		"default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; " +
 		"media-src 'self' blob:; connect-src 'self' wss: ws:; base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
 };
 

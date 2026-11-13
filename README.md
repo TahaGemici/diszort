@@ -15,7 +15,23 @@ da sunucuya yüklenmez, paylaşandan doğrudan alınır. İçeri yalnızca içer
   (sayfayı yenilerse "Yeniden paylaş" ile aynı dosyayı yeniden sunar). Kopan aktarım kaldığı yerden
   sürer; büyük dosyalar belleğe değil doğrudan diske yazılır. Küçük resimler sohbette önizlenir.
 - **Sesli kanallar:** kanal başına 10 kişiye kadar, yüksek kaliteli Opus (~96 kbps), konuşma göstergesi,
-  kişi başı ses seviyesi, susturma ve sağırlaştırma, mikrofon/hoparlör seçimi, gürültü bastırma.
+  kişi başı ses seviyesi, susturma ve sağırlaştırma, mikrofon/hoparlör seçimi.
+- **Mikrofonun yolu: RNNoise ve konuşma eşiği.** Mikrofon her zaman RNNoise'dan geçer (Xiph/Mozilla'nın
+  yapay sinir ağıyla gürültü bastırıcısı, Jitsi'nin WebAssembly derlemesi: `web/rnnoise.wasm`, lisanslar
+  `web/rnnoise.LICENSE.txt`; `web/gurultu.js`, AudioWorklet). Hep açık, kapatılamaz; ses ayarları
+  kullanıldığını ve o anki sonucunu (konuşma olasılığı, bastırılan gürültü) yazar. Tarayıcının kendi
+  gürültü bastırması bu yüzden kapalı istenir (iki kez bastırmak sesi bozar); RNNoise kurulamazsa
+  (AudioWorklet/WebAssembly yok, dosya gelmedi) tarayıcınınki açılır. Ölçüm (yalnız gürültü, 6 sn):
+  fan uğultusu −40…−50 dB, 4 kHz altı tıslama −58 dB, 50 Hz vızıltı −12 dB, geniş bantlı tıslama
+  −10…−13 dB, tam bant beyaz gürültü yalnızca ~−2 dB (RNNoise'un zayıf yeri); konuşmaya dokunmuyor.
+  Gerçek Chromium ve Firefox'ta fanlı konuşmada: konuşma −28 dBFS'te aynen, aralardaki fan −49'dan
+  −68 dBFS'e. İşlemci: tek çekirdeğin ~%2'si; gecikme 10 ms. RNNoise 48 kHz için eğitildi; ses bağlamı
+  44,1 kHz'de çalışan sistemlerde de çalışıyor, bastırması biraz daha az. Ardından mikrofon seviyesi ve
+  **konuşma eşiği** (Discord'daki giriş hassasiyeti; %0 kapalı, varsayılan %10 = −55 dBFS, ayarlardaki
+  seviye çubuğuyla aynı ölçek, çubukta çizgi olarak görünür): ses eşiğin altındayken gönderilmez; eşiği
+  geçince hemen açılır, altında 300 ms kalınca kapanır (kelime sonları kesilmez). Konuşurken de
+  değiştirilebilir. Otomatik kazanç (AGC) yok (hep kapalı istenir). Bilgisayar sesi (paylaşım) bu
+  yoldan geçmez.
 - **Susturunca mikrofon tamamen kapanır** (her cihazda; sağırlaştırınca da): tarayıcının kayıt
   göstergesi söner. Telefonda açık mikrofon telefonu görüşme kipinde tutar (Bluetooth kulaklık tek
   kanallı, boğuk görüşme sesine geçer; çalan ses telefonun görüşme işlemlerinden geçer): susturulmuş
@@ -51,6 +67,13 @@ da sunucuya yüklenmez, paylaşandan doğrudan alınır. İçeri yalnızca içer
   tarayıcının deneme bayrağı ister, sayfa değiştiremez). RED'i bilmeyen tarayıcıyla (Firefox: ne
   gönderir ne alır; kutu kapalı görünür) o bağlantı iki yönde de düz Opus'tur.
 - **Ekran paylaşımı ve birlikte dinleme** (ses kartındaki paylaş düğmesi):
+  - *Bilgisayar sesi işlenmez:* tarayıcının yankı engellemesi, gürültü bastırması ve otomatik kazancı
+    kapalı istenir; RNNoise ve konuşma eşiği uygulanmaz. Tek işlem, bilgisayarın sesine karışan
+    kanaldakilerin konuşmasının (sayfanın kendi çaldığı) çıkarılmasıdır: o olmasa herkes kendi sesini
+    geri duyardı; kimse konuşmuyorken ses olduğu gibi gider, müzik değişmez (gerçek Chromium denemesi).
+    Kanallar: stereo (varsayılan) ya da mono. Gönderilen veri kanal sayısıyla değil bit hızıyla (kbps)
+    belirlenir: Opus aynı kbps'yi mono'da tek kanala verir (daha iyi tek kanal); veriyi azaltan kbps'yi
+    düşürmektir, mono'da daha düşük kbps aynı kaliteyi verir.
   - *Kalite* (ses ve paylaşım ayarları). Paylaşılan ses (bilgisayarın sesi; stereo Opus, mikrofon ayrı
     kanalda, tek kanal): 510 / 256 / 192 (varsayılan) / 128 / 96 kbps, yanında RED kutusu. Tarayıcılar
     sesi sıkıştırmadan gönderemez (Firefox'ta Opus'tan başka müzik kodeği yok); kodlayıcıya giden ses
@@ -166,12 +189,15 @@ gönderir, sunucu yalnızca günlüğe yazar (`[tanı] ad: {…}`). Kişi başı
 konuşmasının ve paylaşımının gelen bit hızı, kaybı, uydurulan sesi, alıcı tamponunun tuttuğu süre
 (`tamponMs`, sese eklenen gecikme) ve hedefi, tamponu eritmek/doldurmak için sesten atılan/eklenen
 süre (`hizlandirmaMs`/`yavaslatmaMs`, müzikte duyulur), uydurma olayları, titreşim, çalıyor mu;
-paylaştığım sesin o kişiye gidişi (`yayinGiden`: kbps, paket/sn — düzenliyse 50), ekranımın gidişi
+mikrofonun yolu (`micAyarlar.yol`: RNNoise çalışıyor mu, son ölçüm — konuşma olasılığı, bastırmadan
+önce/sonra ve eşikten önceki seviye, eşik açık mı —, eşik, seviye); paylaştığım sesin o kişiye gidişi
+(`yayinGiden`: kbps, paket/sn — düzenliyse 50), ekranımın gidişi
 (`goruntuGiden`: kbps, çözünürlük, kare/sn, sınırlayan — `cpu`/`bandwidth` —, tavan); seçili paylaşım
 kalitesi (`yayinKalite` kbps) ve RED isteği (`redAyar`); sayfa önde mi,
 ekran açık mı; mikrofonun ve paylaşılan sesin aygıtı, yakalamadaki kopukluklar (`kopukluk`).
 Olaylar: `arka-plan` / `one-geldi` (dönüşten ~6 sn sonra durumun tamamı, `arkaPlanSn`),
-`birikme` / `yeniden-kur-istendi`, `calma-takildi`, `durum`, `yeniden-kur`, `teklif-hata`. Ses
+`birikme` / `yeniden-kur-istendi`, `calma-takildi`, `durum`, `yeniden-kur`, `teklif-hata`,
+`rnnoise-yok` (RNNoise kurulamadı: dosya, modül ya da wasm; tarayıcının gürültü bastırmasına dönüldü). Ses
 aygıtından paylaşanda: `yakalama-gecikmesi` (Firefox; sayfa kendi çıkışına duyulmayacak kadar tiz ve kısık,
 40 ms'lik bir ses çalar, paylaşılan "Monitor"da kaç ms sonra göründüğünü ölçer: çıkış yolu
 `cikisMs` + yakalama yolu; paylaşım başında, 3 dakikada bir ve mikrofon açılıp kapanınca;

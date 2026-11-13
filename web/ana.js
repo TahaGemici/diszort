@@ -174,14 +174,16 @@ const RED_SIGAN_HIZ = 192;
 const AYAR_VARSAYILAN = {
 	mikId: '', // seçili mikrofon ('' = sistemin varsayılanı)
 	cikisId: '', // seçili hoparlör ('' = varsayılan)
-	gurultu: true, // gürültü bastırma
 	yanki: true, // yankı engelleme
-	kazanc: false, // otomatik kazanç (AGC). Kapalı: AGC konuşma boyunca seviyeyi oynatıyordu.
-	mikSeviye: 100, // gönderilen mikrofon seviyesi (%); 100 dışında WebAudio kazancı devreye girer
+	mikSeviye: 100, // gönderilen mikrofon seviyesi (%; mikrofonun yolunda, RNNoise'dan sonra)
+	// Konuşma eşiği (%, 0 = kapalı): mikrofonun seviyesi bunun altındayken ses gönderilmez. Ayarlardaki
+	// seviye çubuğuyla aynı ölçek: dBFS = -60 + % / 2 (varsayılan %10 = -55 dBFS).
+	esik: 10,
 	kalite: 96, // mikrofonun Opus bit hızı tavanı (kbps)
 	yayinSes: 192, // paylaşılan sesin bit hızı (kbps): YAYIN_SES_SECENEKLERI'nden biri
 	mikRed: true, // mikrofonda kayıplara karşı yedek (RED; tarayıcı ve karşısı biliyorsa)
 	yayinRed: true, // paylaşılan seste kayıplara karşı yedek (yalnızca RED_SIGAN_HIZ ve altında)
+	yayinKanal: 2, // paylaşılan sesin kanal sayısı: 2 stereo, 1 mono
 	sesler: true, // giriş/çıkış sesleri
 	mikKapali: false, // kendini susturdun (kanala girerken de geçerli; susturulmuşken mikrofon kapalıdır)
 	sagir: false, // gelen sesleri kapattın
@@ -199,6 +201,8 @@ try {
 ayar.mikSeviye = Math.min(200, Math.max(0, Math.round(ayar.mikSeviye / 5) * 5));
 if (![48, 96, 128].includes(ayar.kalite)) ayar.kalite = AYAR_VARSAYILAN.kalite;
 if (!YAYIN_SES_SECENEKLERI.includes(ayar.yayinSes)) ayar.yayinSes = AYAR_VARSAYILAN.yayinSes;
+ayar.esik = Number.isFinite(ayar.esik) ? Math.min(100, Math.max(0, Math.round(ayar.esik))) : AYAR_VARSAYILAN.esik;
+if (![1, 2].includes(ayar.yayinKanal)) ayar.yayinKanal = AYAR_VARSAYILAN.yayinKanal;
 const ayarKaydet = () => depoYaz('ses-ayarlari', JSON.stringify(ayar));
 
 // ---------------------------------------------------------------- durum
@@ -2547,11 +2551,14 @@ const mikSessizMi = () => ayar.mikKapali || ayar.sagir || !gidenIz;
 
 // kip: telefonda kulaklık kipi (bkz. telefonKulaklikKipi): yankı engelleme kapalı, Bluetooth'ta
 // telefonun kendi mikrofonu.
+// Gürültü bastırma RNNoise'da (mikrofonun yolu): tarayıcınınki kapalı istenir (iki kez bastırmak sesi
+// bozar); RNNoise bu tarayıcıda kurulamıyorsa tarayıcınınki açılır. Otomatik kazanç hep kapalı (konuşma
+// boyunca seviyeyi oynatıyor, sessizlikte gürültüyü yükseltiyordu; seviye elle ayarlanır).
 function mikKisitlari(kip = null) {
 	const k = {
 		echoCancellation: kip ? false : ayar.yanki,
-		noiseSuppression: ayar.gurultu,
-		autoGainControl: ayar.kazanc,
+		noiseSuppression: !rnnoiseKullanilir(),
+		autoGainControl: false,
 		channelCount: { ideal: 1 },
 		sampleRate: { ideal: 48000 },
 	};
@@ -2626,6 +2633,8 @@ async function mikrofonAc() {
 	if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) throw Object.assign(new Error('desteklenmiyor'), { name: 'NotSupportedError' });
 	const kip = await telefonKulaklikKipi();
 	telefonKulaklik = kip;
+	// RNNoise hazır mı (tarayıcının gürültü bastırması buna göre istenir): en çok 3 sn beklenir.
+	await Promise.race([rnnoiseYukle(), new Promise((r) => setTimeout(r, 3000))]);
 	try {
 		const akis = await navigator.mediaDevices.getUserMedia({ audio: mikKisitlari(kip) });
 		if (kip && kip.kulaklik === 'bluetooth' && kip.deviceId && !kulaklikBildirildi) {
@@ -2728,24 +2737,166 @@ function mikrofonBitti() {
 
 function islemiKapat() {
 	if (!mikIslem) return;
-	try {
-		mikIslem.kaynak.disconnect();
-		mikIslem.kazanc.disconnect();
-	} catch {}
+	if (mikIslem.dugum) mikYoluKapat(mikIslem);
+	else {
+		try {
+			mikIslem.kaynak.disconnect();
+			mikIslem.kazanc.disconnect();
+		} catch {}
+	}
 	mikIslem = null;
 }
 
-// Eşlere gidecek izi hazırla: mikrofon seviyesi %100 ise mikrofon izinin kendisi (en sağlam yol),
-// değilse WebAudio kazancından geçen iz. Yankı/gürültü giderme mikrofonda (yakalamada) uygulanır,
-// WebAudio'dan sonra kapanmaz.
+// ---------------------------------------------------------------- mikrofonun yolu: RNNoise ve konuşma eşiği
+//
+// Mikrofon her zaman RNNoise'dan (gürültü bastırma, hep açık; kullanıcı kapatamaz) geçer, ardından
+// mikrofon seviyesi ve konuşma eşiği (kapı) uygulanır: web/gurultu.js (AudioWorklet), rnnoise.wasm.
+// Ses bağlamı çalışmıyorsa (kullanıcı etkileşimi yok, iOS arka planda) ya da yol henüz hazır değilse ham
+// mikrofon gider, hazır olunca yol kurulur. RNNoise kurulamazsa (AudioWorklet/WebAssembly yok, dosya
+// gelmedi) tarayıcının gürültü bastırması kullanılır. Bilgisayar sesi (paylaşım) bu yoldan geçmez.
+let rnnoiseBayt = null;
+let rnnoiseYuklemesi = null;
+let rnnoiseYok = false;
+const rnnoiseOlur = () => !rnnoiseYok && typeof AudioWorkletNode === 'function' && typeof WebAssembly === 'object' && typeof fetch === 'function';
+// RNNoise kullanılacak mı: tarayıcı destekliyor ve dosya geldi.
+const rnnoiseKullanilir = () => rnnoiseOlur() && !!rnnoiseBayt;
+function rnnoiseYukle() {
+	if (!rnnoiseOlur()) return Promise.resolve(false);
+	if (!rnnoiseYuklemesi) {
+		rnnoiseYuklemesi = fetch('rnnoise.wasm')
+			.then((r) => {
+				if (!r.ok) throw new Error('HTTP ' + r.status);
+				return r.arrayBuffer();
+			})
+			.then((b) => {
+				rnnoiseBayt = b;
+				return true;
+			})
+			.catch((h) => {
+				rnnoiseYok = true;
+				taniGonder({ olay: 'rnnoise-yok', neden: 'dosya', metin: String((h && h.message) || h).slice(0, 160) });
+				return false;
+			});
+	}
+	return rnnoiseYuklemesi;
+}
+// Worklet modülü bağlam başına bir kez yüklenir.
+function gurultuModulu(ac) {
+	if (!ac.gurultuModulu) {
+		const m = { durum: 'yukleniyor', soz: null };
+		ac.gurultuModulu = m;
+		try {
+			m.soz = ac.audioWorklet.addModule('gurultu.js').then(
+				() => {
+					m.durum = 'hazir';
+				},
+				(h) => {
+					m.durum = 'yok';
+					rnnoiseYok = true;
+					taniGonder({ olay: 'rnnoise-yok', neden: 'modul', metin: String((h && h.message) || h).slice(0, 160) });
+				},
+			);
+		} catch {
+			m.durum = 'yok';
+			rnnoiseYok = true;
+			m.soz = Promise.resolve();
+		}
+	}
+	return ac.gurultuModulu;
+}
+// Konuşma eşiği dBFS olarak (null: kapalı); seviye çubuğuyla aynı ölçek (-60…-10 dBFS).
+const esikDb = () => (ayar.esik > 0 ? -60 + ayar.esik / 2 : null);
+// Akıştan işlenmiş iz: RNNoise → seviye → eşik. Hazır değilse null döner ve hazırlığı başlatır; hazır
+// olunca hazir() çağrılır.
+function mikYoluKur(akis, ac, hazir) {
+	if (!rnnoiseOlur() || !ac || ac.state !== 'running' || !ac.audioWorklet || !akis) return null;
+	const m = gurultuModulu(ac);
+	if (m.durum !== 'hazir' || !rnnoiseBayt) {
+		if (m.durum !== 'yok') {
+			Promise.all([m.soz, rnnoiseYukle()]).then(() => {
+				if (m.durum === 'hazir' && rnnoiseBayt) hazir();
+			});
+		}
+		return null;
+	}
+	try {
+		const kaynak = ac.createMediaStreamSource(akis);
+		const dugum = new AudioWorkletNode(ac, 'gurultu', {
+			numberOfInputs: 1,
+			numberOfOutputs: 1,
+			outputChannelCount: [1],
+			channelCount: 1,
+			channelCountMode: 'explicit',
+			channelInterpretation: 'speakers',
+			processorOptions: { wasm: rnnoiseBayt, kazanc: ayar.mikSeviye / 100, esik: esikDb() },
+		});
+		const hedef = ac.createMediaStreamDestination();
+		kaynak.connect(dugum);
+		dugum.connect(hedef);
+		const yol = { kaynak, dugum, hedef, akis, ac, iz: hedef.stream.getAudioTracks()[0], olcum: null, hata: null };
+		dugum.port.onmessage = (e) => gurultuIletisi(yol, e.data || {});
+		return yol;
+	} catch (h) {
+		taniGonder({ olay: 'rnnoise-yok', neden: 'dugum', metin: String((h && h.message) || h).slice(0, 160) });
+		return null;
+	}
+}
+function mikYoluKapat(yol) {
+	try {
+		yol.dugum.port.postMessage({ tur: 'kapat' });
+		yol.kaynak.disconnect();
+		yol.dugum.disconnect();
+	} catch {}
+}
+const mikYoluAyarla = (yol) => yol.dugum.port.postMessage({ tur: 'ayar', kazanc: ayar.mikSeviye / 100, esik: esikDb() });
+function gurultuIletisi(yol, v) {
+	if (v.tur === 'olcum') {
+		yol.olcum = v;
+		gurultuDurumuCiz(yol);
+	} else if (v.tur === 'hata') {
+		// RNNoise kurulamadı (wasm): tarayıcının gürültü bastırmasına dön (mikrofon onunla yeniden açılır).
+		yol.hata = v.metin || 'hata';
+		rnnoiseYok = true;
+		taniGonder({ olay: 'rnnoise-yok', neden: 'wasm', metin: String(v.metin || '').slice(0, 160) });
+		if (yol === mikIslem) mikrofonuYenile();
+		else if (yol === denemeYolu) $('ayar-mik-dene').click();
+	}
+}
+// Ayarlardaki seviye çubuğu (eşikten önceki seviye; eşik işareti aynı ölçekte) ve RNNoise'un sonucu.
+function gurultuDurumuCiz(yol) {
+	if ($('ayarlar').hidden || (yol !== mikIslem && yol !== denemeYolu)) return;
+	const o = yol.olcum;
+	if (!o) return;
+	$('ayar-olcer-dolgu').style.width = Math.round(Math.max(0, Math.min(1, (o.cikisDb + 60) / 50)) * 100) + '%';
+	$('ayar-olcer-dolgu').classList.toggle('kapali', !o.acik);
+	const bastirma = Math.min(0, o.rnnDb - o.girisDb);
+	$('ayar-gurultu-sonuc').textContent = `şu an: konuşma olasılığı %${Math.round(o.konusma * 100)}, gürültü ${Math.round(bastirma)} dB` + (ayar.esik > 0 ? (o.acik ? ' · ses gidiyor' : ' · eşiğin altında, ses gitmiyor') : '');
+}
+function gurultuDurumuYaz() {
+	$('ayar-gurultu-durum').textContent = rnnoiseKullanilir() || (rnnoiseOlur() && !rnnoiseYuklemesi) ? 'Gürültü bastırma: RNNoise (hep açık)' : 'Gürültü bastırma: tarayıcınınki (RNNoise bu tarayıcıda çalışmadı)';
+	$('ayar-gurultu-sonuc').textContent = '';
+}
+
+// Eşlere gidecek izi hazırla: mikrofonun yolu (RNNoise → seviye → eşik) hazırsa onun çıkışı; değilse
+// (yol yükleniyor ya da kurulamıyor) mikrofon seviyesi %100 ise mikrofon izinin kendisi, değilse
+// WebAudio kazancından geçen iz. Yankı engelleme mikrofonda (yakalamada) uygulanır.
 function gidenIzKur() {
 	const mikIz = mikrofon && mikrofon.getAudioTracks()[0];
 	let iz = mikIz || null;
-	// Ses bağlamı çalışmıyorsa (kullanıcı etkileşimi olmadan açıldı, iOS arka plana aldı) kazanç
-	// zinciri SESSİZLİK üretir: o durumda ham mikrofon izi gönderilir, bağlam açılınca zincir kurulur.
-	const ac = mikIz && ayar.mikSeviye !== 100 ? sesBaglami() : null;
-	if (mikIz && ayar.mikSeviye !== 100 && ac && ac.state === 'running') {
-		if (mikIslem && mikIslem.akis === mikrofon) {
+	// Ses bağlamı çalışmıyorsa (kullanıcı etkileşimi olmadan açıldı, iOS arka plana aldı) WebAudio yolu
+	// SESSİZLİK üretir: o durumda ham mikrofon izi gönderilir, bağlam açılınca yol kurulur.
+	const ac = mikIz ? sesBaglami() : null;
+	const ayni = !!mikIslem && mikIslem.akis === mikrofon && mikIslem.ac === ac;
+	const yol = mikIz && ac && ac.state === 'running' && !(ayni && mikIslem.dugum) ? mikYoluKur(mikrofon, ac, () => { if (mikrofon && mikrofon.getAudioTracks()[0] === mikIz) gidenIzKur(); }) : null;
+	if (mikIz && ac && ac.state === 'running' && ayni && mikIslem.dugum) {
+		mikYoluAyarla(mikIslem);
+		iz = mikIslem.iz;
+	} else if (yol) {
+		islemiKapat();
+		mikIslem = yol;
+		iz = yol.iz;
+	} else if (mikIz && ayar.mikSeviye !== 100 && ac && ac.state === 'running') {
+		if (ayni && mikIslem.kazanc) {
 			mikIslem.kazanc.gain.value = ayar.mikSeviye / 100;
 			iz = mikIslem.iz;
 		} else if (ac.createMediaStreamDestination) {
@@ -2757,7 +2908,7 @@ function gidenIzKur() {
 				const hedef = ac.createMediaStreamDestination();
 				kaynak.connect(kazanc);
 				kazanc.connect(hedef);
-				mikIslem = { kaynak, kazanc, hedef, akis: mikrofon, iz: hedef.stream.getAudioTracks()[0] };
+				mikIslem = { kaynak, kazanc, hedef, akis: mikrofon, ac, iz: hedef.stream.getAudioTracks()[0] };
 				iz = mikIslem.iz;
 			} catch {
 				mikIslem = null;
@@ -3650,12 +3801,14 @@ function redBirak(es, neden) {
 // Her ses m-line'ı ayrı ayarlanır: birincisi mikrofon (mono, konuşma), ikincisi yayın sesi (stereo,
 // müzik kalitesi). Eskiden SDP'nin tamamına tek ayar uygulanıyordu.
 const mikOpusu = () => ({ minptime: '10', useinbandfec: '1', usedtx: '0', stereo: '0', maxplaybackrate: '48000', maxaveragebitrate: String(gonderimHizi() * 1000) });
+// Paylaşılan ses stereo ya da mono (ayar). Mono'da kodlayıcı iki kanalı birleştirir. Gönderilen veri
+// kanal sayısıyla değil bit hızıyla (kbps) belirlenir: aynı kbps'de mono tek kanala daha çok bit ayırır.
 const yayinOpusu = () => ({
 	minptime: '10',
 	useinbandfec: '1',
 	usedtx: '0',
-	stereo: '1',
-	'sprop-stereo': '1',
+	stereo: ayar.yayinKanal === 1 ? '0' : '1',
+	'sprop-stereo': ayar.yayinKanal === 1 ? '0' : '1',
 	maxplaybackrate: '48000',
 	maxaveragebitrate: String(yayinSesHizi() * 1000),
 });
@@ -4082,7 +4235,7 @@ function sesKilidiAc() {
 // çalıştı → zinciri kur.
 function baglamDurumuDegisti() {
 	yankiBaglamDegisti();
-	if (!mikrofon || ayar.mikSeviye === 100) return;
+	if (!mikrofon) return;
 	const calisiyor = baglam && baglam.state === 'running';
 	if (calisiyor !== !!mikIslem) gidenIzKur();
 }
@@ -4138,7 +4291,7 @@ function kendiSeviye(konusuyor, seviye) {
 	const dolgu = $('ben-ses-satir').querySelector('.seviye-cubuk > div');
 	if (dolgu) dolgu.style.width = (acik ? Math.round(seviye * 100) : 0) + '%';
 	const ayarDolgu = $('ayar-olcer-dolgu');
-	if (ayarDolgu && !$('ayarlar').hidden && !denemeMik) ayarDolgu.style.width = Math.round(seviye * 100) + '%';
+	if (ayarDolgu && !$('ayarlar').hidden && !denemeMik && !(mikIslem && mikIslem.dugum)) ayarDolgu.style.width = Math.round(seviye * 100) + '%';
 }
 
 // Konuşma göstergesi: eş kutusu, kenar çubuğundaki kanal üyesi ve (bensem) kullanıcı kartı.
@@ -5974,6 +6127,9 @@ async function taniVeri() {
 	try {
 		const s = iz && iz.getSettings ? iz.getSettings() : null;
 		if (s) micAyarlar = { aygit: String(iz.label || '').slice(0, 60), aec: s.echoCancellation ?? null, ns: s.noiseSuppression ?? null, agc: s.autoGainControl ?? null, kanal: s.channelCount ?? null, ornekHizi: s.sampleRate ?? null, kulaklik: telefonKulaklik ? telefonKulaklik.kulaklik : null };
+		// Mikrofonun yolu: RNNoise çalışıyor mu, son ölçüm (konuşma olasılığı, bastırmadan önce/sonra ve
+		// eşikten önceki seviye, kapı açık mı), konuşma eşiği (%).
+		if (micAyarlar) micAyarlar.yol = { rnnoise: !!(mikIslem && mikIslem.dugum), olcum: mikIslem && mikIslem.olcum ? mikIslem.olcum : null, esik: ayar.esik, seviye: ayar.mikSeviye };
 	} catch {}
 	return {
 		ua: navigator.userAgent.slice(0, 110),
@@ -6039,6 +6195,7 @@ function taniDurdur() {
 
 let denemeMik = null; // ayarlarda "Mikrofonu dene" için geçici akış (sesli kanalda değilken)
 let denemeOlcer = null;
+let denemeYolu = null; // denemede mikrofonun yolu (RNNoise → seviye → eşik): seviye ve eşik işlenmiş sesle görünür
 
 async function aygitlariDoldur() {
 	if (!navigator.mediaDevices || typeof navigator.mediaDevices.enumerateDevices !== 'function') return;
@@ -6067,10 +6224,18 @@ async function aygitlariDoldur() {
 	$('ayar-cikis').disabled = !cikisDesteklenir;
 }
 
+function esikCiz() {
+	$('ayar-esik').value = String(ayar.esik);
+	$('ayar-esik-deger').textContent = ayar.esik > 0 ? '%' + ayar.esik : 'kapalı';
+	$('ayar-olcer-esik').style.left = ayar.esik + '%';
+	$('ayar-olcer-esik').hidden = ayar.esik === 0;
+}
 function ayarlarAc() {
-	$('ayar-gurultu').checked = ayar.gurultu;
 	$('ayar-yanki').checked = ayar.yanki;
-	$('ayar-kazanc').checked = ayar.kazanc;
+	esikCiz();
+	gurultuDurumuYaz();
+	$('ayar-olcer-dolgu').classList.remove('kapali');
+	$('ayar-yayin-kanal').value = String(ayar.yayinKanal);
 	$('ayar-mik-seviye').value = String(ayar.mikSeviye);
 	$('ayar-mik-seviye-deger').textContent = '%' + ayar.mikSeviye;
 	$('ayar-kalite').value = String(ayar.kalite);
@@ -6094,6 +6259,8 @@ function ayarlarKapat() {
 function denemeyiBitir() {
 	if (denemeOlcer) denemeOlcer.dur();
 	denemeOlcer = null;
+	if (denemeYolu) mikYoluKapat(denemeYolu);
+	denemeYolu = null;
 	if (denemeMik) denemeMik.getTracks().forEach((t) => t.stop());
 	denemeMik = null;
 	$('ayar-mik-dene').textContent = 'Mikrofonu dene';
@@ -6114,9 +6281,20 @@ $('ayar-mik-dene').addEventListener('click', async () => {
 	}
 	aygitlariDoldur(); // izin verilince aygıt adları görünür
 	$('ayar-mik-dene').textContent = 'Denemeyi bitir';
-	denemeOlcer = seviyeOlcer(denemeMik, (k, seviye) => {
-		$('ayar-olcer-dolgu').style.width = Math.round(Math.min(1, seviye * (ayar.mikSeviye / 100)) * 100) + '%';
-	});
+	// Mikrofonun yolundan (RNNoise → seviye → eşik) geçirilir: çubuk işlenmiş seviyeyi, yazı RNNoise'un
+	// sonucunu ve eşiğin geçilip geçilmediğini gösterir. Yol kurulamazsa ham seviye.
+	const ac = sesBaglami();
+	if (rnnoiseOlur() && ac && ac.state === 'running') {
+		await Promise.all([gurultuModulu(ac).soz, rnnoiseYukle()]);
+		if (!denemeMik) return;
+		denemeYolu = mikYoluKur(denemeMik, ac, () => {});
+	}
+	gurultuDurumuYaz();
+	if (!denemeYolu) {
+		denemeOlcer = seviyeOlcer(denemeMik, (k, seviye) => {
+			$('ayar-olcer-dolgu').style.width = Math.round(Math.min(1, seviye * (ayar.mikSeviye / 100)) * 100) + '%';
+		});
+	}
 });
 
 // Mikrofon ayarı değişti: sesli kanaldaysak yeni akışı al, eşlere bağla, eskisini kapat
@@ -6155,21 +6333,28 @@ $('ayar-mik').addEventListener('change', () => {
 	ayarKaydet();
 	mikrofonuYenile();
 });
-for (const [id, alan] of [
-	['ayar-gurultu', 'gurultu'],
-	['ayar-yanki', 'yanki'],
-	['ayar-kazanc', 'kazanc'],
-]) {
-	$(id).addEventListener('change', () => {
-		ayar[alan] = $(id).checked;
-		ayarKaydet();
-		mikrofonuYenile();
-	});
-}
+$('ayar-yanki').addEventListener('change', () => {
+	ayar.yanki = $('ayar-yanki').checked;
+	ayarKaydet();
+	mikrofonuYenile();
+});
+// Konuşma eşiği: konuşurken de hemen uygulanır (mikrofonun yoluna iletilir, mikrofon yeniden açılmaz).
+$('ayar-esik').addEventListener('input', () => {
+	ayar.esik = Math.min(100, Math.max(0, Math.round(Number($('ayar-esik').value) || 0)));
+	ayarKaydet();
+	esikCiz();
+	for (const yol of [mikIslem, denemeYolu]) if (yol && yol.dugum) mikYoluAyarla(yol);
+});
+$('ayar-yayin-kanal').addEventListener('change', () => {
+	ayar.yayinKanal = Number($('ayar-yayin-kanal').value) === 1 ? 1 : 2;
+	ayarKaydet();
+	opusHedefleriniYenile();
+});
 $('ayar-mik-seviye').addEventListener('input', () => {
 	ayar.mikSeviye = Number($('ayar-mik-seviye').value);
 	$('ayar-mik-seviye-deger').textContent = '%' + ayar.mikSeviye;
 	ayarKaydet();
+	if (denemeYolu) mikYoluAyarla(denemeYolu);
 	if (sesKanal && mikrofon) gidenIzKur();
 });
 $('ayar-cikis').addEventListener('change', () => {

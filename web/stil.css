@@ -1134,6 +1134,10 @@ audio.onizleme { width: min(400px, 100%); }
 .alan-adi output { color: var(--parlak); margin-left: 6px; text-transform: none; }
 .olcer-satir { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; }
 .olcer-satir .olcer { flex: 1; height: 8px; }
+/* Konuşma eşiği: seviye çubuğunun üstünde çizgi (aynı ölçek); çubuk eşiğin altındayken soluk */
+.olcer-satir .olcer { position: relative; overflow: visible; }
+.olcer > .olcer-esik { position: absolute; top: -3px; bottom: -3px; width: 2px; margin-left: -1px; background: var(--parlak); border-radius: 1px; }
+.olcer > div.kapali { opacity: 0.45; }
 .anahtar {
 	display: flex;
 	align-items: center;
@@ -1330,3 +1334,5 @@ audio.onizleme { width: min(400px, 100%); }
 @media (hover: none) {
 	.uye-at, .kanal-sil { opacity: 1; }
 }
+#ayar-gurultu-durum { margin-bottom: 2px; }
+#ayar-gurultu-sonuc:empty { display: none; }

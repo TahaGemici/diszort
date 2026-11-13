@@ -62,9 +62,12 @@ const RED_ONDE =
 // (RTCRtpReceiver.getCapabilities onu da listeler; yoksa RTCRtpReceiver hiç yok). dokunmatik:
 // telefon gibi (pointer: coarse). android: tarayıcı kimliği Android'deki Chrome. firefox: masaüstü
 // Firefox (Linux).
-function kur({ url = 'https://chat.deneme/', depo = {}, oturumDepo = {}, ekranYok = false, red = false, dokunmatik = false, android = false, firefox = false } = {}) {
+function kur({ url = 'https://chat.deneme/', depo = {}, oturumDepo = {}, ekranYok = false, red = false, dokunmatik = false, android = false, firefox = false, rnnoise = false } = {}) {
 	const dom = new JSDOM(HTML, { url, pretendToBeVisual: true, runScripts: 'dangerously' });
 	const { window } = dom;
+	// rnnoise: rnnoise.wasm gelir (mikrofonun yolu kurulur); değilse 404 (tarayıcının gürültü
+	// bastırması kullanılır). rnnoiseGelmez: rnnoise açıkken de dosya gelmez.
+	const getirilen = [];
 	if (dokunmatik) window.matchMedia = (q) => ({ matches: /pointer:\s*coarse/.test(q), media: q, addEventListener() {}, removeEventListener() {} });
 	if (firefox) Object.defineProperty(window.navigator, 'userAgent', { configurable: true, get: () => 'Mozilla/5.0 (X11; Linux x86_64; rv:153.0) Gecko/20100101 Firefox/153.0' });
 	if (android) {
@@ -95,7 +98,14 @@ function kur({ url = 'https://chat.deneme/', depo = {}, oturumDepo = {}, ekranYo
 		}
 	}
 	window.WebSocket = FakeWS;
-	window.fetch = async () => ({ ok: true, status: 200, json: async () => ({}) });
+	window.fetch = async (adres) => {
+		getirilen.push(String(adres));
+		if (String(adres).endsWith('rnnoise.wasm')) {
+			if (!rnnoise || window.rnnoiseGelmez) return { ok: false, status: 404 };
+			return { ok: true, status: 200, arrayBuffer: async () => new ArrayBuffer(16) };
+		}
+		return { ok: true, status: 200, json: async () => ({}) };
+	};
 	// jsdom'da blob adresi yok: sahte adres; indirme bağlantısına tıklama kaydedilir.
 	let urlSayac = 0;
 	window.URL.createObjectURL = () => 'blob:sahte/' + ++urlSayac;
@@ -556,6 +566,7 @@ function kur({ url = 'https://chat.deneme/', depo = {}, oturumDepo = {}, ekranYo
 	betik.textContent = BETIK;
 	window.document.body.append(betik);
 	Object.assign(durum, durumEk);
+	durum.getirilen = getirilen;
 	return { window, d: window.document, oc: durum, FakePC };
 }
 
@@ -995,7 +1006,8 @@ const ICE = { iceServers: [{ urls: ['stun:1.2.3.4:3478'] }, { urls: ['turn:1.2.3
 	await bekle(60);
 	denetle('mikrofon bir kez istendi (çift tıklamada sızıntı yok)', s.oc.mikrofon === 1, String(s.oc.mikrofon));
 	denetle('AGC kapalı istendi', s.oc.micKisit && s.oc.micKisit.autoGainControl === false, JSON.stringify(s.oc.micKisit));
-	denetle('yankı ve gürültü giderme açık istendi', s.oc.micKisit && s.oc.micKisit.echoCancellation === true && s.oc.micKisit.noiseSuppression === true);
+	// Bu denemede rnnoise.wasm gelmiyor: tarayıcının gürültü bastırması açık istenir.
+	denetle('yankı engelleme açık; RNNoise yokken tarayıcının gürültü bastırması', s.oc.micKisit && s.oc.micKisit.echoCancellation === true && s.oc.micKisit.noiseSuppression === true);
 	const sesGir = son('ses-gir');
 	denetle('ses-gir gönderildi (sessiz/sağır durumu ile)', sesGir && sesGir.kanal === 'sesli-sohbet' && sesGir.sessiz === false && sesGir.sagir === false, JSON.stringify(sesGir));
 	gelsin({ type: 'ses-girdi', kanal: 'sesli-sohbet', kisiler: ['bora'], ice: ICE, devam: false });
@@ -1736,7 +1748,11 @@ const ICE = { iceServers: [{ urls: ['stun:1.2.3.4:3478'] }, { urls: ['turn:1.2.3
 	d.getElementById('ben-ayarlar').click();
 	await bekle(30);
 	denetle('ses ayarları açıldı', d.getElementById('ayarlar').hidden === false);
-	denetle('ayarlar varsayılanları gösteriyor', d.getElementById('ayar-gurultu').checked && d.getElementById('ayar-yanki').checked && !d.getElementById('ayar-kazanc').checked && d.getElementById('ayar-kalite').value === '96');
+	denetle(
+		'ayarlar varsayılanları gösteriyor: gürültü bastırma ve otomatik kazanç seçeneği yok, konuşma eşiği %10',
+		!d.getElementById('ayar-gurultu') && !d.getElementById('ayar-kazanc') && d.getElementById('ayar-yanki').checked && d.getElementById('ayar-kalite').value === '96' && d.getElementById('ayar-esik').value === '10' && d.getElementById('ayar-esik-deger').textContent === '%10' && d.getElementById('ayar-olcer-esik').style.left === '10%',
+	);
+	denetle('RNNoise kurulamayan tarayıcıda tarayıcının gürültü bastırması yazar', /tarayıcınınki/.test(d.getElementById('ayar-gurultu-durum').textContent), d.getElementById('ayar-gurultu-durum').textContent);
 	d.getElementById('ayar-kalite').value = '128';
 	d.getElementById('ayar-kalite').dispatchEvent(new w.Event('change', { bubbles: true }));
 	denetle('kalite ayarı kalıcı', JSON.parse(w.localStorage.getItem('ses-ayarlari')).kalite === 128);
@@ -2214,7 +2230,7 @@ const ICE = { iceServers: [{ urls: ['stun:1.2.3.4:3478'] }, { urls: ['turn:1.2.3
 		t.oc.aygitlar = [VARSAYILAN, TELEFON, AHIZE, { kind: 'audioinput', deviceId: 'bt', label: 'Bluetooth headset', groupId: 'c' }];
 		let k = await gir();
 		denetle('Bluetooth kulaklık: mikrofon telefonun kendisinden, yankı engelleme kapalı (görüşme kipine geçilmez)', k.echoCancellation === false && k.deviceId && k.deviceId.exact === 'mik-1', JSON.stringify(k));
-		denetle('Bluetooth kulaklık: gürültü bastırma ve otomatik kazanç ayardaki gibi', k.noiseSuppression === tw.eval('ayar.gurultu') && k.autoGainControl === tw.eval('ayar.kazanc'), JSON.stringify(k));
+		denetle('Bluetooth kulaklık: otomatik kazanç kapalı; gürültü bastırma (RNNoise yokken) tarayıcınınki', k.noiseSuppression === true && k.autoGainControl === false, JSON.stringify(k));
 		denetle('Bluetooth kulaklık: kullanıcıya bir kez söylendi', /telefonun mikrofonundan/.test(td.getElementById('durum').textContent), td.getElementById('durum').textContent);
 		const tani = await tw.eval('taniVeri()');
 		denetle('tanıda kulaklık kipi', tani.micAyarlar && tani.micAyarlar.kulaklik === 'bluetooth', JSON.stringify(tani.micAyarlar));
@@ -2349,6 +2365,21 @@ const ICE = { iceServers: [{ urls: ['stun:1.2.3.4:3478'] }, { urls: ['turn:1.2.3
 		tgel({ type: 'sdp', from: 'bora', sdp: { type: 'answer', sdp: UC_KANALLI }, oturum: sdpler('bora').at(-1).oturum });
 		await bekle(40);
 		denetle('son seçim geçerli: 256 kbps', /maxaveragebitrate=256000/.test(yayinBolumu(bPc)) && sp(bPc).maxBitrate === 256000);
+		// Kanal sayısı: mono seçilince paylaşılan ses tek kanal kodlanır (yeniden anlaşmayla, iki yönde).
+		denetle('kanal seçimi varsayılan stereo', td.getElementById('ayar-yayin-kanal').value === '2' && /stereo=1;sprop-stereo=1/.test(yayinBolumu(bPc)));
+		const bKanal = sdpler('bora').length;
+		sec('ayar-yayin-kanal', '1');
+		await bekle(700);
+		denetle('mono: yeniden anlaşma istendi (teklif ettiğimizde yeni teklif, yanıtladığımızda yenile+teklif)', sdpler('bora').length === bKanal + 1 && istekler('zeynep').at(-1).teklif === true);
+		tgel({ type: 'sdp', from: 'bora', sdp: { type: 'answer', sdp: UC_KANALLI }, oturum: sdpler('bora').at(-1).oturum });
+		tgel({ type: 'sdp', from: 'zeynep', sdp: { type: 'offer', sdp: UC_KANALLI.replace('v=0', 'v=0\r\no=- 3 4 IN IP4 127.0.0.1') }, oturum: 'zoturum12345' });
+		await bekle(60);
+		denetle('mono: paylaşılan sesin Opus\'u tek kanal (stereo=0), mikrofon etkilenmez, kalıcı', /stereo=0;sprop-stereo=0/.test(yayinBolumu(bPc)) && /stereo=0;sprop-stereo=0/.test(yayinBolumu(zPc)) && /stereo=0/.test(String(bPc.remoteDescription.sdp).split('m=').slice(1)[0]) && JSON.parse(tw.localStorage.getItem('ses-ayarlari')).yayinKanal === 1, yayinBolumu(bPc));
+		sec('ayar-yayin-kanal', '2');
+		await bekle(700);
+		tgel({ type: 'sdp', from: 'bora', sdp: { type: 'answer', sdp: UC_KANALLI }, oturum: sdpler('bora').at(-1).oturum });
+		await bekle(40);
+		denetle('stereoya dönünce stereo=1', /stereo=1;sprop-stereo=1/.test(yayinBolumu(bPc)));
 		// Karşıdan "kalitemi değiştirdim, yeni teklif ver" (teklif eden bizsek): yalnızca yeni teklif.
 		let secenek = 'yok';
 		const asilTeklif = bPc.createOffer.bind(bPc);
@@ -2455,6 +2486,103 @@ const ICE = { iceServers: [{ urls: ['stun:1.2.3.4:3478'] }, { urls: ['turn:1.2.3
 		denetle('ikisi de kapalı: iki m-line\'da Opus önde', uygula(RED_ONDE).join('|') === '111 63|111 63');
 		const v = await uw.eval('taniVeri()');
 		denetle('tanı: RED isteği', v.redAyar && v.redAyar.destek === true && v.redAyar.mik === false && v.redAyar.yayin === false, JSON.stringify(v.redAyar));
+	}
+
+
+	// --- 29) mikrofonun yolu: RNNoise (gürültü bastırma, hep açık) → seviye → konuşma eşiği (kapı).
+	// Tarayıcının gürültü bastırması ve otomatik kazancı kapalı istenir; eşik %10 (= -55 dBFS) ve canlı
+	// değişir; RNNoise'un sonucu ayarlarda yazar. Kurulamazsa tarayıcının gürültü bastırmasına dönülür.
+	// Bilgisayar sesi (paylaşım) bu yoldan geçmez.
+	{
+		const t = kur({ rnnoise: true, depo: { anahtar: 'f'.repeat(128), ad: 'taha' } });
+		const tw = t.window;
+		const td = t.d;
+		const tgel = (m) => t.oc.ws.onmessage({ data: JSON.stringify(m) });
+		await bekle(40);
+		tgel({ type: 'hazir', ad: 'taha', kanallar, kimler: [{ ad: 'taha' }, { ad: 'bora' }], max: 10, maxKullanici: 10, beyazListe: 2, beyazListeAdlari: ['taha', 'bora'], sunulanDosyalar: [], ice: ICE, surum: 'v1' });
+		await bekle(40);
+		tw.eval("sesAc('sesli-sohbet')");
+		await bekle(80);
+		tgel({ type: 'ses-girdi', kanal: 'sesli-sohbet', kisiler: ['bora'], ice: ICE, devam: false });
+		await bekle(80);
+		const k = t.oc.micKisit || {};
+		denetle('RNNoise: tarayıcının gürültü bastırması ve otomatik kazancı kapalı, yankı engelleme açık istendi', k.noiseSuppression === false && k.autoGainControl === false && k.echoCancellation === true, JSON.stringify(k));
+		denetle('rnnoise.wasm ve gurultu.js yüklendi', t.oc.getirilen.includes('rnnoise.wasm') && t.oc.workletModulu === 'gurultu.js', JSON.stringify([t.oc.getirilen, t.oc.workletModulu]));
+		const dugumler = () => t.oc.workletDugumleri.filter((n) => n.ad === 'gurultu');
+		const dugum = dugumler().at(-1);
+		const o = dugum && dugum.secenek;
+		denetle(
+			'mikrofonun yolu kuruldu: tek kanal, RNNoise dosyası, seviye %100, eşik -55 dBFS',
+			!!o && o.channelCount === 1 && o.outputChannelCount[0] === 1 && o.processorOptions.wasm instanceof tw.ArrayBuffer === false && o.processorOptions.wasm.byteLength === 16 && o.processorOptions.kazanc === 1 && o.processorOptions.esik === -55,
+			JSON.stringify(o && { ...o, processorOptions: { ...o.processorOptions, wasm: o.processorOptions.wasm && o.processorOptions.wasm.byteLength } }),
+		);
+		const pc = tw.eval("esler.get('bora').pc");
+		const giden = () => pc._transceivers[0].sender.track;
+		denetle('eşe giden mikrofon izi yolun çıkışı (ham mikrofon değil)', t.oc.hedefIzleri.includes(giden()) && giden() !== t.oc.sonIz && tw.eval('gidenIz') === giden());
+		// Ayarlar: eşik, işaret, RNNoise yazısı ve sonucu.
+		td.getElementById('ben-ayarlar').click();
+		await bekle(30);
+		denetle('ayarlarda RNNoise yazıyor; eşik %10, işaret çubukta %10\'da', /RNNoise \(hep açık\)/.test(td.getElementById('ayar-gurultu-durum').textContent) && td.getElementById('ayar-esik-deger').textContent === '%10' && td.getElementById('ayar-olcer-esik').style.left === '10%' && !td.getElementById('ayar-olcer-esik').hidden);
+		dugum.port.onmessage({ data: { tur: 'olcum', konusma: 0.92, girisDb: -40, rnnDb: -58, cikisDb: -50, acik: true } });
+		await bekle(10);
+		const sonuc = td.getElementById('ayar-gurultu-sonuc').textContent;
+		denetle('RNNoise\'un sonucu: konuşma olasılığı, bastırılan gürültü, eşik durumu', /%92/.test(sonuc) && /-18 dB/.test(sonuc) && /ses gidiyor/.test(sonuc), sonuc);
+		denetle('çubuk eşikten önceki seviyeyi gösterir (-50 dBFS = %20)', td.getElementById('ayar-olcer-dolgu').style.width === '20%', td.getElementById('ayar-olcer-dolgu').style.width);
+		dugum.port.onmessage({ data: { tur: 'olcum', konusma: 0.05, girisDb: -52, rnnDb: -75, cikisDb: -75, acik: false } });
+		await bekle(10);
+		denetle('eşiğin altında: "ses gitmiyor", çubuk soluk', /eşiğin altında, ses gitmiyor/.test(td.getElementById('ayar-gurultu-sonuc').textContent) && td.getElementById('ayar-olcer-dolgu').classList.contains('kapali'));
+		const ayarIletisi = () => dugum.giden.filter((v) => v.tur === 'ayar').at(-1);
+		const kaydir = (id, deger, olay = 'input') => {
+			td.getElementById(id).value = String(deger);
+			td.getElementById(id).dispatchEvent(new tw.Event(olay, { bubbles: true }));
+		};
+		const istekSayisi = t.oc.mikrofon;
+		kaydir('ayar-esik', 0);
+		await bekle(10);
+		denetle('eşik 0: kapalı (yola esik null), işaret gizli, mikrofon yeniden açılmadı', ayarIletisi() && ayarIletisi().esik === null && td.getElementById('ayar-esik-deger').textContent === 'kapalı' && td.getElementById('ayar-olcer-esik').hidden && t.oc.mikrofon === istekSayisi, JSON.stringify(ayarIletisi()));
+		kaydir('ayar-esik', 40);
+		await bekle(10);
+		denetle('eşik %40 = -40 dBFS, kalıcı', ayarIletisi().esik === -40 && JSON.parse(tw.localStorage.getItem('ses-ayarlari')).esik === 40 && td.getElementById('ayar-olcer-esik').style.left === '40%');
+		const gidenOnce = giden();
+		kaydir('ayar-mik-seviye', 150);
+		await bekle(10);
+		denetle('mikrofon seviyesi yolun içinde (kazanç 1,5), yol yeniden kurulmadı', ayarIletisi().kazanc === 1.5 && dugumler().length === 1 && giden() === gidenOnce, JSON.stringify(ayarIletisi()));
+		const v = await tw.eval('taniVeri()');
+		denetle('tanı: yol (RNNoise çalışıyor, son ölçüm, eşik, seviye)', v.micAyarlar && v.micAyarlar.yol && v.micAyarlar.yol.rnnoise === true && v.micAyarlar.yol.esik === 40 && v.micAyarlar.yol.seviye === 150 && v.micAyarlar.yol.olcum && v.micAyarlar.yol.olcum.konusma === 0.05, JSON.stringify(v.micAyarlar && v.micAyarlar.yol));
+		// Bilgisayar sesi (ekransız paylaşım, sekmenin/bilgisayarın sesi): tarayıcının hiçbir işlemi yok ve
+		// mikrofonun yolundan geçmez.
+		t.oc.ekranSesiVer = true;
+		await tw.eval('yayinBaslat(true)');
+		await bekle(60);
+		const ek = t.oc.ekranSecenek && t.oc.ekranSecenek.audio;
+		denetle('paylaşılan ses işlenmeden: yankı engelleme, gürültü bastırma, otomatik kazanç kapalı', !!ek && ek.echoCancellation === false && ek.noiseSuppression === false && ek.autoGainControl === false, JSON.stringify(ek));
+		denetle('paylaşılan ses RNNoise/eşikten geçmez (yeni yol kurulmadı, giden iz ekranın kendi sesi)', dugumler().length === 1 && pc._transceivers[1].sender.track === t.oc.ekranIzleri[1]);
+		tw.eval('yayinDurdur()');
+		td.dispatchEvent(new tw.KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+		// RNNoise kurulamadı (wasm hatası): tarayıcının gürültü bastırmasıyla yeniden açılır, ham iz gider.
+		kaydir('ayar-mik-seviye', 100);
+		await bekle(10);
+		const once = t.oc.mikrofon;
+		dugum.port.onmessage({ data: { tur: 'hata', metin: 'CompileError' } });
+		await bekle(80);
+		denetle(
+			'RNNoise hatası: mikrofon tarayıcının gürültü bastırmasıyla yeniden açıldı, ham iz gidiyor, tanıya yazıldı',
+			t.oc.mikrofon === once + 1 && t.oc.micKisit.noiseSuppression === true && giden() === t.oc.sonIz && t.oc.gonderilen.some((m) => m.type === 'tani' && m.veri.olay === 'rnnoise-yok' && m.veri.neden === 'wasm'),
+			JSON.stringify(t.oc.micKisit),
+		);
+		tw.eval('sesKapat()');
+	}
+	// rnnoise.wasm gelmezse: tarayıcının gürültü bastırması, tanıya yazılır.
+	{
+		const u = kur({ rnnoise: true, depo: { anahtar: 'f'.repeat(128), ad: 'taha' } });
+		u.window.rnnoiseGelmez = true;
+		await bekle(40);
+		u.oc.ws.onmessage({ data: JSON.stringify({ type: 'hazir', ad: 'taha', kanallar, kimler: [{ ad: 'taha' }], max: 10, maxKullanici: 10, beyazListe: 1, beyazListeAdlari: ['taha'], sunulanDosyalar: [], ice: ICE, surum: 'v1' }) });
+		await bekle(40);
+		u.window.eval("sesAc('sesli-sohbet')");
+		await bekle(80);
+		denetle('rnnoise.wasm gelmedi: tarayıcının gürültü bastırması açık istendi, tanıya yazıldı', u.oc.micKisit && u.oc.micKisit.noiseSuppression === true && u.oc.gonderilen.some((m) => m.type === 'tani' && m.veri.olay === 'rnnoise-yok' && m.veri.neden === 'dosya'), JSON.stringify(u.oc.micKisit));
+		u.window.eval('sesKapat()');
 	}
 
 	console.log(process.exitCode ? 'BAŞARISIZ' : `Arayüz denemeleri geçti (${gecen}).`);

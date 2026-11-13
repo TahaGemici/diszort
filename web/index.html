@@ -213,12 +213,14 @@
 			<label class="alan-adi" for="ayar-mik-seviye">Mikrofon seviyesi <output id="ayar-mik-seviye-deger" for="ayar-mik-seviye">%100</output></label>
 			<input id="ayar-mik-seviye" type="range" min="0" max="200" step="5" value="100">
 			<div class="olcer-satir">
-				<div class="olcer" aria-hidden="true"><div id="ayar-olcer-dolgu"></div></div>
+				<div class="olcer" aria-hidden="true"><div id="ayar-olcer-dolgu"></div><span id="ayar-olcer-esik" class="olcer-esik"></span></div>
 				<button id="ayar-mik-dene" class="ikincil kucuk" type="button">Mikrofonu dene</button>
 			</div>
-			<label class="anahtar"><input id="ayar-gurultu" type="checkbox"><span>Gürültü bastırma</span></label>
+			<label class="alan-adi" for="ayar-esik">Konuşma eşiği <output id="ayar-esik-deger" for="ayar-esik">%10</output></label>
+			<input id="ayar-esik" type="range" min="0" max="100" step="1" value="10" title="Sesin bu çizginin altındayken gönderilmez (0: kapalı). Konuşurken çubuğun çizgiyi geçtiği, susunca geçmediği bir yer seç.">
+			<p id="ayar-gurultu-durum" class="ayar-not-ic">Gürültü bastırma: RNNoise (hep açık)</p>
+			<p id="ayar-gurultu-sonuc" class="ayar-not-ic"></p>
 			<label class="anahtar"><input id="ayar-yanki" type="checkbox"><span>Yankı engelleme</span></label>
-			<label class="anahtar"><input id="ayar-kazanc" type="checkbox"><span>Otomatik ses düzeyi (AGC)</span></label>
 		</section>
 		<section class="ayar-bolum">
 			<h3>Hoparlör</h3>
@@ -248,6 +250,11 @@
 					</select>
 					<label class="anahtar red-kutu" id="ayar-yayin-red-etiket"><input id="ayar-yayin-red" type="checkbox"><span>RED</span></label>
 				</div>
+				<label class="alan-adi" for="ayar-yayin-kanal">Paylaştığın sesin kanalları</label>
+				<select id="ayar-yayin-kanal">
+					<option value="2">Stereo (iki kanal)</option>
+					<option value="1">Mono (tek kanal)</option>
+				</select>
 			</div>
 			<label class="anahtar"><input id="ayar-sesler" type="checkbox"><span>Giriş / çıkış sesleri</span></label>
 		</section>
