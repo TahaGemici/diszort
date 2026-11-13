@@ -30,7 +30,11 @@ da sunucuya yüklenmez, paylaşandan doğrudan alınır. İçeri yalnızca içer
   görüşme profiline geçer; yankı engellemesi kapalı mikrofonda almaz (Chromium kaynağı). Kulaklık
   takılıyken yankı engelleme kapalı istenir (kulaklıkta yankı olmaz); Bluetooth kulaklıkta ses
   telefonun kendi mikrofonundan alınır (kulaklığın mikrofonu onu yine görüşme profiline geçirirdi),
-  telefon konuşana yakın olmalı. Ses ayarlarında mikrofon seçildiyse ona dokunulmaz.
+  telefon konuşana yakın olmalı. Konuşurken kulaklık takılıp çıkarılırsa (Bluetooth bağlanıp
+  koparsa) mikrofon yeni duruma göre yeniden açılır (kulaklık çıkınca ses hoparlörden çalar, yankı
+  engelleme gerekir). Ses ayarlarında mikrofon seçildiyse ona dokunulmaz. Klasik Bluetooth kulaklık
+  zaten aynı anda hem stereo müzik çalıp hem mikrofonunu kullanamaz (her uygulamada mikrofon devreye
+  girince görüşme sesine düşer); telefonun mikrofonunu kullanmak bunun bilinen çözümüdür.
 - **Kayıplara karşı yedek (RED):** her ses paketi (konuşma da paylaşılan ses de) bir öncekinin kopyasını
   da taşır; tek tük kaybolan paket bir sonrakinden yerine konur. Alıcının uydurmak zorunda kaldığı ses
   %5 rastgele paket kaybında ~%5'ten ~%0,2'ye, %10'da ~%6'dan ~%1'e iner; bedeli bit hızının iki katı.

@@ -2576,6 +2576,25 @@ async function telefonKulaklikKipi() {
 	const telefon = girisler.find((a) => ad(a) === 'speakerphone');
 	return { kulaklik: 'bluetooth', deviceId: telefon ? telefon.deviceId : null };
 }
+// Konuşurken kulaklık takılıp çıkarılırsa (Bluetooth bağlandı/koptu) mikrofon o anki duruma göre
+// yeniden açılır: kulaklık çıkınca ses telefonun hoparlöründen çalar ve yankı engelleme gerekir;
+// takılınca görüşme kipinden çıkılır (Bluetooth'ta telefonun mikrofonuna geçilir). Aygıt
+// değişiklikleri art arda gelir: 1 sn beklenir. Yalnızca kip değiştiyse dokunulur.
+let kulaklikDenetimi = null;
+function kulaklikDegistiMi() {
+	if (!androidMi() || !dokunmatik() || ayar.mikId) return;
+	clearTimeout(kulaklikDenetimi);
+	kulaklikDenetimi = setTimeout(async () => {
+		kulaklikDenetimi = null;
+		if (!sesKanal || !mikrofon || mikBirakildi || mikAliniyor) return;
+		const yeni = await telefonKulaklikKipi();
+		const eski = telefonKulaklik;
+		const ayni = (!yeni && !eski) || (!!yeni && !!eski && yeni.kulaklik === eski.kulaklik && yeni.deviceId === eski.deviceId);
+		if (ayni || !sesKanal || !mikrofon) return;
+		taniGonder({ olay: 'kulaklik-degisti', eski: eski ? eski.kulaklik : null, yeni: yeni ? yeni.kulaklik : null });
+		mikrofonuYenile();
+	}, 1000);
+}
 let kulaklikBildirildi = false;
 let kulaklikNotuBekliyor = false; // kanala girerken: not giriş iletisine eklenir (yoksa üstüne yazılırdı)
 const KULAKLIK_NOTU = 'Bluetooth kulaklık: sesin telefonun mikrofonundan alınıyor; kulaklık müzik kalitesinde kalır (kulaklığın mikrofonu telefonu görüşme kipine alıp sesi bozardı).';
@@ -5991,12 +6010,24 @@ async function mikrofonuYenile() {
 	}
 	// Susturulduğu için bırakılmışsa yeni ayar açınca alınan mikrofona uygulanır.
 	if (!sesKanal || mikBirakildi || mikAliniyor) return;
+	// Android'de eskisi önce kapatılır: Chrome görüşme kipine girip girmemeye yalnızca açık başka giriş
+	// yokken karar veriyor (yoksa yankı engellemesiz yeni mikrofonla görüşme kipinde kalınırdı).
+	if (androidMi()) {
+		mikrofonuBirak();
+		gidenIzKur();
+	}
 	try {
 		const akis = await mikrofonAc();
 		if (!sesKanal) return akis.getTracks().forEach((t) => t.stop());
 		mikrofonuKullan(akis);
 	} catch (h) {
 		durum(mikHataMetni(h), true);
+		if (!mikrofon) {
+			// Eskisi önce kapatılmıştı (Android): yalnızca dinleniyor.
+			mikHatasi = mikHataMetni(h);
+			benSatiriCiz();
+			sesUyarisiCiz();
+		}
 	}
 	gonder({ type: 'sessiz', sessiz: mikSessizMi(), sagir: ayar.sagir });
 }
@@ -6046,6 +6077,7 @@ $('ayar-sesler').addEventListener('change', () => {
 if (navigator.mediaDevices && 'ondevicechange' in navigator.mediaDevices) {
 	navigator.mediaDevices.addEventListener('devicechange', () => {
 		if (!$('ayarlar').hidden) aygitlariDoldur();
+		kulaklikDegistiMi();
 	});
 }
 

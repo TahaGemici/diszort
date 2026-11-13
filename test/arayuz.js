@@ -140,8 +140,11 @@ function kur({ url = 'https://chat.deneme/', depo = {}, oturumDepo = {}, ekranYo
 	durum.aygitKisit = null;
 	durum.aygitIzi = null;
 	durum.aygitHata = '';
-	// getUserMedia sırası: mikrofon mu aygıt mı; aygıt açılırken mikrofon açık mıydı.
+	// getUserMedia sırası: mikrofon mu aygıt mı; açılırken (önceki) mikrofon açık mıydı.
 	durum.gumSirasi = [];
+	// Aygıt değişikliği (devicechange) dinleyicileri; durum.aygitDegisti() tetikler.
+	durum.aygitDinleyicileri = {};
+	durum.aygitDegisti = () => (durum.aygitDinleyicileri.devicechange || []).forEach((fn) => fn(new window.Event('devicechange')));
 	Object.defineProperty(window.navigator, 'mediaDevices', {
 		value: {
 			getUserMedia: async (kisitlar) => {
@@ -162,7 +165,7 @@ function kur({ url = 'https://chat.deneme/', depo = {}, oturumDepo = {}, ekranYo
 					return akisYap([iz]);
 				}
 				durum.mikrofon++;
-				durum.gumSirasi.push({ tur: 'mik' });
+				durum.gumSirasi.push({ tur: 'mik', oncekiAcik: !!(durum.sonIz && durum.sonIz.readyState === 'live') });
 				durum.micKisit = ses ? { ...ses } : null;
 				const iz = izYap();
 				const ayarlar = iz.getSettings();
@@ -185,7 +188,9 @@ function kur({ url = 'https://chat.deneme/', depo = {}, oturumDepo = {}, ekranYo
 					},
 			getSupportedConstraints: () => (durum.ekranSesiYok ? { echoCancellation: true, deviceId: true } : { restrictOwnAudio: true, suppressLocalAudioPlayback: true }),
 			enumerateDevices: async () => durum.aygitlar.map((a) => (durum.etiketGizli ? { ...a, label: '' } : { ...a })),
-			addEventListener() {},
+			addEventListener(tur, fn) {
+				(durum.aygitDinleyicileri[tur] = durum.aygitDinleyicileri[tur] || []).push(fn);
+			},
 			ondevicechange: null,
 		},
 		configurable: true,
@@ -2206,6 +2211,30 @@ const ICE = { iceServers: [{ urls: ['stun:1.2.3.4:3478'] }, { urls: ['turn:1.2.3
 		denetle('Bluetooth kulaklık: kullanıcıya bir kez söylendi', /telefonun mikrofonundan/.test(td.getElementById('durum').textContent), td.getElementById('durum').textContent);
 		const tani = await tw.eval('taniVeri()');
 		denetle('tanıda kulaklık kipi', tani.micAyarlar && tani.micAyarlar.kulaklik === 'bluetooth', JSON.stringify(tani.micAyarlar));
+		// Konuşurken Bluetooth koptu: ses artık telefonun hoparlöründen; mikrofon önce bırakılıp yankı
+		// engellemeli yeniden açılır (Chrome görüşme kipine ancak açık başka giriş yokken karar veriyor).
+		const kulaklikOlaylari = () => t.oc.gonderilen.filter((m) => m.type === 'tani' && m.veri.olay === 'kulaklik-degisti').map((m) => m.veri);
+		t.oc.aygitlar = [VARSAYILAN, TELEFON, AHIZE];
+		t.oc.gumSirasi = [];
+		t.oc.aygitDegisti();
+		t.oc.aygitDegisti(); // art arda gelir
+		await bekle(1300);
+		k = t.oc.micKisit;
+		denetle('Bluetooth koptu: mikrofon yankı engellemeli yeniden açıldı (hoparlörden çalıyor)', k.echoCancellation === true && !k.deviceId && t.oc.gumSirasi.length === 1, JSON.stringify({ k, sira: t.oc.gumSirasi }));
+		denetle('Bluetooth koptu: eski mikrofon önce kapatıldı', t.oc.gumSirasi[0] && t.oc.gumSirasi[0].oncekiAcik === false, JSON.stringify(t.oc.gumSirasi));
+		denetle('kulaklık değişimi teşhise yazıldı', kulaklikOlaylari().some((v) => v.eski === 'bluetooth' && v.yeni === null), JSON.stringify(kulaklikOlaylari()));
+		// Yeniden bağlandı: telefonun mikrofonuna, yankı engellemesiz.
+		t.oc.aygitlar = [VARSAYILAN, TELEFON, AHIZE, { kind: 'audioinput', deviceId: 'bt', label: 'Bluetooth headset', groupId: 'c' }];
+		t.oc.gumSirasi = [];
+		t.oc.aygitDegisti();
+		await bekle(1300);
+		k = t.oc.micKisit;
+		denetle('Bluetooth bağlandı: mikrofon telefonun kendisinden, yankı engellemesiz', k.echoCancellation === false && k.deviceId && k.deviceId.exact === 'mik-1' && t.oc.gumSirasi.length === 1 && !t.oc.gumSirasi[0].oncekiAcik, JSON.stringify({ k, sira: t.oc.gumSirasi }));
+		// Kipi değiştirmeyen aygıt değişikliğinde mikrofona dokunulmaz.
+		const mikSayisi = t.oc.mikrofon;
+		t.oc.aygitDegisti();
+		await bekle(1300);
+		denetle('kip değişmediyse mikrofon yeniden açılmaz', t.oc.mikrofon === mikSayisi && tw.eval('!!mikrofon'));
 		await cik();
 		t.oc.aygitlar = [VARSAYILAN, TELEFON, AHIZE, { kind: 'audioinput', deviceId: 'kablo', label: 'Wired headset', groupId: 'd' }];
 		k = await gir();
