@@ -34,7 +34,11 @@ da sunucuya yüklenmez, paylaşandan doğrudan alınır. İçeri yalnızca içer
   koparsa) mikrofon yeni duruma göre yeniden açılır (kulaklık çıkınca ses hoparlörden çalar, yankı
   engelleme gerekir). Ses ayarlarında mikrofon seçildiyse ona dokunulmaz. Klasik Bluetooth kulaklık
   zaten aynı anda hem stereo müzik çalıp hem mikrofonunu kullanamaz (her uygulamada mikrofon devreye
-  girince görüşme sesine düşer); telefonun mikrofonunu kullanmak bunun bilinen çözümüdür.
+  girince görüşme sesine düşer); telefonun mikrofonunu kullanmak bunun bilinen çözümüdür. Görüşme
+  kipinde Android başka uygulamalarınki de dahil bütün sesleri görüşme yoluna verir, A2DP'yi hiç
+  kullanmaz (Android ses politikası: frameworks/av, enginedefault/src/Engine.cpp). Bu yol konuşma
+  için yapılmıştır (tek kanal, 8 kHz'e kadar): konuşmada bozulma pek fark edilmez, müzikte barizdir.
+  Ses bağlamının gecikmesi de bunu gösterir: A2DP'de ~250 ms, görüşme kipinde ~100 ms.
 - **Kayıplara karşı yedek (RED):** her ses paketi (konuşma da paylaşılan ses de) bir öncekinin kopyasını
   da taşır; tek tük kaybolan paket bir sonrakinden yerine konur. Alıcının uydurmak zorunda kaldığı ses
   %5 rastgele paket kaybında ~%5'ten ~%0,2'ye, %10'da ~%6'dan ~%1'e iner; bedeli bit hızının iki katı.
@@ -70,9 +74,10 @@ da sunucuya yüklenmez, paylaşandan doğrudan alınır. İçeri yalnızca içer
 - **Kopmalara dayanıklı:** sunucu bağlantısı koparsa ya da telefon siteyi arka plana alırsa ses sürer,
   bağlantı kendiliğinden geri gelir.
 - **Gecikme birikmez:** sesi çalan çıkış bir an durursa (telefonda mikrofon açılıp kapanınca Android ses
-  kipini değiştirir; çalma ilk başlarken de olabiliyor) gelen ses alıcının tamponunda birikir ve
-  tarayıcı bunu müzikte çok yavaş, parça atarak eritir (paylaşılan müzikte 1,5 sn gecikme ve kesik
-  kesik ses kalıyordu). Tampon hedefinin 350 ms üstünde ~4 sn kalırsa o kişiyle bağlantı
+  kipini değiştirir; çalma ilk başlarken de olabiliyor) gelen ses alıcının tamponunda birikir;
+  tarayıcı bunu ancak sesi hızlandırarak eritir (2 sn'lik duruş gerçek müzikte de konuşmada da
+  ~10 sn sürdü, ses bu sürede yer yer %45'e kadar hızlı çaldı; bir telefonda paylaşılan müzikte
+  1,4-1,6 sn birikme ölçüldü). Tampon hedefinin 350 ms üstünde ~4 sn kalırsa o kişiyle bağlantı
   kendiliğinden yeniden kurulur (yerel ağda ~30 ms'lik bir kesinti).
 - Kanallar arayüzden eklenip silinir; masaüstünde ve telefonda çalışır.
 

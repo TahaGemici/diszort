@@ -5578,10 +5578,11 @@ function calmaGozcusu(es, kanal, oge, d) {
 }
 // Alıcı tamponunda birikme. Sesi çalan çıkış bir an durursa (telefonda mikrofon açılıp kapanınca
 // Android ses kipini değiştirir, ses çıkışı yeniden açılır; telefon bir an donar) gelen paketler
-// tamponda birikir ve tarayıcı bunu ancak sesi hızlandırarak eritir: konuşmada çabuk, müzikte çok
-// yavaş ve parça atarak (duyulan "kesilmeler"). Ölçüm (gerçek Chromium, çıkış 2 sn durduruldu):
-// paylaşılan müzikte tampon ~2 sn'ye çıktı, 25 sn'de ancak ~1,5 sn'ye indi; şikayetteki telefonda
-// 1,4-1,6 sn (hedefi 80-100 ms). Gönderenin akışı kısa süre durdurması işe yaramıyor (alıcı boşluğu
+// tamponda birikir ve tarayıcı bunu ancak sesi hızlandırarak eritir. Ölçüm (gerçek Chromium, çıkış
+// 2 sn durduruldu, bu gözcü kapalı): gerçek müzikte de konuşmada da tampon ~1,5-1,8 sn'ye çıktı,
+// 9-13 sn'de eridi; ses bu sürede yer yer %45'e kadar hızlı çaldı (yapay, saf tonlu müzikte 25 sn'de
+// ancak ~1,5 sn'ye inmişti). Şikayetteki telefonda 1,4-1,6 sn (hedefi 80-100 ms). Gönderenin akışı
+// kısa süre durdurması işe yaramıyor (alıcı boşluğu
 // ağ gecikmesi sanıp hedefini ~1,8 sn'ye çıkarıyor); bağlantıyı baştan kurmak tamponu hemen boşaltıyor
 // (yerel ağda ~30 ms). Tampon hedefinin 350 ms üstünde iki ölçüm (~4 sn) üst üste kalırsa o eşle
 // bağlantı baştan kurulur: teklif eden kendisi kurar, yanıtlayan ondan ister (yenile, tam). Aynı eşle

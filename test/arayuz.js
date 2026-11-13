@@ -2030,7 +2030,7 @@ const ICE = { iceServers: [{ urls: ['stun:1.2.3.4:3478'] }, { urls: ['turn:1.2.3
 	}
 
 	// --- 25) alıcı tamponunda birikme: çıkış bir an durunca paketler tamponda birikir, tarayıcı bunu
-	// müzikte çok yavaş eritir (1,5 sn'lik gecikme kalıyordu). Tampon hedefinin 350 ms üstünde iki ölçüm
+	// ancak sesi hızlandırarak eritir (2 sn'lik duruş ~10 sn sürer). Tampon hedefinin 350 ms üstünde iki ölçüm
 	// sürerse o eşle bağlantı baştan kurulur: teklif eden kendisi kurar, yanıtlayan ondan ister (yenile,
 	// tam). Normal tamponda bir şey yapılmaz; aynı eşle en çok 30 sn'de bir.
 	{
