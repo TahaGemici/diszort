@@ -4,7 +4,7 @@
 // düşer. Alıcıda duyulan bozulma ölçülür: uydurulan (sessiz olmayan) ses / alınan ses.
 //
 // Konuşma (mikrofon kanalının Opus ayarlarıyla: mono, 96 kbps) ve müzik (paylaşım kanalınınkiyle:
-// stereo, 160 kbps), düz Opus ve RED'le (kodek sırası ana.js'teki kodekSirasi ile, uygulamadaki gibi).
+// stereo, yedekli 192 kbps; yedeğin sığmadığı 510 ayrıca), düz Opus ve RED'le (kodek sırası ana.js'teki kodekSirasi ile, uygulamadaki gibi).
 // Beklenen: düz Opus'ta kaybın yaklaşık yarısı ile tamamı arası uydurulur (Opus'un kendi yedeği ancak
 // kodlayıcı kaybı öğrenince, düşük kalitede devreye girer), RED'le yalnızca art arda iki paketin birden
 // düştüğü yerler (rastgele %10 kayıpta ~%1).
@@ -233,10 +233,11 @@ async function olc(sayfa, { red, fmtp, stereo }) {
 	try {
 		for (const [tur, ses, fmtp, stereo, yedekSigar = true] of [
 			['konuşma (mikrofon: mono, 96 kbps)', konusma(60), 'stereo=0;usedtx=0;useinbandfec=1;maxaveragebitrate=96000', false],
-			['müzik (paylaşım "Standart": stereo, 160 kbps)', muzik(60), 'stereo=1;sprop-stereo=1;usedtx=0;useinbandfec=1;maxaveragebitrate=160000', true],
-			// Paylaşımın varsayılanı (sistem kalitesi): 20 ms'lik çerçeve ~1275 bayt; libwebrtc RED paketi
-			// 1200 baytı geçemez ve 1024 bayttan büyük çerçeveyi yedekleyemez: yedek kendiliğinden atlanır.
-			['müzik (paylaşım "Sistem kalitesi": stereo, 510 kbps)', muzik(60), 'stereo=1;sprop-stereo=1;usedtx=0;useinbandfec=1;maxaveragebitrate=510000', true, false],
+			// Paylaşımın otomatik ayarı yedek anlaşılınca 192 kbps: yedek pakete sığar.
+			['müzik (paylaşım, yedekli: stereo, 192 kbps)', muzik(60), 'stereo=1;sprop-stereo=1;usedtx=0;useinbandfec=1;maxaveragebitrate=192000', true],
+			// "En yüksek" (510): 20 ms'lik çerçeve ~1275 bayt; libwebrtc RED paketi 1200 baytı geçemez ve
+			// 1024 bayttan büyük çerçeveyi yedekleyemez: yedek kendiliğinden atlanır.
+			['müzik (paylaşım "En yüksek": stereo, 510 kbps)', muzik(60), 'stereo=1;sprop-stereo=1;usedtx=0;useinbandfec=1;maxaveragebitrate=510000', true, false],
 		]) {
 			const dosya = path.join(klasor, (stereo ? 'muzik' : 'konusma') + '.wav');
 			wavYaz(dosya, ses);

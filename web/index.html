@@ -236,22 +236,23 @@
 			<div id="ayar-paylasim">
 				<label class="alan-adi" for="ayar-yayin-kalite">Paylaştığın ses</label>
 				<select id="ayar-yayin-kalite">
-					<option value="510">Sistem kalitesi · 510 kbps (en yüksek)</option>
-					<option value="256">Yüksek · 256 kbps</option>
-					<option value="160">Standart · 160 kbps (kayıplara karşı yedekli)</option>
-					<option value="96">Düşük · 96 kbps</option>
+					<option value="oto">Otomatik · yedek varsa 192, yoksa 510 kbps</option>
+					<option value="510">En yüksek · 510 kbps (yedek sığmaz)</option>
+					<option value="192">Yüksek · 192 kbps (yedekli)</option>
+					<option value="96">Düşük · 96 kbps (yedekli)</option>
 				</select>
 				<label class="alan-adi" for="ayar-ekran-kalite">Paylaştığın ekran</label>
 				<select id="ayar-ekran-kalite">
 					<option value="dusuk">Düşük · 720p, 15 fps · 1 Mbit/s</option>
 					<option value="standart">Standart · 1080p, 30 fps · 2,5 Mbit/s</option>
 					<option value="yuksek">Yüksek · 1080p, 60 fps · 5 Mbit/s</option>
+					<option value="akici">Akıcı · 1080p, 120 fps · 8 Mbit/s (Firefox'ta 60)</option>
 					<option value="kaynak">En yüksek · ekranın çözünürlüğü, 60 fps · 10 Mbit/s</option>
 				</select>
 			</div>
 			<label class="anahtar"><input id="ayar-sesler" type="checkbox"><span>Giriş / çıkış sesleri</span></label>
 		</section>
-		<p class="ayar-not">Kulaklık kullanıyorsan yankı engellemeyi kapatmak sesi biraz daha doğal yapar. Paylaşılan ses tarayıcıda sıkıştırılmadan gönderilemez; 510 kbps'de aslından ayırt edilmez, ama bağlantı çok kayıplıysa 160'ın kayıplara karşı yedeği işe yarar. Kalabalık kanallarda gönderilen kalite kendiliğinden düşürülür. Kısayollar: Ctrl+Shift+M mikrofon, Ctrl+Shift+D sağırlaştır.</p>
+		<p class="ayar-not">Kulaklık kullanıyorsan yankı engellemeyi kapatmak sesi biraz daha doğal yapar. Paylaşılan ses tarayıcıda sıkıştırılmadan gönderilemez; 192 kbps'de de aslından ayırt edilmez. Kayıplara karşı yedek (RED) yalnızca iki taraf da Chrome tabanlıysa (Chrome, Edge, Samsung Internet…) çalışır, Firefox desteklemez; 510'da pakete sığmaz. Kalabalık kanallarda gönderilen kalite kendiliğinden düşürülür. Kısayollar: Ctrl+Shift+M mikrofon, Ctrl+Shift+D sağırlaştır.</p>
 	</div>
 </div>
 
