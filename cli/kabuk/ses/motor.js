@@ -278,11 +278,12 @@ class UzakIz extends IzKaydi {
 // Bir hoparlör (PulseAudio çıkışı): ona çalan her şey (öğeler, bildirim sesleri) kuantum kuantum
 // toplanır, yeniden örneklenip sunucunun istediği kadar yazılır.
 //
-// Sunucuda hedef kadar (60 ms) ses tutulur: motor bu sürecin ana iş parçacığında çalışır (WebRTC
+// Sunucuda hedef kadar (60 ms; sunucu bunun bir kısmını aygıtın kendi tamponuna ayırır) ses tutulur: motor bu sürecin ana iş parçacığında çalışır (WebRTC
 // kitaplığı çözdüğü sesi oraya verir), çöp toplama ya da yoğun bir an yüzünden onlarca ms gecikebilir;
 // bu sırada sunucu tamponundan çalar, kesinti duyulmaz. Sunucunun almadığı ses burada kısa bir kuyrukta
 // bekler; kuyruğun boyu aygıtla aradaki hız farkını ölçmeye yarar.
 const CIKIS_HEDEF_MS = 60;
+const CIKIS_HEDEF_ENCOK_MS = 200; // tampon boşaldıkça büyür (her seferinde 20 ms), en çok bu kadar
 const CIKIS_YEREL_MS = 6; // kuyrukta tutulmak istenen
 const CIKIS_YEREL_ENCOK_MS = 30; // kuyruk bunu aşıp öyle kalırsa (sunucu almıyor) eskisi atılır
 class CikisAygiti {
@@ -304,6 +305,8 @@ class CikisAygiti {
 		this.ara = new Float32Array(2048);
 		this.atilan = 0; // sunucu almadığı için atılan (çerçeve; teşhis)
 		this.bosalma = 0; // sunucunun tamponu kaç kez boşaldı (teşhis)
+		this.sonBosalma = 0;
+		this.hedefMs = CIKIS_HEDEF_MS;
 		this.fazlaBasi = 0;
 	}
 	ekle(l, r, kazanc) {
@@ -349,7 +352,7 @@ class CikisAygiti {
 		this.aciliyor = true;
 		try {
 			const pulse = await this.motor.pulse();
-			const akis = await pulse.calmaAc({ aygit: this.ad || '', kanal: 2, hiz: HIZ, bicim: 'float32le', hedefMs: CIKIS_HEDEF_MS, ad: 'Diszort' });
+			const akis = await pulse.calmaAc({ aygit: this.ad || '', kanal: 2, hiz: HIZ, bicim: 'float32le', hedefMs: this.hedefMs, ad: 'Diszort' });
 			akis.on('olduruldu', () => {
 				if (this.akis === akis) this.akis = null;
 			});
@@ -379,32 +382,32 @@ class CikisAygiti {
 			return;
 		}
 		if (this.sessizKuantum > (5 * HIZ) / KUANTUM) {
-			// Uzun süredir ses yok: akışı kapat (ses sunucusu aygıtı uyutabilsin).
+			// Uzun süredir ses yok: akışı kapat (ses sunucusu aygıtı uyutabilsin). Tampon, beş dakikadır
+			// boşalmadıysa bir sonraki açılışta bir kademe küçülür.
+			if (this.hedefMs > CIKIS_HEDEF_MS && simdi - this.sonBosalma > 300000) this.hedefMs -= 20;
 			this.kapat();
 			return;
 		}
 		const hedef = akis.hedef / akis.cerceve;
-		let kredi = Math.floor(akis.kredi / akis.cerceve);
-		// Sunucu hedeften fazlasını istiyorsa tamponu boşalmıştır (duraklama): çalma, yazılanın önüne
-		// geçti; aradaki boşluğa yazılan ses atılır.
-		const bosaldi = kredi > hedef;
+		const kredi = Math.floor(akis.kredi / akis.cerceve);
+		if (kredi > hedef) {
+			// Sunucu dolu bir tampondan fazlasını istiyor: tamponu boşalmış (süreç uzun durakladı). Ses
+			// sunucuları bundan sonrasını farklı hesaplar (PulseAudio geç yazılanı geri sarıp çalabilir,
+			// PipeWire eksik saydığını beklemeyi sürdürür); en sağlamı akışı baştan açmaktır: tampon
+			// yeniden hedefe kadar sessizlikle dolar, bayat ses atılır. Tampon da bir kademe büyür.
+			this.bosalma++;
+			this.sonBosalma = simdi;
+			this.hedefMs = Math.min(CIKIS_HEDEF_ENCOK_MS, this.hedefMs + 20);
+			this.kapat();
+			this.ac();
+			return;
+		}
 		// Sunucudaki + buradaki ses, hedefe göre: oran buna göre ayarlanır.
-		const oran = bosaldi ? 1 : this.denetim.guncelle((hedef - Math.max(0, kredi) + this.dolu + this.ornekleyici.bekleyen - hedef) / MS, simdi);
+		const oran = this.denetim.guncelle((this.dolu + this.ornekleyici.bekleyen - Math.max(0, kredi)) / MS, simdi);
 		for (;;) {
 			const n = this.ornekleyici.uret(this.ara, this.ara.length / 2, oran);
 			if (!n) break;
 			this.kuyrugaEkle(this.ara, n);
-		}
-		if (bosaldi) {
-			// İstenenin tamamı yazılır: eldeki ses yetmiyorsa önüne sessizlik eklenir. Böylece en eski ses
-			// boşluğa (atılacak yere), en yenisi tamponun sonuna düşer ve tampon yeniden hedefe dolar.
-			const eksik = kredi - this.dolu;
-			if (eksik > 0) {
-				akis.yaz(Buffer.alloc(eksik * akis.cerceve));
-				kredi -= eksik;
-			}
-			this.denetim.sifirla();
-			this.bosalma++;
 		}
 		const boy = this.kuyruk.length / 2;
 		let n = Math.min(Math.max(0, kredi), this.dolu);

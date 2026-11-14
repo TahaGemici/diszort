@@ -1,5 +1,7 @@
 # Derleme çıktıları
 /node_modules/
+/cli/node_modules/
+/cikti/
 /package-lock.json
 /veri/
 # Yerel ayarlar
