@@ -1,6 +1,6 @@
 # Diszort
 
-Arkadaş grupları için tarayıcıdan girilen, Discord benzeri küçük bir sohbet sunucusu. Yazılı kanallar
+Arkadaş grupları için tarayıcıdan (ya da [terminalden](#terminal-istemcisi-cli)) girilen, Discord benzeri küçük bir sohbet sunucusu. Yazılı kanallar
 sunucuda saklanır; sesli kanallarda ses ve ekran paylaşımı (ekranlı ya da ekransız, yalnızca ses)
 kişiler arasında doğrudan (P2P) akar, doğrudan bağlanamayanlar için sunucudaki TURN aktarır. Dosyalar
 da sunucuya yüklenmez, paylaşandan doğrudan alınır. İçeri yalnızca içeridekilerin onayıyla girilir.
@@ -152,7 +152,8 @@ curl -fsSL https://github.com/TahaGemici/diszort/releases/latest/download/kur.sh
 
 Betik imajı `ghcr.io/tahagemici/diszort`'tan çeker, ayarları ve veritabanını `/var/lib/chat` altında
 oluşturur ve `diszort` konteynerini başlatır. Güncellemek için aynı komut çalıştırılır; belirli bir
-sürüme dönmek için sonuna `-s v23` gibi bir sürüm eklenir.
+sürüme dönmek için sonuna `-s v26.11.15` gibi bir sürüm eklenir. Sürümlerin adı çıktıkları gündür
+(Türkiye saatiyle `vYY.AA.GG`); aynı gün yeni bir sürüm çıkarsa o günün öncekinin yerini alır.
 
 **Açık olması gereken portlar:** TCP 80 ve 443 (HTTPS), UDP ve TCP 3478 (STUN/TURN), UDP 49152–61000
 (TURN aktarımı).
@@ -163,6 +164,48 @@ sürüme dönmek için sonuna `-s v23` gibi bir sürüm eklenir.
 **İlk giriş:** Beyaz liste boşken sunucu ilk anahtarı üretir ve giriş bağlantısıyla birlikte
 `/var/lib/chat/ilk-anahtar.txt` dosyasına yazar. Bağlantı bir kez açılınca anahtar tarayıcıya kaydedilir;
 dosya sonra silinebilir.
+
+## Terminal istemcisi (CLI)
+
+Tarayıcı açmadan, terminalden: aynı sunucuya bağlanır, web'deki her şey var (yazılı ve sesli kanallar,
+RNNoise ve konuşma eşiği, kayıplara karşı yedek (RED, Firefox'ta olmayan), bilgisayarın sesini stereo
+paylaşma, sınırsız P2P dosya, giriş istekleri, ayarlar, sunucu penceresi). Kurulum yok, tek dosya:
+
+```sh
+curl -fsSLo diszort https://github.com/TahaGemici/diszort/releases/latest/download/diszort-linux-x64
+chmod +x diszort
+./diszort
+```
+
+İlk açılışta sunucunun adresi (ya da sana verilen giriş bağlantısı, `…/#anahtar=…`) sorulur. Ayarlar
+programın yanındaki `diszort.json`'da durur (giriş anahtarın da: yalnızca sana açık, 0600); başka bir
+yere bir şey yazılmaz. Klasörü taşıyınca kimliğin de taşınır. Yeni sürüm çıkınca alt satırda yazar:
+**Ctrl+U** programı günceller ve yeniden başlatır (ya da `./diszort --guncelle`).
+
+- **Gerekenler:** Linux x64 (glibc 2.34+: Ubuntu 22.04, Debian 12, Fedora 35 ve sonrası), PulseAudio ya
+  da PipeWire (`pipewire-pulse`; masaüstü dağıtımlarında hazır). Renkler en iyi gerçek renkli
+  (truecolor) terminalde görünür.
+- **Tuşlar:** Tab ya da ↑/↓ gez, Enter/boşluk bas, ←/→ kaydırıcı ve seçim, Esc kapat; yazmaya
+  başlamak mesaj kutusuna yazar (Alt+Enter yeni satır). Alt+M mikrofon, Alt+D sağırlaştır (web'deki
+  Ctrl+Shift+M/D), PgUp/PgDn sohbeti kaydırır, Ctrl+C çıkar. Fare de çalışır (tıklama, tekerlek,
+  kaydırıcıyı sürükleme); terminalde metin seçmek için Shift'e basılı tutarak sürükle.
+- **Dosya paylaşmak:** dosyayı terminale sürükleyip bırak (yolu yapıştırmak da olur) ya da + düğmesi
+  (yolu sorar, Tab tamamlar). İndirilenler `İndirilenler` (`~/Downloads`) klasörüne; büyük dosyada
+  nereye kaydedileceği sorulur.
+- **Tarayıcıdan farkları:** ekranını paylaşamaz (bilgisayarın sesini "Ekransız paylaş" ile paylaşır);
+  başkalarının ekranını terminalde düşük çözünürlükte gösterir ("tam ekran" terminalin tamamı).
+  Resimler terminalde görünmez: büyüteçteki "orijinalini aç" sistemin resim görüntüleyicisinde açar
+  (ses/video dosyaları da öyle). Tarayıcının yankı engelleyicisi yok: hoparlörle konuşacaksan kulaklık
+  kullan.
+
+**Web ile nasıl aynı kalıyor:** CLI ayrı bir istemci değil; web istemcisinin kendisini (`web/`)
+çalıştırır. Sayfa pencere çizmeyen küçük bir "tarayıcı"nın içinde açılır: belge jsdom'da durur,
+WebRTC tarayıcılarınkiyle aynı motordan (libwebrtc), ses PulseAudio/PipeWire'dan, Web Audio
+(RNNoise'un ve yankı çıkarmanın AudioWorklet'leri dahil) bir ses motorundan gelir; arayüzü terminale
+çizen katman yalnızca sayfanın DOM'una bakar ve tıklamayı sayfadaki öğeye iletir. Web'e eklenen bir
+düğme, ayar ya da davranış CLI'da kendiliğinden vardır; her sürümde sunucu ve CLI aynı commit'ten
+çıkar ve CI, CLI'ı gerçek Chromium'la aynı kanalda (ses, yazı, dosya, paylaşım) dener. Yeni bir
+tarayıcı özelliği kullanılırsa onun karşılığı `cli/kabuk/`'a eklenir; eksikse denemeler bunu gösterir.
 
 ## Ayarlar
 
@@ -224,14 +267,18 @@ make arayuz     # arayüz denemeleri (jsdom)
 make yanki      # paylaşılan sesten kanaldakilerin sesini çıkarma (benzetim)
 make tarayici   # gerçek Chromium'la sesli kanal denemeleri (Playwright)
 make kayip      # paket kaybında RED'in etkisi (gerçek Chromium, araya paket düşüren UDP aracısı)
+make cli        # terminal istemcisini tek dosya olarak derle → cikti/diszort-linux-x64
+make cli-dene   # terminal istemcisini gerçek Chromium'la dene (PulseAudio ve Playwright gerekir)
+node cli/diszort.js https://sunucu   # derlemeden çalıştır (cd cli && npm ci)
 ```
 
 `main`'e her gönderimde GitHub Actions arayüz, ses çıkarma ve paket kaybı denemelerini çalıştırır,
-imajı derler, sunucu ve tarayıcı denemelerini imaja karşı çalıştırır, `ghcr.io`'ya yükler ve sürüm
-çıkarır.
+imajı ve CLI'ı derler, sunucu, tarayıcı ve CLI denemelerini imaja karşı çalıştırır, `ghcr.io`'ya
+yükler ve sürüm çıkarır (`kur.sh`, `diszort-linux-x64`, `surum.json`).
 
 Yapı: `sunucu/` (Node: web, sohbet, signaling, coturn yönetimi, SQLite), `web/` (düz HTML/CSS/JS),
-`kurulum/` (kurulum betiği, Caddy örneği), `test/`. WebSocket protokolü `sunucu/sunucu.js` içinde
+`cli/` (terminal istemcisi: `kabuk/` web istemcisini çalıştıran ortam, `arayuz/` terminale çizen
+katman, `derle.js` tek dosya), `kurulum/` (kurulum betiği, Caddy örneği), `test/`. WebSocket protokolü `sunucu/sunucu.js` içinde
 açıklanmıştır.
 
 ## Güvenlik

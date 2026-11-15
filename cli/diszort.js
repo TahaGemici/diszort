@@ -151,12 +151,15 @@ Dosya paylaşmak: dosyayı terminale sürükle (ya da yolunu yapıştır) ya da 
 		return;
 	}
 	if (process.platform !== 'linux') throw new Error('Diszort CLI yalnızca Linux\'ta çalışır (ses PulseAudio/PipeWire üzerinden).');
-	if (!process.stdin.isTTY || !process.stdout.isTTY) throw new Error('Bir terminalde çalıştır (girdi ve çıktı terminal olmalı).');
+	// Deneme kipi (CI): terminal yerine sahte bir terminal; ekranın metni yazılır.
+	const deneme = process.env.DISZORT_DENEME === '1';
+	if (!deneme && (!process.stdin.isTTY || !process.stdout.isTTY)) throw new Error('Bir terminalde çalıştır (girdi ve çıktı terminal olmalı).');
 
 	const ayar = ayarOku();
 	const adresArg = argv.find((a) => !a.startsWith('-'));
 	let adres = adresArg ? adresDuzelt(adresArg) : adresDuzelt(ayar.sunucu);
 	if (adresArg && !adres) throw new Error('Geçersiz sunucu adresi: ' + adresArg);
+	if (!adres && deneme) throw new Error('Deneme kipinde adres verilmeli.');
 	if (!adres) {
 		console.log('Diszort — ilk açılış.\nSunucunun adresini ya da sana verilen giriş bağlantısını yapıştır (ör. https://chat.ornek.com).');
 		adres = adresDuzelt(await sor('Adres: '));
@@ -214,9 +217,11 @@ Dosya paylaşmak: dosyayı terminale sürükle (ya da yolunu yapıştır) ya da 
 	for (const sinyal of ['SIGTERM', 'SIGHUP']) process.on(sinyal, () => kapat(0));
 
 	await kabuk.baslat();
-	arayuz = new Arayuz({ kabuk, surum: YAPI.surum, cikis: () => kapat(0) });
+	const terminal = deneme ? sahteTerminal() : undefined;
+	arayuz = new Arayuz({ kabuk, terminal, surum: YAPI.surum, cikis: () => kapat(0) });
 	arayuz.goruntu = new Goruntu({ kabuk, arayuz });
 	arayuz.baslat();
+	if (deneme) return denemeKipi(kabuk, arayuz, terminal, kapat);
 
 	// Güncelleme denetimi: açılışta, sonra 6 saatte bir; sunucu güncellenince (sayfa yenilenir) de.
 	if (gomulu && YAPI.depo) {
@@ -248,6 +253,53 @@ Dosya paylaşmak: dosyayı terminale sürükle (ya da yolunu yapıştır) ya da 
 		setInterval(denetle, 6 * 3600 * 1000).unref();
 		kabuk.on('pencere', () => setTimeout(denetle, 3000).unref());
 	}
+}
+
+// ---------------------------------------------------------------- deneme kipi (CI)
+
+function sahteTerminal() {
+	const { PassThrough, Writable } = require('node:stream');
+	const { Terminal } = require('./arayuz/terminal');
+	const girdi = new PassThrough();
+	girdi.isTTY = false;
+	const cikti = new Writable({ write: (c, e, cb) => cb() });
+	cikti.columns = Number(process.env.COLUMNS) || 120;
+	cikti.rows = Number(process.env.LINES) || 32;
+	const t = new Terminal({ girdi, cikti });
+	t.gonder = (s) => girdi.write(s);
+	return t;
+}
+function ekranMetni(arayuz) {
+	arayuz.ciz();
+	const e = arayuz.ekran;
+	const satirlar = [];
+	for (let y = 0; y < e.yukseklik; y++) {
+		let s = '';
+		for (let x = 0; x < e.genislik; x++) s += e.kar[y * e.genislik + x];
+		satirlar.push(s.replace(/\s+$/, ''));
+	}
+	return satirlar.join('\n');
+}
+// Giriş yapılana kadar bekle, (DISZORT_DENEME_MESAJ verilmişse) klavyeden mesaj yaz, ekranı yaz, çık.
+async function denemeKipi(kabuk, arayuz, terminal, kapat) {
+	const bekle = (ms) => new Promise((r) => setTimeout(r, ms));
+	const son = Date.now() + 30000;
+	while (Date.now() < son && kabuk.document.getElementById('uygulama').hidden) await bekle(100);
+	const girdi = !kabuk.document.getElementById('uygulama').hidden;
+	const mesaj = process.env.DISZORT_DENEME_MESAJ;
+	let goruldu = !mesaj;
+	if (girdi && mesaj) {
+		await bekle(500);
+		terminal.gonder(mesaj);
+		await bekle(100);
+		terminal.gonder('\r');
+		const son2 = Date.now() + 10000;
+		while (Date.now() < son2 && !(goruldu = [...kabuk.document.querySelectorAll('#mesajlar .metin')].some((m) => m.textContent === mesaj))) await bekle(100);
+	}
+	await bekle(300);
+	console.log(ekranMetni(arayuz));
+	console.log(girdi && goruldu ? 'DENEME: TAMAM' : `DENEME: BAŞARISIZ (giriş: ${girdi}, mesaj: ${goruldu})`);
+	kapat(girdi && goruldu ? 0 : 1);
 }
 
 ana().catch((h) => {

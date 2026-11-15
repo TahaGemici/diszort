@@ -5,6 +5,8 @@
 #   make yanki     paylaşılan sesten kanaldakilerin sesini çıkarmayı benzetimle dener (bağımlılık yok)
 #   make tarayici  gerçek Chromium'la sesli kanalı dener (Playwright; kendi sunucusunu açar, coturn gerekir)
 #   make kayip     paket kaybında RED'in (yedekli ses) etkisini gerçek Chromium'la ölçer (sunucusuz)
+#   make cli       terminal istemcisini tek dosya olarak derler -> cikti/diszort-linux-x64
+#   make cli-dene  terminal istemcisini gerçek Chromium'la dener (PulseAudio, Playwright gerekir)
 #   make docker    Docker imajını derleyip çalıştırır -> http://127.0.0.1:8080
 #   make durdur    Docker konteynerini durdurur
 #   make temizle   node_modules ve yerel veri/ çıktısını siler
@@ -39,6 +41,18 @@ kayip:
 	npx playwright install chromium
 	node test/kayip.js
 
+cli/node_modules: cli/package.json
+	cd cli && npm ci --no-audit --no-fund
+	touch cli/node_modules
+
+cli: cli/node_modules
+	node cli/derle.js --cikti cikti
+
+cli-dene: node_modules cli/node_modules
+	npm install --no-save --no-audit --no-fund playwright
+	npx playwright install chromium
+	CLI_IKILI=$$( [ -x cikti/diszort-linux-x64 ] && echo cikti/diszort-linux-x64 ) node test/cli.js
+
 docker:
 	docker compose up --build -d
 
@@ -46,6 +60,6 @@ durdur:
 	docker compose down
 
 temizle:
-	rm -rf node_modules veri
+	rm -rf node_modules cli/node_modules veri cikti
 
-.PHONY: calistir test arayuz yanki tarayici kayip docker durdur temizle
+.PHONY: calistir test arayuz yanki tarayici kayip cli cli-dene docker durdur temizle

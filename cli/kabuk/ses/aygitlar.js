@@ -98,6 +98,12 @@ class MedyaAygitlari extends EventTarget {
 		if (!kisitlar || (!kisitlar.audio && !kisitlar.video)) throw new TypeError('getUserMedia: ses ya da görüntü istenmeli');
 		if (kisitlar.video) throw hata('NotFoundError', 'Kamera yok');
 		const ses = kisitlar.audio === true ? {} : kisitlar.audio;
+		// Tarayıcının yankı engelleyicisi burada yok: istendiyse bir kez söylenir (hoparlörle konuşan
+		// kanaldakilere kendi seslerini geri yollar; kulaklık gerekir).
+		if (kisitDegeri(ses.echoCancellation).deger === true && !this.yankiBildirildi && this.bildir) {
+			this.yankiBildirildi = true;
+			this.bildir('Bu istemcide yankı engelleme yok: hoparlörle konuşuyorsan kulaklık kullan (yoksa kanaldakiler kendi seslerini geri duyar).');
+		}
 		const istenen = kisitDegeri(ses.deviceId);
 		const kanal = Number(kisitDegeri(ses.channelCount).deger) >= 2 ? 2 : 1;
 		let liste;

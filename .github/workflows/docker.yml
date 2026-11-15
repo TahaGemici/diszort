@@ -1,9 +1,16 @@
-# Diszort: main'e her push'ta Docker imajı derlenir, kur.sh ile uçtan uca denenir (sunucu
-# denemeleri + jsdom arayüz denemesi + gerçek Chromium'la WebRTC/ses denemesi), ghcr.io'ya
-# (v1, v2, ... ve latest) yüklenir ve kur.sh GitHub sürümü olarak yayınlanır.
+# Diszort: main'e her push'ta Docker imajı ve terminal istemcisi (CLI) derlenir, uçtan uca denenir
+# (sunucu denemeleri + jsdom arayüz denemesi + gerçek Chromium'la WebRTC/ses denemesi + CLI'ın
+# Chromium'la aynı kanalda denemesi), imaj ghcr.io'ya yüklenir, kur.sh ve CLI GitHub sürümü olarak
+# yayınlanır.
+#
+# Sürüm adı tarihtir (Türkiye saatiyle): vYY.AA.GG, ör. v26.11.15. Aynı gün birden çok koşu olursa o
+# günün önceki sürümü silinir, yenisi aynı adla çıkar. İmajın kendi sürümü buna commit'i ekler
+# (v26.11.15-abc1234): aynı gün iki güncelleme olsa da açık sayfalar sunucunun değiştiğini anlar.
 #
 # Sunucuda kurmak, başlatmak ve güncellemek (tek komut, son sürümü çeker):
 #   curl -fsSL https://github.com/TahaGemici/diszort/releases/latest/download/kur.sh | sudo sh
+# Terminal istemcisi (Linux x64; kurulum yok, ayarlar programın yanında):
+#   curl -fsSLo diszort https://github.com/TahaGemici/diszort/releases/latest/download/diszort-linux-x64 && chmod +x diszort && ./diszort
 name: docker
 
 on:
@@ -17,7 +24,6 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  SURUM: v${{ github.run_number }}
   # Uçtan uca denemede beyaz liste ilk anahtarı (üretimde .env'de boş bırakılır).
   # Sunucu yalnızca 512 bit (128 hex) anahtar kabul eder; bu yüzden test anahtarı da 128 hex.
   ILK_ANAHTAR: '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef'
@@ -45,6 +51,20 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Sürüm adı (tarih, Türkiye saati) ve yapı kimliği
+        run: |
+          SURUM=$(TZ=Europe/Istanbul date +v%y.%m.%d)
+          KISA=${GITHUB_SHA::7}
+          echo "SURUM=$SURUM" >> "$GITHUB_ENV"
+          echo "KISA=$KISA" >> "$GITHUB_ENV"
+          echo "YAPI=$SURUM-$KISA" >> "$GITHUB_ENV"
+          echo "Sürüm: $SURUM (yapı $SURUM-$KISA)"
+
+      # jsdom (CLI) Node 22.22+ ister; CLI de bu Node'un üstüne tek dosya olarak derlenir.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
       - name: Sözdizimi
         run: |
           node --check sunucu/sunucu.js
@@ -56,14 +76,21 @@ jobs:
           node --check test/kayip.js
           node --check test/arayuz.js
           node --check test/tarayici.js
+          node --check test/cli.js
+          for f in cli/*.js cli/kabuk/*.js cli/kabuk/ses/*.js cli/arayuz/*.js; do node --check "$f"; done
           sh -n kurulum/kur.sh
           docker compose -f docker-compose.yml config --quiet
 
-      - name: Deneme bağımlılıkları (ws, jsdom, Playwright + Chromium)
+      - name: Deneme bağımlılıkları (ws, jsdom, Playwright + Chromium, PulseAudio; CLI'ınkiler)
         run: |
           npm install --no-audit --no-fund
           npm install --no-save --no-audit --no-fund "jsdom@$JSDOM_SURUM" "playwright@$PLAYWRIGHT_SURUM"
           npx playwright install --with-deps chromium
+          sudo apt-get install -y --no-install-recommends pulseaudio pulseaudio-utils
+          (cd cli && npm ci --no-audit --no-fund)
+
+      - name: CLI'ı derle (tek dosya, Linux x64)
+        run: node cli/derle.js --surum "$SURUM" --commit "$KISA" --depo "$GITHUB_REPOSITORY" --cikti cikti
 
       - name: Arayüz (jsdom)
         run: node test/arayuz.js
@@ -78,7 +105,7 @@ jobs:
 
       - name: İmajı derle
         # source etiketi: ghcr.io paketi bu depoya bağlansın (depo sayfasında görünsün).
-        run: docker build --build-arg SURUM="$SURUM" --label "org.opencontainers.image.source=https://github.com/$GITHUB_REPOSITORY" -t "diszort:$SURUM" .
+        run: docker build --build-arg SURUM="$YAPI" --label "org.opencontainers.image.source=https://github.com/$GITHUB_REPOSITORY" -t "diszort:$SURUM" .
 
       - name: kur.sh ile kur (yerel imaj)
         run: |
@@ -107,6 +134,12 @@ jobs:
           COZ: sudo docker unpause diszort
           TARAYICI_ZORUNLU: '1'
         run: node test/tarayici.js http://127.0.0.1:8080
+
+      - name: CLI, gerçek Chromium'la aynı kanalda (ve derlenmiş program)
+        env:
+          CLI_ZORUNLU: '1'
+          CLI_IKILI: cikti/diszort-linux-x64
+        run: node test/cli.js http://127.0.0.1:8080
 
       - name: Yazılı kanallar ve dosyalar yeniden başlatmada kalıyor
         run: |
@@ -157,7 +190,7 @@ jobs:
           docker push "$IMAJ:$SURUM"
           docker push "$IMAJ:latest"
 
-      - name: GitHub sürümü (kur.sh)
+      - name: GitHub sürümü (kur.sh ve CLI)
         if: github.ref == 'refs/heads/main'
         env:
           GH_TOKEN: ${{ github.token }}
@@ -166,9 +199,26 @@ jobs:
           sed "s|^DEPO=.*|DEPO=$GITHUB_REPOSITORY|" kurulum/kur.sh > kur.sh
           sh -n kur.sh
           IMAJ=ghcr.io/$(printf '%s' "$GITHUB_REPOSITORY_OWNER" | tr 'A-Z' 'a-z')/diszort
-          NOTLAR=$(printf 'Kurmak ya da güncellemek için sunucuda:\n\n    curl -fsSL https://github.com/%s/releases/latest/download/kur.sh | sudo sh\n\nBu sürüme dönmek için sonuna `-s %s` ekle. İmaj: %s:%s' "$GITHUB_REPOSITORY" "$SURUM" "$IMAJ" "$SURUM")
-          if gh release view "$SURUM" >/dev/null 2>&1; then # aynı çalıştırma yeniden denendiyse
-            gh release upload "$SURUM" kur.sh --clobber
-          else
-            gh release create "$SURUM" kur.sh --target "$GITHUB_SHA" --title "Diszort $SURUM" --notes "$NOTLAR"
+          INDIR="https://github.com/$GITHUB_REPOSITORY/releases/latest/download"
+          NOTLAR=$(printf '%s\n' \
+            "**Sunucu.** Kurmak ya da güncellemek için sunucuda:" "" \
+            "    curl -fsSL $INDIR/kur.sh | sudo sh" "" \
+            "Bu sürüme dönmek için sonuna \`-s $SURUM\` ekle. İmaj: $IMAJ:$SURUM (yapı $YAPI)." "" \
+            "**Terminal istemcisi (CLI, Linux x64).** Kurulum yok: indir, çalıştır. Ayarlar programın yanındaki diszort.json'da." "" \
+            "    curl -fsSLo diszort $INDIR/diszort-linux-x64 && chmod +x diszort && ./diszort" "" \
+            "Sonraki sürümlerde program kendini günceller (Ctrl+U ya da ./diszort --guncelle).")
+          # Eski düzendeki sürümler (v1, v2, …): etiketleriyle silinir (sürüm adı artık tarih).
+          gh release list --limit 1000 --json tagName --jq '.[].tagName' | { grep -E '^v[0-9]+$' || true; } | while read -r ETIKET; do
+            echo "eski sürüm siliniyor: $ETIKET"
+            gh release delete "$ETIKET" --yes --cleanup-tag
+          done
+          # Aynı gün önceki koşunun sürümü: silinir, yenisi aynı adla çıkar.
+          if gh release view "$SURUM" >/dev/null 2>&1; then
+            echo "bugünün önceki sürümü siliniyor: $SURUM"
+            gh release delete "$SURUM" --yes --cleanup-tag
+            for i in $(seq 20); do
+              gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$SURUM" >/dev/null 2>&1 || break
+              sleep 1
+            done
           fi
+          gh release create "$SURUM" kur.sh cikti/diszort-linux-x64 cikti/surum.json --target "$GITHUB_SHA" --title "Diszort $SURUM" --notes "$NOTLAR" --latest

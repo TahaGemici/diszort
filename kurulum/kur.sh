@@ -4,7 +4,7 @@
 #   curl -fsSL https://github.com/TahaGemici/diszort/releases/latest/download/kur.sh | sudo sh
 #
 # İmajı ghcr.io'dan çeker (GitHub Actions her push'ta yayınlar), ayarları korur ve konteyneri açar.
-#   ... | sudo sh -s v42                    belirli bir sürüme dön (imaj etiketi)
+#   ... | sudo sh -s v26.11.15             belirli bir sürüme dön (imaj etiketi: sürümün tarihi)
 #   sudo IMAJ=<imaj>:<etiket> sh kur.sh     yerel imajla dene (geliştirme)
 #
 # Sunucuya yazdıkları:
@@ -41,7 +41,7 @@ main() {
 	while [ $# -gt 0 ]; do
 		case "$1" in
 			-s)
-				[ -n "${2:-}" ] || hata "-s bir sürüm etiketi ister: sudo sh -s v3"
+				[ -n "${2:-}" ] || hata "-s bir sürüm etiketi ister: sudo sh -s v26.11.15"
 				ETIKET=$2
 				shift 2
 				;;

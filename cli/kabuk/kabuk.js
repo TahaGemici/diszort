@@ -23,6 +23,7 @@ const os = require('node:os');
 const path = require('node:path');
 const { spawn } = require('node:child_process');
 const { JSDOM, VirtualConsole } = require('jsdom');
+const jsdomIc = require('jsdom/lib/generated/idl/utils.js'); // DOM nesnesi → jsdom'un iç nesnesi
 const { PulseBaglantisi } = require('./ses/pulse');
 const { SesMotoru } = require('./ses/motor');
 const { webAudioKur } = require('./ses/webaudio');
@@ -210,6 +211,7 @@ class Kabuk extends EventEmitter {
 		Object.assign(window, ses, { AudioContext });
 
 		sayfa.aygitlar = new MedyaAygitlari({ motor, pulse: () => this.pulse(), gunluk: this.gunluk });
+		sayfa.aygitlar.bildir = (m) => this.bildir(m);
 		const ham = sayfa.aygitlar.getUserMedia.bind(sayfa.aygitlar);
 		sayfa.aygitlar.getUserMedia = async (kisit) => {
 			const akis = await ham(kisit);
@@ -471,9 +473,9 @@ class Kabuk extends EventEmitter {
 	}
 
 	gezinmeKur(window) {
-		// location.reload(): sayfa baştan kurulur (sunucu güncellenince sayfa kendini yeniler).
-		const konum = window.location;
-		const ic = konum[Object.getOwnPropertySymbols(konum).find((s) => s.description === 'impl')];
+		// location.reload(): sayfa baştan kurulur (sunucu güncellenince sayfa kendini yeniler). jsdom
+		// başka bir belgeye gitmeyi yapmaz; yenileme isteği burada karşılanır.
+		const ic = jsdomIc.implForWrapper(window.location);
 		if (ic) ic.reload = () => setImmediate(() => this.yenile());
 	}
 
