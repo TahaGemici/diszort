@@ -105,7 +105,7 @@ async function guncelle(bildir = () => {}) {
 
 // Güncellenen programı aynı terminalde yeniden başlat.
 function yenidenBaslat() {
-	const argv = process.argv.slice(gomulu ? 1 : 2);
+	const argv = process.argv.slice(2);
 	if (typeof process.execve === 'function') process.execve(PROGRAM, [PROGRAM, ...argv], process.env);
 	const { spawnSync } = require('node:child_process');
 	const r = spawnSync(PROGRAM, argv, { stdio: 'inherit' });
@@ -127,7 +127,9 @@ function gunlukcu() {
 // ---------------------------------------------------------------- ana
 
 async function ana() {
-	const argv = process.argv.slice(gomulu ? 1 : 2).filter((a) => a !== process.execPath);
+	// Kullanıcının argümanları: tek dosyalık programda da argv[2]'den başlar (argv[1] programın
+	// çağrıldığı yol, ör. ./diszort).
+	const argv = process.argv.slice(2);
 	if (argv.includes('--surum') || argv.includes('-v') || argv.includes('--version')) {
 		console.log(`Diszort ${YAPI.surum}${YAPI.commit ? ' (' + YAPI.commit + ')' : ''}`);
 		return;

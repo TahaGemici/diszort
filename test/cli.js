@@ -520,12 +520,17 @@ const tarayiciHatalari = [];
 			arayuz.bitir();
 			arayuz = null;
 			const mesaj = 'derlenmiş programdan ' + crypto.randomBytes(3).toString('hex');
-			const r = spawnSync(program, [ADRES + '/#anahtar=' + ANAHTAR], { cwd: '/', env: { ...process.env, DISZORT_DENEME: '1', DISZORT_DENEME_MESAJ: mesaj, COLUMNS: '100', LINES: '24' }, encoding: 'utf8', timeout: 90000 });
+			// Kullanıcı gibi: kendi klasöründe, göreli yolla (./diszort).
+			const r = spawnSync('./diszort', [ADRES + '/#anahtar=' + ANAHTAR], { cwd: klasor, env: { ...process.env, DISZORT_DENEME: '1', DISZORT_DENEME_MESAJ: mesaj, COLUMNS: '100', LINES: '24' }, encoding: 'utf8', timeout: 90000 });
 			assert.equal(r.status, 0, 'program başarısız: ' + (r.stdout || '').slice(-1500) + (r.stderr || '').slice(-1500));
 			assert.match(r.stdout, /DENEME: TAMAM/);
 			assert.deepEqual(fs.readdirSync(klasor).sort(), ['diszort', 'diszort.json'], 'programın yanında yalnızca ayar dosyası olmalı');
 			assert.equal(fs.statSync(path.join(klasor, 'diszort.json')).mode & 0o777, 0o600, 'ayar dosyası (anahtar içerir) yalnızca kullanıcıya açık olmalı');
-			const surum = spawnSync(program, ['--surum'], { encoding: 'utf8' }).stdout.trim();
+			const surum = spawnSync('./diszort', ['--surum'], { cwd: klasor, encoding: 'utf8' }).stdout.trim();
+			// Adres verilmeden: ayar dosyasındaki sunucuya bağlanır (programın adı adres sanılmamalı).
+			const r2 = spawnSync('./diszort', [], { cwd: klasor, env: { ...process.env, DISZORT_DENEME: '1', COLUMNS: '100', LINES: '24' }, encoding: 'utf8', timeout: 90000 });
+			assert.equal(r2.status, 0, 'ayar dosyasıyla açılamadı: ' + (r2.stdout || '').slice(-800) + (r2.stderr || '').slice(-800));
+			assert.equal(JSON.parse(fs.readFileSync(path.join(klasor, 'diszort.json'), 'utf8')).sunucu, new URL(ADRES).origin, 'ayar dosyasındaki sunucu değişmemeli');
 			console.log(`     ${surum}; ${(fs.statSync(program).size / 1e6).toFixed(1)} MB`);
 			await kosul('Chromium programın mesajını gördü', () => sayfa.evaluate((m) => [...document.querySelectorAll('#mesajlar .metin')].some((e) => e.textContent === m), mesaj));
 		});
