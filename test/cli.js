@@ -483,6 +483,8 @@ const tarayiciHatalari = [];
 		const inen = path.join(ev, 'Downloads', 'chromiumdan.bin');
 		await kosul('dosya indi', () => fs.existsSync(inen) && fs.statSync(inen).size === veri.length, 30000);
 		assert.equal(ozet(inen), beklenen, 'indirilen dosyanın içeriği farklı');
+		// Mesajın içindeki kart değişti (indirildi): ekranda da güncel olmalı (mesajların çizimi saklanır).
+		await kosul('CLI ekranında "indirildi"', () => /chromiumdan\.bin[\s\S]*indirildi/.test(ekranMetni()), 5000);
 		const resim = path.join(gecici, 'cliden.png');
 		png(resim);
 		assert.ok(kabuk.dosyalariBirak([resim]), 'bırakılan dosya paylaşılmalı');

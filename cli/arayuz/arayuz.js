@@ -89,19 +89,23 @@ class Arayuz {
 		if (this.gozcu) this.gozcu.disconnect();
 		this.cizici = new Cizici(w);
 		if (this.goruntu) this.cizici.video = (el, gen) => this.goruntu.satirlar(el, gen, this.cizici);
-		this.gozcu = new w.MutationObserver(() => this.planla());
+		this.gozcu = new w.MutationObserver((kayitlar) => {
+			for (const k of kayitlar) this.cizici.kirlet(k.target);
+			this.planla();
+		});
 		this.gozcu.observe(w.document, { subtree: true, childList: true, attributes: true, characterData: true });
 		this.planla(0);
 	}
 
-	// Yeniden çizimi planla (en çok saniyede 25 kez).
+	// Yeniden çizimi planla: sayfa değişince en çok saniyede ~16 kez (seviye ölçerleri saniyede 10 kez
+	// değişir); tuş ve fare olaylarında hemen.
 	planla(ms = null) {
 		if (this.kapanis) return;
 		if (this.zamanlayici) {
 			if (ms !== 0) return;
 			clearTimeout(this.zamanlayici);
 		}
-		const bekle = ms ?? Math.max(0, 40 - (Date.now() - this.sonCizim));
+		const bekle = ms ?? Math.max(0, 60 - (Date.now() - this.sonCizim));
 		this.zamanlayici = setTimeout(() => {
 			this.zamanlayici = null;
 			this.guvenli(() => this.ciz());

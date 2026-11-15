@@ -159,6 +159,9 @@ class Cizici {
 		this.odak = null; // odaktaki öğe
 		this.imlecler = new WeakMap(); // yazı alanı → imleç (karakter)
 		this.video = null; // (el, w) → satırlar: görüntü çizici (goruntu.js) verirse
+		// Mesajların çizimi değişene kadar saklanır (sohbetin büyük kısmı; her karede baştan çizilmesin).
+		// Sayfanın değişiklik gözcüsü bir mesajın içinde değişiklik görünce o mesajınkini siler (kirlet).
+		this.onbellek = new WeakMap(); // .mesaj öğesi → { w, bg, satirlar }
 		this.simgeAdlari = new Map();
 		// Simgelerin adı: web'in kendi tablosundan, DOM'un yazdığı biçimiyle (karşılaştırmak için).
 		try {
@@ -169,6 +172,14 @@ class Cizici {
 				this.simgeAdlari.set(svg.innerHTML, ad);
 			}
 		} catch {}
+	}
+
+	// Bir düğüm değişti: içinde olduğu mesajın saklanan çizimi geçersiz.
+	kirlet(dugum) {
+		for (let e = dugum && dugum.nodeType === 1 ? dugum : dugum && dugum.parentElement; e; e = e.parentElement) {
+			if (e.classList.contains('mesaj')) return void this.onbellek.delete(e);
+			if (e.id === 'mesajlar') return;
+		}
 	}
 
 	// ------------------------------------------------------------ görünüm kuralları (stil.css'in karşılığı)
@@ -802,7 +813,13 @@ class Cizici {
 			this.parcala(el, p, cs, this.odaklanabilir(el) ? el : null, w);
 			return this.diz(p, w, cs);
 		}
-		if (d === 'mesaj') return this.mesaj(el, w, cs);
+		if (d === 'mesaj') {
+			const k = this.onbellek.get(el);
+			if (k && k.w === w && k.bg === cs.bg) return k.satirlar;
+			const satirlar = this.mesaj(el, w, cs);
+			this.onbellek.set(el, { w, bg: cs.bg, satirlar });
+			return satirlar;
+		}
 		if (d === 'gun') {
 			const yazi = ` ${el.textContent.trim()} `;
 			const yan = Math.max(0, w - metinGenislik(yazi));
