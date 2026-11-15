@@ -165,8 +165,12 @@ function stereoCoz(sdp) {
 // Kanal başına istatistik (sender.getStats / receiver.getStats): kitaplıkta yok. Sayfa bir kanalın
 // (mikrofon, paylaşılan ses, görüntü) gidenini ve gelenini ayrı ayrı okur; bağlantının tüm raporundan
 // o kanalın (mid) ve o yönün akış kayıtları süzülür, gerisi (aktarım, aday çiftleri, kodekler) kalır.
+const sonRapor = new WeakMap(); // bağlantı → { zaman, soz }
 async function kanalRaporu(pc, tr, giden) {
-	const rapor = await pc.getStats();
+	// Sayfa bir turda aynı bağlantının birkaç kanalını sorar: 150 ms içinde tek rapor yeter.
+	let kayit = sonRapor.get(pc);
+	if (!kayit || performance.now() - kayit.zaman > 150) sonRapor.set(pc, (kayit = { zaman: performance.now(), soz: pc.getStats() }));
+	const rapor = await kayit.soz;
 	const mid = tr.mid;
 	const sonuc = new Map();
 	rapor.forEach((r, id) => {

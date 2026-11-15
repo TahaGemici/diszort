@@ -7,8 +7,8 @@
 // akış, oranı 1'e çok yakın (en çok ±%0,5) ve sürekli ayarlanan bir yeniden örnekleyiciden geçer.
 //
 // Yeniden örnekleme pencereli sinc ile (32 dokunuş, 64 evre + evreler arası doğrusal geçiş): doğrusal
-// ya da kübik ara değerleme oran 1'e yakınken tizleri evreye göre değişen oranda zayıflatır (yarım
-// örnekte 15 kHz −2,5 dB), fark yavaş kaydıkça tizlerde dalgalanma duyulur. Burada 18 kHz'e kadar düz.
+// ya da kübik ara değerleme tizleri evreye göre değişen oranda zayıflatır (yarım örnekte 15 kHz
+// −2,5 dB), fark yavaş kaydıkça tizlerde dalgalanma duyulur. Burada 18 kHz'e kadar düz.
 'use strict';
 
 const DOKUNUS = 32;
@@ -49,32 +49,43 @@ const TABLO = (() => {
 	return t;
 })();
 
+// Fark çok küçüktür (saniyede birkaç örnek): ses çoğu zaman olduğu gibi kopyalanır; istenen oranın
+// biriktirdiği fark bir örneği bulunca kısa bir "kayma" yapılır: ~43 ms boyunca (2048 örnek; fark
+// büyükse daha kısa) pencereli sinc ile yeniden örneklenerek bir örnek kazanılır ya da bırakılır.
+// Böylece işlemci yalnızca kayma sırasında harcanır (fark milyonda 50 ise zamanın onda biri), fark
+// yokken ses bit bit aynı geçer.
+const KAYMA = 2048;
+const KAYMA_ENAZ = 200; // en hızlı kayma: %0,5
+
 class Ornekleyici {
 	constructor(kanal) {
 		this.kanal = kanal;
 		this.giris = new Float32Array(kanal * 8192);
-		this.dolu = 0; // giris'teki çerçeve sayısı
-		this.konum = YARI - 1; // bir sonraki çıkış örneğinin giris'teki (kesirli) yeri
 		this.sifirla();
 	}
 
 	// Geçmişi unut: süzgecin baktığı ilk örnekler sessizlik sayılır.
 	sifirla() {
 		this.giris.fill(0);
-		this.dolu = YARI - 1;
-		this.konum = YARI - 1;
+		this.dolu = YARI - 1; // giris'teki çerçeve sayısı
+		this.konum = YARI - 1; // bir sonraki çıkış örneğinin giris'teki yeri (kayma dışında tam sayı)
+		this.borc = 0; // istenen oranın biriktirdiği fark (örnek): ±1'i bulunca kayma başlar
+		this.kayma = 0; // süren kaymanın yönü (+1: bir giriş örneği fazladan tüketilir, −1: bir eksik)
+		this.kaymaBoyu = 0;
+		this.kaymaAdim = 0;
+		this.kaymaBasi = 0;
+		this.kaymaSayisi = 0; // teşhis
 	}
 
 	// Henüz çıkışa dönüşmemiş giriş (çerçeve, kesirli).
 	get bekleyen() {
-		return Math.max(0, this.dolu - YARI - this.konum);
+		return Math.max(0, this.dolu - YARI - 1 - this.konum);
 	}
 
 	// Giriş ekle (kanalları iç içe: L R L R …).
 	besle(veri, cerceve = veri.length / this.kanal) {
 		const k = this.kanal;
-		const gerek = (this.dolu + cerceve) * k;
-		if (gerek > this.giris.length) {
+		if ((this.dolu + cerceve) * k > this.giris.length) {
 			// Önce tüketilen baştaki örnekleri at; yetmezse büyüt.
 			this.sikistir();
 			if ((this.dolu + cerceve) * k > this.giris.length) {
@@ -88,63 +99,105 @@ class Ornekleyici {
 	}
 
 	sikistir() {
-		const at = Math.floor(this.konum) - (YARI - 1);
+		const at = Math.floor(this.kayma ? this.kaymaBasi : this.konum) - (YARI - 1);
 		if (at <= 0) return;
 		const k = this.kanal;
 		this.giris.copyWithin(0, at * k, this.dolu * k);
 		this.dolu -= at;
 		this.konum -= at;
+		this.kaymaBasi -= at;
 	}
 
 	// En eski bekleyen girişten `cerceve` kadarını at (tampon fazla büyüdü: gecikme birikmesin).
 	at(cerceve) {
-		this.konum += Math.min(cerceve, this.bekleyen);
+		cerceve = Math.floor(Math.min(cerceve, this.bekleyen));
+		if (cerceve <= 0) return;
+		this.konum += cerceve;
+		this.kaymaBasi += cerceve;
 	}
 
-	// `hedef`e (kanalları iç içe) en çok `enCok` çerçeve üret; oran: çıkış örneği başına tüketilen
-	// giriş (1'den büyük: giriş daha hızlı tüketilir). Dönüş: üretilen çerçeve sayısı.
+	// `hedef`e (kanalları iç içe) en çok `enCok` çerçeve üret; oran: çıkış örneği başına tüketilmek
+	// istenen giriş (1'den büyük: giriş daha hızlı tüketilir). Dönüş: üretilen çerçeve sayısı.
 	uret(hedef, enCok, oran = 1) {
 		const k = this.kanal;
-		const g = this.giris;
-		let konum = this.konum;
-		const son = this.dolu - YARI; // floor(konum) en çok bu olabilir (ilerideki dokunuşlar da dolu olsun)
+		// floor(konum) en çok bu olabilir: süzgeç, konumun YARI örnek ilerisine kadar okur.
+		const son = this.dolu - YARI - 1;
+		const fark = oran - 1;
 		let n = 0;
 		while (n < enCok) {
-			const i = Math.floor(konum);
-			if (i > son) break;
-			const evre = (konum - i) * EVRE;
-			const e0 = Math.floor(evre);
-			const a = evre - e0;
-			const t0 = e0 * DOKUNUS;
-			const t1 = t0 + DOKUNUS;
-			const bas = (i - (YARI - 1)) * k;
-			if (k === 1) {
-				let s = 0;
-				for (let j = 0; j < DOKUNUS; j++) s += g[bas + j] * (TABLO[t0 + j] + a * (TABLO[t1 + j] - TABLO[t0 + j]));
-				hedef[n] = s;
-			} else {
-				let sl = 0;
-				let sr = 0;
-				for (let j = 0; j < DOKUNUS; j++) {
-					const c = TABLO[t0 + j] + a * (TABLO[t1 + j] - TABLO[t0 + j]);
-					sl += g[bas + 2 * j] * c;
-					sr += g[bas + 2 * j + 1] * c;
-				}
-				hedef[2 * n] = sl;
-				hedef[2 * n + 1] = sr;
+			if (!this.kayma && (this.borc >= 1 || this.borc <= -1)) {
+				// Bir örneklik fark birikti: kayma başlat (fark büyükse daha kısa, yani daha hızlı).
+				this.kayma = this.borc > 0 ? 1 : -1;
+				this.borc -= this.kayma;
+				this.kaymaBoyu = Math.max(KAYMA_ENAZ, Math.min(KAYMA, Math.floor(KAYMA / Math.max(1, Math.abs(this.borc)))));
+				this.kaymaAdim = 0;
+				this.kaymaBasi = this.konum;
+				this.kaymaSayisi++;
 			}
-			konum += oran;
-			n++;
+			if (!this.kayma) {
+				// Kopyala: en çok 128 çerçeve (fark hesabı arada güncellensin).
+				const i = this.konum;
+				const adet = Math.min(enCok - n, son - i + 1, 128);
+				if (adet <= 0) break;
+				const g = this.giris;
+				if (adet * k < 48) for (let j = 0; j < adet * k; j++) hedef[n * k + j] = g[i * k + j];
+				else hedef.set(g.subarray(i * k, (i + adet) * k), n * k);
+				this.konum = i + adet;
+				this.borc += fark * adet;
+				n += adet;
+				continue;
+			}
+			// Kayma: konum, kaymaBoyu örnekte bir tam örnek fazla (ya da eksik) ilerler.
+			const g = this.giris;
+			const adim = 1 + this.kayma / this.kaymaBoyu;
+			while (n < enCok && this.kaymaAdim < this.kaymaBoyu) {
+				const konum = this.kaymaBasi + this.kaymaAdim * adim;
+				const i = Math.floor(konum);
+				if (i > son) {
+					this.konum = konum;
+					return n;
+				}
+				const evre = (konum - i) * EVRE;
+				const e0 = Math.floor(evre);
+				const a = evre - e0;
+				const t0 = e0 * DOKUNUS;
+				const t1 = t0 + DOKUNUS;
+				const bas = (i - (YARI - 1)) * k;
+				if (k === 1) {
+					let s = 0;
+					for (let j = 0; j < DOKUNUS; j++) s += g[bas + j] * (TABLO[t0 + j] + a * (TABLO[t1 + j] - TABLO[t0 + j]));
+					hedef[n] = s;
+				} else {
+					let sl = 0;
+					let sr = 0;
+					for (let j = 0; j < DOKUNUS; j++) {
+						const c = TABLO[t0 + j] + a * (TABLO[t1 + j] - TABLO[t0 + j]);
+						sl += g[bas + 2 * j] * c;
+						sr += g[bas + 2 * j + 1] * c;
+					}
+					hedef[2 * n] = sl;
+					hedef[2 * n + 1] = sr;
+				}
+				this.kaymaAdim++;
+				this.borc += fark;
+				n++;
+			}
+			if (this.kaymaAdim >= this.kaymaBoyu) {
+				// Kayma bitti: konum yine tam sayı.
+				this.konum = this.kaymaBasi + this.kaymaBoyu + this.kayma;
+				this.kayma = 0;
+			} else this.konum = this.kaymaBasi + this.kaymaAdim * adim;
 		}
-		this.konum = konum;
-		if (konum > 4096) this.sikistir();
+		if (this.konum > 4096) this.sikistir();
 		return n;
 	}
 }
 
 // Tampon doluluğundan yeniden örnekleme oranı: doluluk hedefin üstündeyse giriş biraz daha hızlı
 // tüketilir (oran > 1), altındaysa daha yavaş. Doluluk parça parça gelen veriyle oynar: önce
-// yumuşatılır (~1 sn). 10 ms'lik sapma %0,1 hız farkıyla (~10 sn'de) giderilir; en çok ±%0,5.
+// yumuşatılır (~1 sn). Ölü bölgenin ötesindeki 10 ms'lik sapma %0,1 hız farkıyla (~10 sn'de)
+// giderilir; en çok ±%0,5.
+const OLU_BOLGE_MS = 3;
 class OranDenetimi {
 	constructor(hedefMs) {
 		this.hedefMs = hedefMs;
@@ -163,7 +216,11 @@ class OranDenetimi {
 		this.son = simdi;
 		const alfa = 1 - Math.exp(-dt / 1000);
 		this.sapma += (doluMs - this.hedefMs - this.sapma) * alfa;
-		this.oran = 1 + Math.max(-0.005, Math.min(0.005, this.sapma * 1e-4));
+		// ±3 ms'lik sapmaya dokunulmaz (veri parça parça geldiği için doluluk hep biraz oynar; her
+		// oynamada düzeltme yapmak boşuna işlemci harcar); ötesi orantılı düzeltilir.
+		const s = this.sapma;
+		const fazla = s > OLU_BOLGE_MS ? s - OLU_BOLGE_MS : s < -OLU_BOLGE_MS ? s + OLU_BOLGE_MS : 0;
+		this.oran = 1 + Math.max(-0.005, Math.min(0.005, fazla * 1e-4));
 		return this.oran;
 	}
 }

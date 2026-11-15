@@ -54,6 +54,20 @@ class GidenIz extends IzKaydi {
 		super(motor, tur, kanal);
 		this.kaynak = new motor.wrtc.nonstandard.RTCAudioSource();
 		this.iz = this.kaynak.createTrack();
+		// İzin açık/kapalı durumu burada da tutulur: kitaplıkta "enabled" okumak pahalıdır (başka bir iş
+		// parçacığına sorar, ~40 µs) ve motor her kuantumda bakar.
+		this.acik = true;
+		const yerel = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(this.iz), 'enabled');
+		if (yerel && yerel.set) {
+			Object.defineProperty(this.iz, 'enabled', {
+				configurable: true,
+				get: () => this.acik,
+				set: (v) => {
+					this.acik = !!v;
+					yerel.set.call(this.iz, this.acik);
+				},
+			});
+		}
 		this.cerceve = new Int16Array(ON_MS * kanal);
 		this.dolu = 0;
 		this.bitti = false;
@@ -123,7 +137,7 @@ class YakalamaIzi extends GidenIz {
 			if (o.bekleyen < YAKALAMA_TAMPON_MS * MS) return this.sustur();
 			this.basladi = true;
 		}
-		if (!this.iz.enabled) {
+		if (!this.acik) {
 			// Kapalı iz sessizlik verir (Web Audio kuralı); tampon yine tüketilir.
 			o.at(Math.min(KUANTUM, o.bekleyen));
 			return this.sustur();
@@ -323,8 +337,10 @@ class CikisAygiti {
 			this.sessizKuantum = 0;
 			const k = this.karisim;
 			for (let i = 0; i < k.length; i++) {
-				if (k[i] > 1) k[i] = 1;
-				else if (k[i] < -1) k[i] = -1;
+				const v = k[i];
+				if (v > 1) k[i] = 1;
+				else if (v < -1) k[i] = -1;
+				else if (v !== v) k[i] = 0; // geçersiz örnek (NaN) aygıta gitmesin
 			}
 		} else this.sessizKuantum++;
 		// Akış açıkken sessizlik de yazılır (zaman aksın); kapalıyken ses gelince açılır.
@@ -524,7 +540,8 @@ class SesMotoru {
 		const etkin = this.yakalamalar.size || this.uzaklar.size || this.gidenler.size || this.baglamlar.size || this.calicilar.size || [...this.cikislar.values()].some((c) => c.akis);
 		if (etkin && !this.zamanlayici) {
 			this.t0 = performance.now() - (this.kuantumNo * KUANTUM * 1000) / HIZ;
-			this.zamanlayici = setInterval(() => this.tur(), 4);
+			// 10 ms'de bir (WebRTC'nin çerçeve boyu; tarayıcıların ses geri çağrısı da bu sıklıktadır).
+			this.zamanlayici = setInterval(() => this.tur(), 10);
 			if (this.zamanlayici.unref) this.zamanlayici.unref();
 		} else if (!etkin && this.zamanlayici) {
 			clearInterval(this.zamanlayici);
