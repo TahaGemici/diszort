@@ -85,6 +85,15 @@ class MedyaAygitlari extends EventTarget {
 		return { deviceId: true, groupId: true, channelCount: true, sampleRate: true, sampleSize: true, echoCancellation: true, noiseSuppression: true, autoGainControl: true };
 	}
 
+	// Ekran yakalama: kabuk bir yakalayıcı verdiyse (ekranYakala) onunla; yoksa desteklenmiyor. (Sayfa
+	// ekransız paylaşımı, yani bilgisayarın sesini, ekran yakalamadan bir ses aygıtından alır: o yol
+	// burada da çalışır. Hata "izin verilmedi" değil "desteklenmiyor" olmalı: sayfa izin hatasında
+	// paylaş düğmesini tümden gizler.)
+	async getDisplayMedia(secenek) {
+		if (typeof this.ekranYakala !== 'function') throw hata('NotSupportedError', 'Bu ortamda ekran yakalanamıyor (yalnızca ses paylaşılabilir: "Ekransız paylaş")');
+		return this.ekranYakala(secenek || {});
+	}
+
 	async getUserMedia(kisitlar) {
 		if (!kisitlar || (!kisitlar.audio && !kisitlar.video)) throw new TypeError('getUserMedia: ses ya da görüntü istenmeli');
 		if (kisitlar.video) throw hata('NotFoundError', 'Kamera yok');

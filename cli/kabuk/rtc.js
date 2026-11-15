@@ -175,6 +175,34 @@ function kanalEtiketle(pc, tr) {
 	tanimla(tr.receiver, false);
 }
 
+// Bağlantı kurulduktan SONRA açılan veri kanalında kitaplık, kanalı açan tarafa 'open' olayını
+// vermiyor (kanal açılır, readyState 'open' olur; olay gelmez). Sayfa dosya isteğini bu olayda
+// gönderir: ikinci dosyadan itibaren indirme "bağlanıyor…"da kalırdı. Kanal açılana kadar durumuna
+// bakılır; olay gelmediyse burada çıkarılır (gelirse ikincisi yutulur).
+function acilisiIzle(kanal) {
+	let acildi = false;
+	const asil = kanal.dispatchEvent;
+	kanal.dispatchEvent = function (olay) {
+		if (olay && olay.type === 'open') {
+			if (acildi) return undefined;
+			acildi = true;
+		}
+		return asil.call(this, olay);
+	};
+	const bak = setInterval(() => {
+		let durum = 'closed';
+		try {
+			durum = kanal.readyState;
+		} catch {}
+		if (acildi || durum === 'closing' || durum === 'closed') return clearInterval(bak);
+		if (durum === 'open') {
+			clearInterval(bak);
+			kanal.dispatchEvent({ type: 'open', target: kanal });
+		}
+	}, 20);
+	if (bak.unref) bak.unref();
+}
+
 class RTCPeerConnection extends wrtc.RTCPeerConnection {
 	constructor(ayar) {
 		super(ayar);
@@ -190,6 +218,11 @@ class RTCPeerConnection extends wrtc.RTCPeerConnection {
 		const liste = super.getTransceivers();
 		for (const tr of liste) kanalEtiketle(this, tr);
 		return liste;
+	}
+	createDataChannel(...a) {
+		const kanal = super.createDataChannel(...a);
+		acilisiIzle(kanal);
+		return kanal;
 	}
 }
 
