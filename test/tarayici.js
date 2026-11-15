@@ -692,6 +692,13 @@ async function sidebarKisileri(k, kanal = 'Sesli Sohbet') {
 		await bekleKosul("taha'da mert'in kartı ses geldikçe ışıyor", async () => (await kart(taha)).isik, 10000);
 		const bolum = await mert.sayfa.evaluate(() => esler.get('taha').pc.remoteDescription.sdp.split('m=audio').slice(1)[1] || '');
 		assert.match(bolum, /stereo=1/, 'paylaşımın sesi stereo anlaşılmalı');
+		// Dinleyen de stereo ÇÖZMELİ: Chrome ancak kendi açıklamasında stereo=1 yazıyorsa iki kanal çözer
+		// (yoksa stereo gelen müziği tek kanala indirir).
+		for (const k of [taha, zeynep]) {
+			const yerel = await k.sayfa.evaluate(() => esler.get('mert').pc.localDescription.sdp.split('m=audio').slice(1));
+			assert.match(yerel[1] || '', /stereo=1/, `${k.ad}: paylaşılan sesin kanalı kendi açıklamasında stereo olmalı`);
+			assert.doesNotMatch(yerel[0] || '', /stereo=1/, `${k.ad}: mikrofon kanalı tek kanal kalmalı`);
+		}
 		const d1 = await durumu(mert);
 		await bekle(3000);
 		const d2 = await durumu(mert);

@@ -8,8 +8,7 @@
 //     aygıtı bırakma (kitaplığın kendi yöntemleri değiştirilemez: örneğin üstünde tanımlanır),
 //   - veri kanalı: bufferedAmountLowThreshold ve bufferedamountlow olayı (dosya gönderimi buna göre
 //     ilerler),
-//   - kanal başına istatistik (sender.getStats / receiver.getStats),
-//   - setLocalDescription: Opus'ta stereo çözme (aşağıda).
+//   - kanal başına istatistik (sender.getStats / receiver.getStats).
 'use strict';
 
 const wrtc = require('@roamhq/wrtc');
@@ -147,24 +146,6 @@ function izBitir(iz) {
 
 // ---------------------------------------------------------------- bağlantı
 
-// Opus'u stereo çözme. libwebrtc gelen Opus'u ancak KENDİ açıklamasında (yerel SDP) stereo=1 yazıyorsa
-// iki kanal çözer (AudioDecoderOpus: "Default to mono"); yoksa stereo gelen ses (paylaşılan müzik)
-// tek kanala indirilir. Yerel açıklamadaki her Opus satırına stereo=1 eklenir: yalnızca "stereo
-// alabilirim" demektir, karşının ne göndereceğini yine karşının uyguladığı açıklama belirler.
-function stereoCoz(sdp) {
-	if (typeof sdp !== 'string') return sdp;
-	const opus = new Set();
-	for (const m of sdp.matchAll(/^a=rtpmap:(\d+) opus\/48000/gim)) opus.add(m[1]);
-	if (!opus.size) return sdp;
-	return sdp.replace(/^a=fmtp:(\d+) ([^\r\n]*)/gm, (satir, pt, deger) => {
-		if (!opus.has(pt) || /(^|;)\s*stereo=/.test(deger)) return satir;
-		return `a=fmtp:${pt} ${deger};stereo=1`;
-	});
-}
-
-// Kanal başına istatistik (sender.getStats / receiver.getStats): kitaplıkta yok. Sayfa bir kanalın
-// (mikrofon, paylaşılan ses, görüntü) gidenini ve gelenini ayrı ayrı okur; bağlantının tüm raporundan
-// o kanalın (mid) ve o yönün akış kayıtları süzülür, gerisi (aktarım, aday çiftleri, kodekler) kalır.
 const sonRapor = new WeakMap(); // bağlantı → { zaman, soz }
 async function kanalRaporu(pc, tr, giden) {
 	// Sayfa bir turda aynı bağlantının birkaç kanalını sorar: 150 ms içinde tek rapor yeter.
@@ -210,12 +191,6 @@ class RTCPeerConnection extends wrtc.RTCPeerConnection {
 		for (const tr of liste) kanalEtiketle(this, tr);
 		return liste;
 	}
-	setLocalDescription(aciklama) {
-		if (aciklama && typeof aciklama.sdp === 'string' && (aciklama.type === 'offer' || aciklama.type === 'answer')) {
-			aciklama = { type: aciklama.type, sdp: stereoCoz(aciklama.sdp) };
-		}
-		return super.setLocalDescription(aciklama);
-	}
 }
 
 // Sayfaya verilecek adlar.
@@ -231,4 +206,4 @@ const pencereAdlari = {
 	MediaStreamTrack: wrtc.MediaStreamTrack,
 };
 
-module.exports = { wrtc, izTanit, izBitir, stereoCoz, pencereAdlari };
+module.exports = { wrtc, izTanit, izBitir, pencereAdlari };

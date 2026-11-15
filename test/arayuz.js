@@ -1047,6 +1047,17 @@ const ICE = { iceServers: [{ urls: ['stun:1.2.3.4:3478'] }, { urls: ['turn:1.2.3
 	denetle('mikrofon m-line: mono', /stereo=0/.test(bolumler[0]) && !/sprop-stereo/.test(bolumler[0]), bolumler[0]);
 	denetle('yayın sesi m-line: stereo, 192 kbps (varsayılan)', /stereo=1/.test(bolumler[1]) && /sprop-stereo=1/.test(bolumler[1]) && /maxaveragebitrate=192000/.test(bolumler[1]), bolumler[1]);
 	denetle('görüntü m-line değişmedi', !/fmtp/.test(bolumler[2]), bolumler[2]);
+	// Kendi açıklamamız: paylaşılan sesin kanalında stereo=1 (Chrome tabanlı alıcı ancak öyle stereo çözer);
+	// mikrofon kanalına ve stereo=1'i zaten yazan açıklamaya (Firefox) dokunulmaz.
+	const yerel = w.eval(`yerelAciklama({ type: 'offer', sdp: ${JSON.stringify(UC_KANALLI)} })`);
+	const yerelBolumler = yerel.sdp.split('m=').slice(1);
+	denetle(
+		'yerel açıklama: paylaşılan ses kanalında stereo=1 (alıcı stereo çözsün); mikrofon ve görüntü kanalı değişmez',
+		/stereo=1/.test(yerelBolumler[1]) && /sprop-stereo=1/.test(yerelBolumler[1]) && !/stereo/.test(yerelBolumler[0]) && !/fmtp/.test(yerelBolumler[2]),
+		yerel.sdp,
+	);
+	const firefoxAciklamasi = UC_KANALLI.replace(/a=fmtp:111 minptime=10;useinbandfec=1\r\n(m=video)/, 'a=fmtp:111 maxplaybackrate=48000;stereo=1;useinbandfec=1\r\n$1');
+	denetle('yerel açıklama: stereo=1 zaten varsa (Firefox) açıklamaya dokunulmaz', firefoxAciklamasi !== UC_KANALLI && w.eval(`yerelAciklama({ type: 'offer', sdp: ${JSON.stringify(firefoxAciklamasi)} }).sdp`) === firefoxAciklamasi);
 	denetle('gönderici bit hızı tavanı 96 kbps', ilkTr.parametreler && ilkTr.parametreler.encodings[0].maxBitrate === 96000, JSON.stringify(ilkTr.parametreler));
 	// Teklif yoldayken (ICE yenileme) eski oturuma ait yanıt yok sayılır, doğru oturumunki uygulanır.
 	w.eval("iceYenile(esler.get('bora'))");

@@ -3328,7 +3328,7 @@ async function teklifVer(es, iceYenidenBaslat = false) {
 	try {
 		const teklif = await pc.createOffer(iceYenidenBaslat ? { iceRestart: true } : undefined);
 		if (es.pc !== pc || pc.signalingState !== 'stable') return;
-		await pc.setLocalDescription(teklif);
+		await pc.setLocalDescription(yerelAciklama(teklif));
 		es.teklifZamani = Date.now();
 		aciklamaGonder(es);
 	} catch (h) {
@@ -3403,7 +3403,7 @@ async function sdpIsle(es, sdp, oturum) {
 		await bagla(k.ses, yayin.ses);
 		await bagla(k.goruntu, gidenGoruntu(es));
 		const yanit = await es.pc.createAnswer();
-		await es.pc.setLocalDescription(yanit);
+		await es.pc.setLocalDescription(yerelAciklama(yanit));
 		aciklamaGonder(es);
 		bitHiziAyarla(es);
 		taniGonder({ olay: 'yanit', es: es.ad, yon: k.mik.direction, mid: k.mik.mid != null ? String(k.mik.mid) : null, iz: !!k.mik.sender.track });
@@ -3726,6 +3726,7 @@ function redBirak(es, neden) {
 // Her ses m-line'ı ayrı ayarlanır: birincisi mikrofon (mono: tarayıcı konuşma kipinde kodlar, 60-100
 // Hz altını keser), ikincisi paylaşılan ses (hep stereo: iki kanal aynıysa Opus farklarına bit
 // harcamaz; mono olsa müzikte bas azalırdı).
+// Bunlar gönderimi ayarlar; alıcının stereo ÇÖZMESİ kendi açıklamasına bağlıdır (bkz. yerelAciklama).
 const opusHedefi = (kbps, stereo) => ({ minptime: '10', useinbandfec: '1', usedtx: '0', stereo: stereo ? '1' : '0', ...(stereo && { 'sprop-stereo': '1' }), maxplaybackrate: '48000', maxaveragebitrate: String(kbps * 1000) });
 // Karşının açıklamasındaki ses m-line'ında kodek sırası: RED istiyorsak RED Opus'un önüne, istemiyorsak
 // arkasına (listede kalır: karşı bize RED gönderebilir). Diğer kodeklerin sırası değişmez.
@@ -3786,6 +3787,35 @@ function opusBolumu(satirlar, ek) {
 			const r = satirlar.findIndex((s) => s.toLowerCase().startsWith('a=rtpmap:' + pt + ' opus/'));
 			satirlar.splice(r + 1, 0, bas + Object.entries(ek).map(([k, v]) => k + '=' + v).join(';'));
 		}
+	}
+}
+
+// Kendi açıklamamız (yerel SDP): paylaşılan sesin kanalında "stereo alabilirim" (stereo=1). Chrome
+// tabanlı tarayıcılar gelen Opus'u ancak KENDİ açıklamalarında stereo=1 yazıyorsa iki kanal çözer
+// (libwebrtc, AudioDecoderOpus: "Default to mono"); yazmıyorsa stereo gelen müziği tek kanala indirip
+// iki hoparlörden aynısını çalar. Ölçüm (Chromium 153; sol kanalda ton, sağ sessiz gönderildi): alıcıda
+// iki kanal da yarı genlikte; yerel açıklamada stereo=1 ile sol tam, sağ sessiz. Firefox'un
+// açıklamasında stereo=1 zaten vardır (dokunulmaz). Mikrofon kanalı tek kanal kalır (konuşma).
+function yerelAciklama(aciklama) {
+	if (!aciklama || typeof aciklama.sdp !== 'string') return aciklama;
+	try {
+		const bolumler = [[]];
+		for (const s of aciklama.sdp.split(/\r?\n/)) {
+			if (s.startsWith('m=')) bolumler.push([]);
+			bolumler[bolumler.length - 1].push(s);
+		}
+		let sesSirasi = 0;
+		let degisti = false;
+		for (const b of bolumler) {
+			if (!b.length || !b[0].startsWith('m=audio') || sesSirasi++ !== 1) continue;
+			const opus = b.filter((s) => /^a=rtpmap:\d+ opus\/48000/i.test(s)).map((s) => s.slice(9).split(' ')[0]);
+			if (!opus.length || opus.every((pt) => b.some((s) => s.startsWith('a=fmtp:' + pt + ' ') && /(^|[ ;])stereo=1(;|$)/.test(s.slice(s.indexOf(' ') + 1))))) continue;
+			opusBolumu(b, { stereo: '1', 'sprop-stereo': '1' });
+			degisti = true;
+		}
+		return degisti ? { type: aciklama.type, sdp: bolumler.flat().join('\r\n') } : aciklama;
+	} catch {
+		return aciklama;
 	}
 }
 
