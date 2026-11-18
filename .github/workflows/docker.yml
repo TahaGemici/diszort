@@ -197,8 +197,24 @@ jobs:
           sudo grep -q '^MAX_KISI=7' /var/lib/chat/.env
           MAX_KISI=7 node test/dene.js http://127.0.0.1:8080
 
-      - name: ghcr.io'ya yükle
+      - name: Bu commit hâlâ main'in ucu mu
+        id: uc
         if: github.ref == 'refs/heads/main'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # Koşu sürerken main'e yeni commit itildiyse yayınlamayı o commit'in koşusu yapar (koşular
+          # sırayla çalışır). Hem boşuna sürüm çıkmaz hem de GitHub, iş akışı dosyası main'dekinden farklı
+          # bir commit'e GITHUB_TOKEN ile etiket açtırmaz (sürüm adımı "403 Resource not accessible" verir).
+          UC=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/main" --jq .object.sha)
+          if [ "$UC" = "$GITHUB_SHA" ]; then
+            echo "yayinla=1" >> "$GITHUB_OUTPUT"
+          else
+            echo "::notice::main ilerledi (${UC:0:7}); yayınlamayı o commit'in koşusu yapacak."
+          fi
+
+      - name: ghcr.io'ya yükle
+        if: steps.uc.outputs.yayinla == '1'
         run: |
           # İmaj adı depo adından bağımsız: ghcr.io/<sahip>/diszort (kur.sh de aynı adı kullanır).
           IMAJ=ghcr.io/$(printf '%s' "$GITHUB_REPOSITORY_OWNER" | tr 'A-Z' 'a-z')/diszort
@@ -209,7 +225,7 @@ jobs:
           docker push "$IMAJ:latest"
 
       - name: GitHub sürümü (kur.sh ve CLI)
-        if: github.ref == 'refs/heads/main'
+        if: steps.uc.outputs.yayinla == '1'
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}

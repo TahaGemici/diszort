@@ -7,13 +7,13 @@ import (
 	"errors"
 	"fmt"
 	"os"
-
-	"golang.org/x/sys/unix"
 	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"golang.org/x/sys/unix"
 )
 
 // kaynak: bir yakalama yolu.
