@@ -6,3 +6,7 @@
 /veri/
 # Yerel ayarlar
 /.env
+# CLI (Go): derlemede üretilen RNNoise C kaynakları (cli/gurultu/uret.sh)
+/cli/gurultu/rnnoise_w2c.*
+/cli/gurultu/wasm-rt*.h
+/cli/gurultu/wasm_rt_impl.c
