@@ -1,6 +1,7 @@
 // Package ekran: ekran paylaşımı — yakalama (X11 doğrudan; Wayland'de masaüstü portalı ve PipeWire),
 // ölçekleme ve VP8 kodlama. Kodlanmış kareler geri çağrıyla verilir (WebRTC bu paketin dışında).
-// Kimse izlemiyorken (ya da ekran gizliyken) yakalama ve kodlama durur: işlemci harcanmaz.
+// Kimse izlemiyorken (ya da ekran gizliyken) kodlama durur (X11'de yakalama da; Wayland'de masaüstü
+// kareleri PipeWire'dan göndermeyi sürdürür, yalnızca son kare kopyalanıp tutulur).
 package ekran
 
 import (

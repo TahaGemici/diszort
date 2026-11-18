@@ -125,7 +125,8 @@ static void pw_isle(void *v) {
 	if (!b) return;
 	struct spa_buffer *sb = b->buffer;
 	struct spa_data *d = &sb->datas[0];
-	if (d->data && d->chunk && d->chunk->size > 0 && pthread_mutex_trylock(&a->mu) == 0) {
+	// Bozuk işaretli parça (ör. yalnızca imleç değişti, görüntü yok) atlanır: son iyi kare kalır.
+	if (d->data && d->chunk && d->chunk->size > 0 && !(d->chunk->flags & SPA_CHUNK_FLAG_CORRUPTED) && pthread_mutex_trylock(&a->mu) == 0) {
 		int g = a->bilgi.size.width, y = a->bilgi.size.height;
 		int adim = d->chunk->stride > 0 ? d->chunk->stride : g * 4;
 		size_t boy = (size_t)adim * y;
@@ -334,6 +335,32 @@ func waylandAc(s Secim) (*wayland, error) {
 	if err != nil {
 		return nil, err
 	}
+	dugum, boyut, belirtec, err := baslatYaniti(sonuc)
+	if err != nil {
+		return nil, err
+	}
+	w.belirtec = belirtec
+	var fd dbus.UnixFD
+	if err := nesne.Call(ekranArayuzu+".OpenPipeWireRemote", 0, w.oturum, map[string]dbus.Variant{}).Store(&fd); err != nil {
+		return nil, fmt.Errorf("PipeWire bağlantısı alınamadı: %w", err)
+	}
+	a := C.pw_ac(C.int(fd), C.uint32_t(dugum), C.int(max(1, s.Kare)), &hata[0], 200)
+	closeFd(int(fd))
+	if a == nil {
+		return nil, errors.New(C.GoString(&hata[0]))
+	}
+	w.a = a
+	w.adi = "Wayland (portal)"
+	if boyut != "" {
+		w.adi += " " + boyut
+	}
+	basarili = true
+	return w, nil
+}
+
+// baslatYaniti: portalın Start yanıtından ilk akışın PipeWire düğümü, boyu ("2560×1440") ve seçimin
+// hatırlanması için belirteç. streams: a(ua{sv}); size: (ii).
+func baslatYaniti(sonuc map[string]dbus.Variant) (dugum uint32, boyut, belirtec string, err error) {
 	var akislar []struct {
 		Dugum      uint32
 		Ozellikler map[string]dbus.Variant
@@ -342,30 +369,18 @@ func waylandAc(s Secim) (*wayland, error) {
 		dbus.Store([]any{v.Value()}, &akislar)
 	}
 	if len(akislar) == 0 {
-		return nil, errors.New("portal akış vermedi")
+		return 0, "", "", errors.New("portal akış vermedi")
 	}
-	if v, ok := sonuc["restore_token"]; ok {
-		w.belirtec, _ = v.Value().(string)
-	}
-	var fd dbus.UnixFD
-	if err := nesne.Call(ekranArayuzu+".OpenPipeWireRemote", 0, w.oturum, map[string]dbus.Variant{}).Store(&fd); err != nil {
-		return nil, fmt.Errorf("PipeWire bağlantısı alınamadı: %w", err)
-	}
-	a := C.pw_ac(C.int(fd), C.uint32_t(akislar[0].Dugum), C.int(max(1, s.Kare)), &hata[0], 200)
-	closeFd(int(fd))
-	if a == nil {
-		return nil, errors.New(C.GoString(&hata[0]))
-	}
-	w.a = a
-	w.adi = "Wayland (portal)"
 	if v, ok := akislar[0].Ozellikler["size"]; ok {
 		var boy struct{ G, Y int32 }
-		if dbus.Store([]any{v.Value()}, &boy) == nil && boy.G > 0 {
-			w.adi += fmt.Sprintf(" %d×%d", boy.G, boy.Y)
+		if dbus.Store([]any{v.Value()}, &boy) == nil && boy.G > 0 && boy.Y > 0 {
+			boyut = fmt.Sprintf("%d×%d", boy.G, boy.Y)
 		}
 	}
-	basarili = true
-	return w, nil
+	if v, ok := sonuc["restore_token"]; ok {
+		belirtec, _ = v.Value().(string)
+	}
+	return akislar[0].Dugum, boyut, belirtec, nil
 }
 
 func (w *wayland) ad() string { return w.adi }

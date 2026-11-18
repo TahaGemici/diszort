@@ -1,10 +1,14 @@
 package ekran
 
 import (
+	"bytes"
+	"encoding/binary"
 	"fmt"
 	"os"
 	"testing"
 	"time"
+
+	"github.com/godbus/dbus/v5"
 )
 
 // X sunucusu gerekir (EKRAN_DENE=1, DISPLAY): bütün ekranı yakalayıp VP8'e kodlar.
@@ -102,5 +106,43 @@ func TestPipeWireOkuyucu(t *testing.T) {
 	}
 	if kareler < 20 {
 		t.Fatalf("yeterli kare yok: %d", kareler)
+	}
+}
+
+// Portalın Start yanıtı gerçek bir D-Bus iletisi gibi kodlanıp çözülür (yapılar orada []any olur),
+// sonra wayland.go'nun ayrıştırmasından geçer. Ekran ya da D-Bus gerekmez.
+func TestPortalBaslatYaniti(t *testing.T) {
+	type akis struct {
+		Dugum uint32
+		Oz    map[string]dbus.Variant
+	}
+	govde := map[string]dbus.Variant{
+		"streams": dbus.MakeVariant([]akis{{42, map[string]dbus.Variant{
+			"size":        dbus.MakeVariant(struct{ G, Y int32 }{2560, 1440}),
+			"source_type": dbus.MakeVariant(uint32(1)),
+		}}}),
+		"restore_token": dbus.MakeVariant("belirtec-123"),
+	}
+	m := &dbus.Message{Type: dbus.TypeSignal, Headers: map[dbus.HeaderField]dbus.Variant{
+		dbus.FieldPath:      dbus.MakeVariant(dbus.ObjectPath("/org/freedesktop/portal/desktop/request/1_2/diszort1")),
+		dbus.FieldInterface: dbus.MakeVariant("org.freedesktop.portal.Request"),
+		dbus.FieldMember:    dbus.MakeVariant("Response"),
+		dbus.FieldSignature: dbus.MakeVariant(dbus.SignatureOf(uint32(0), govde)),
+	}, Body: []any{uint32(0), govde}}
+	var b bytes.Buffer
+	if err := m.EncodeTo(&b, binary.LittleEndian); err != nil {
+		t.Fatal(err)
+	}
+	c, err := dbus.DecodeMessage(&b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sonuc, _ := c.Body[1].(map[string]dbus.Variant)
+	dugum, boyut, belirtec, err := baslatYaniti(sonuc)
+	if err != nil || dugum != 42 || boyut != "2560×1440" || belirtec != "belirtec-123" {
+		t.Fatalf("düğüm %d, boy %q, belirteç %q, hata %v", dugum, boyut, belirtec, err)
+	}
+	if _, _, _, err := baslatYaniti(map[string]dbus.Variant{}); err == nil {
+		t.Fatal("akışsız yanıt hata vermeli")
 	}
 }

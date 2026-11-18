@@ -206,7 +206,8 @@ Arayüz satır tabanlıdır, fare yoktur: yazdığın açık kanala mesaj olarak
   müzik, tarayıcı) ayrı yakalanır, Diszort'un kendi çaldıkları (kanaldakilerin sesi) hiç karışmaz;
   kimse kendi sesini geri duymaz. Belli bir aygıtı paylaşmak için: `/paylaş ses <aygıt>`.
 - **Ekran:** 1920×1080'e kadar (büyüğü küçültülür), 30 kare/sn (`/ayar kare 60`), VP8; bit hızı her
-  izleyenin bağlantısına göre ayarlanır, izleyen yokken ekran yakalanmaz (işlemci harcanmaz).
+  izleyenin bağlantısına göre ayarlanır, izleyen yokken görüntü kodlanmaz (işlemcinin asıl yükü; X11'de
+  ekran yakalanmaz da).
 - **Paylaşılan dosyalar** program açık kaldıkça (sonraki açılışlarda da) sunulur; indirilenler
   `İndirilenler`/`~/Downloads` klasörüne.
 - **Hafif:** iki kişilik görüşmede tek çekirdeğin ~%9'u ve ~22 MB bellek (aynı makinede başsız
