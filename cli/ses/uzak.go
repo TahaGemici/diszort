@@ -36,9 +36,9 @@ type UzakSes struct {
 	// Saat: ms cinsinden şimdiki zaman (denemelerde değiştirilir).
 	Saat func() float64
 	// İstatistik (Durum ile okunur).
-	alinan, gec, uydurulan, kurtarilan, cozulen uint64
-	sonSesMs                                    float64
-	seviye                                      float64
+	alinan, gec, uydurulan, kurtarilan, cozulen, red uint64
+	sonSesMs                                         float64
+	seviye                                           float64
 }
 
 // Durum: akışın durumu.
@@ -53,6 +53,7 @@ type UzakDurum struct {
 	Gec        uint64
 	Uydurulan  uint64
 	Kurtarilan uint64
+	Red        uint64 // RED'li gelen paket
 }
 
 func YeniUzakSes() (*UzakSes, error) {
@@ -83,6 +84,7 @@ func (u *UzakSes) PaketGeldi(ts uint32, yuk []byte, red bool, opusPT uint8) {
 	defer u.mu.Unlock()
 	simdi := u.simdi()
 	if red {
+		u.red++
 		bloklar, tamam := RedCoz(yuk)
 		if !tamam {
 			return
@@ -329,7 +331,7 @@ func (u *UzakSes) Durum() UzakDurum {
 	defer u.mu.Unlock()
 	simdi := u.simdi()
 	return UzakDurum{Aliniyor: simdi-u.sonGelis < 1000, Caliyor: u.basladi, Konusuyor: simdi-u.sonSesMs < 350, Seviye: u.seviye, TamponMs: u.doluMs(), HedefMs: u.HedefMs,
-		Alinan: u.alinan, Gec: u.gec, Uydurulan: u.uydurulan, Kurtarilan: u.kurtarilan}
+		Alinan: u.alinan, Gec: u.gec, Uydurulan: u.uydurulan, Kurtarilan: u.kurtarilan, Red: u.red}
 }
 
 func (u *UzakSes) Kapat() {

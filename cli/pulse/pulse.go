@@ -28,6 +28,8 @@ import (
 	"sync/atomic"
 	"time"
 	"unsafe"
+
+	"golang.org/x/sys/unix"
 )
 
 const (
@@ -404,19 +406,20 @@ type Olay struct {
 
 // Baglanti: ses sunucusuyla bir bağlantı. Komutlar her goroutine'den güvenle çağrılır.
 type Baglanti struct {
-	soket     net.Conn
-	yazMu     sync.Mutex
-	mu        sync.Mutex
-	etiket    uint32
-	bekleyen  map[uint32]chan yanit
-	calmalar  map[uint32]*Calma
-	kayitlar  map[uint32]*Kayit
-	esleme    uint32
-	surum     uint32
-	IstemciNo uint32
-	Yol       string
-	kapali    atomic.Bool
-	kapandi   chan struct{}
+	soket       net.Conn
+	yazMu       sync.Mutex
+	mu          sync.Mutex
+	etiket      uint32
+	bekleyen    map[uint32]chan yanit
+	calmalar    map[uint32]*Calma
+	kayitlar    map[uint32]*Kayit
+	esleme      uint32
+	surum       uint32
+	IstemciNo   uint32
+	Yol         string
+	kapali      atomic.Bool
+	kapandi     chan struct{}
+	kimlikGitti bool
 	// OlayGeldi: abonelik olayları (okuma goroutine'inden çağrılır; bekletmemeli).
 	OlayGeldi func(Olay)
 	// Kapandi: bağlantı koptuğunda bir kez.
@@ -426,9 +429,13 @@ type Baglanti struct {
 // Baglan: bağlan, kimliği doğrula, adını bildir.
 func Baglan(ad string) (*Baglanti, error) {
 	var son error
+	var hatalar []string
 	for _, yol := range soketYollari() {
 		s, err := net.DialTimeout("unix", yol, 2*time.Second)
 		if err != nil {
+			if !errors.Is(err, os.ErrNotExist) && !strings.Contains(err.Error(), "no such file") {
+				hatalar = append(hatalar, yol+": "+err.Error())
+			}
 			son = err
 			continue
 		}
@@ -453,10 +460,13 @@ func Baglan(ad string) (*Baglanti, error) {
 			return b, nil
 		}
 		son = err
+		hatalar = append(hatalar, yol+": "+err.Error())
 		b.Kapat()
 	}
-	if son == nil {
-		son = errors.New("soket yok")
+	if len(hatalar) > 0 {
+		son = errors.New(strings.Join(hatalar, "; "))
+	} else if son == nil || strings.Contains(son.Error(), "no such file") {
+		son = errors.New("soket bulunamadı")
 	}
 	return nil, fmt.Errorf("ses sunucusuna bağlanılamadı (PulseAudio ya da PipeWire çalışıyor mu?): %w", son)
 }
@@ -497,7 +507,17 @@ func (b *Baglanti) paket(kanal uint32, yuk []byte) error {
 	b.yazMu.Lock()
 	defer b.yazMu.Unlock()
 	b.soket.SetWriteDeadline(time.Now().Add(5 * time.Second))
-	_, err := b.soket.Write(append(bas, yuk...))
+	var err error
+	if uc, ok := b.soket.(*net.UnixConn); ok && !b.kimlikGitti {
+		// İlk pakette kimlik bilgisi (SCM_CREDENTIALS) açıkça gider: PulseAudio aynı kullanıcıyı buradan
+		// tanır (çerez dosyası gerekmez). Kendiliğinden eklenmesine güvenilmez: sunucu bunu bağlantıyı
+		// kabul ettikten sonra açar, ilk paket daha önce varabilir (libpulse de böyle yapar).
+		b.kimlikGitti = true
+		oob := unix.UnixCredentials(&unix.Ucred{Pid: int32(os.Getpid()), Uid: uint32(os.Getuid()), Gid: uint32(os.Getgid())})
+		_, _, err = uc.WriteMsgUnix(append(bas, yuk...), oob, nil)
+	} else {
+		_, err = b.soket.Write(append(bas, yuk...))
+	}
 	if err != nil {
 		go b.koptu(err)
 	}

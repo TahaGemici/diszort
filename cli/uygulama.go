@@ -183,7 +183,8 @@ type Uygulama struct {
 	// dosyalar (dosya.go)
 	dosyalar dosyaDurumu
 
-	guncelleme *surumBilgisi
+	guncelleme       *surumBilgisi
+	bekleyenSatirlar []string
 }
 
 func yeniUygulama(ayar *Ayar, betik bool) *Uygulama {
@@ -238,7 +239,9 @@ func (u *Uygulama) gunluk(s string) {
 }
 
 func (u *Uygulama) Calis() error {
+	u.sesMotorunuBagla()
 	u.ui.Satir = func(s string) { u.calistir(func() { u.satirGeldi(s) }) }
+	u.ui.Degisti = func(s string) { u.calistir(func() { u.girdiDegisti(s) }) }
 	u.ui.Tus = func(t string) { u.calistir(func() { u.tusGeldi(t) }) }
 	u.ui.Tamamla = u.tamamla
 	if err := u.ui.Baslat(); err != nil {
@@ -312,6 +315,7 @@ func (u *Uygulama) adSor(not string) {
 }
 
 func (u *Uygulama) bitir(err error) {
+	u.durduruldu = true
 	if u.sesKanal != "" && u.bagli {
 		u.gonder(map[string]any{"type": "ses-cik"})
 	}
@@ -393,6 +397,12 @@ func (u *Uygulama) istemGuncelle() {
 	}
 	if y := u.yazanlar(); y != "" {
 		p = append(p, u.ui.Soluk(y))
+	}
+	if a := u.aktarimOzeti(); a != "" {
+		p = append(p, u.ui.Mavi("["+a+"]"))
+	}
+	if u.denemede {
+		p = append(p, u.denemeIstemi())
 	}
 	kanal := "#" + u.kanalAdi(u.aktifKanal)
 	if u.aktifKanal == "" {
@@ -944,6 +954,12 @@ func (u *Uygulama) oturumHazir(m Gelen) {
 		u.ui.Yaz(u.ui.Yesil("Girdin: ") + u.ui.Ad(u.ben) + u.ui.Soluk(fmt.Sprintf(" · %d kişi çevrimiçi · /kanallar · /kişiler", len(u.kimler))))
 		if ilk := u.ilkKanal(); ilk != "" {
 			u.kanalSec(ilk)
+		}
+		// Girmeden önce yazılanlar (betikte hemen gelir).
+		bekleyen := u.bekleyenSatirlar
+		u.bekleyenSatirlar = nil
+		for _, s := range bekleyen {
+			u.satirGeldi(s)
 		}
 	} else {
 		u.durum("Yeniden bağlandın.", false)

@@ -64,6 +64,8 @@ type Arayuz struct {
 	Tus func(string)
 	// Tamamla: Tab. Dönüş: yeni girdi (imleç sonda) ve gösterilecek seçenekler.
 	Tamamla func(girdi string) (string, []string)
+	// Degisti: girdi değişti (yazıyor göstergesi için).
+	Degisti func(girdi string)
 }
 
 func yeniArayuz(betik bool) *Arayuz {
@@ -539,6 +541,10 @@ func (a *Arayuz) yapistirildi(s string) {
 	a.girdi = append(a.girdi[:a.imlec], append(rs, a.girdi[a.imlec:]...)...)
 	a.imlec += len(rs)
 	a.ciz()
+	if a.Degisti != nil {
+		g := string(a.girdi)
+		go a.Degisti(g)
+	}
 }
 
 func (a *Arayuz) rune_(r rune) {
@@ -596,7 +602,11 @@ func (a *Arayuz) rune_(r rune) {
 	a.girdi = append(a.girdi[:a.imlec], append([]rune{r}, a.girdi[a.imlec:]...)...)
 	a.imlec++
 	a.ciz()
+	g := string(a.girdi)
 	a.mu.Unlock()
+	if a.Degisti != nil {
+		a.Degisti(g)
+	}
 }
 
 func (a *Arayuz) gonder() {

@@ -1,24 +1,22 @@
-// CLI denemesi: tarayıcısız istemci (cli/) gerçek sunucuda, gerçek Chromium'la aynı kanalda.
+// CLI denemesi: terminal istemcisi (cli/, Go) gerçek sunucuda, gerçek Chromium'la aynı kanalda.
 //
-// CLI web istemcisinin kendisini çalıştırır (kabuk) ve arayüzünü terminale çizer; bu deneme ikisini
-// birlikte, ekranın metnini okuyarak ve tuş/fare olaylarını terminalden gönderir gibi sınar:
-//   - giriş: anahtar bağlantısıyla; arayüz kanalları ve kişiyi çiziyor
-//   - kapıyı çalma: Chromium'daki kişinin isteği CLI'da görünür, klavyeyle (Tab, Enter) kabul edilir
-//   - yazı: CLI'da klavyeyle yazılan Chromium'a, Chromium'un yazdığı CLI ekranına
-//   - ses: CLI ↔ Chromium iki yönde (gelen sesin enerjisi; CLI'da hoparlöre gerçekten çalınıyor),
-//     kayıplara karşı yedek (RED) iki yönde
-//   - ekransız paylaşım: CLI bilgisayarın sesini (PulseAudio "Monitor of …") paylaşır, Chromium alır
-//   - dosya: Chromium → CLI (indirilen dosyanın özeti aynı), CLI → Chromium (resim önizlemesi)
-//   - sunucu güncellenince sayfanın kendini yenilemesi: CLI sayfayı yeniden kurar, sesli kanala döner
-//   - derlenmiş program (CLI_IKILI verilirse): tek dosya, kendi klasöründe ayar dosyasıyla giriş
-//     yapar ve klavyeden mesaj gönderir
+// CLI kendi süreci olarak çalışır; komutlar stdin'den yazılır, çıktısı okunur (terminal değilken satır
+// satır çalışır). Denenen:
+//   - giriş: anahtar bağlantısıyla; ayar dosyası programın yanında (0600), anahtar içinde
+//   - kapıyı çalma: Chromium'daki kişinin isteği CLI'da görünür, /kabul ile içeri alınır
+//   - yazı: iki yönde
+//   - ses: CLI ↔ Chromium iki yönde (CLI hoparlöre gerçekten çalıyor), kayıplara karşı yedek (RED) iki yönde
+//   - ses paylaşımı: CLI bilgisayardaki uygulamaların sesini paylaşır (kendi çaldığı hariç), Chromium alır
+//   - ekran paylaşımı (Xvfb varsa): CLI ekranını paylaşır, Chromium görüntüyü çözer
+//   - dosya: Chromium → CLI (indirilenin özeti aynı), CLI → Chromium (resim önizlemesi)
+//   - program: --surum, ayar dosyasıyla adres vermeden açılış
 //
 //   node test/cli.js                       kendi sunucusunu açar (node sunucu/sunucu.js, geçici veri)
 //   node test/cli.js http://adres:port     çalışan sunucuya bağlanır (ILK_ANAHTAR gerekir)
-//   CLI_IKILI=cikti/diszort-linux-x64 node test/cli.js   derlenmiş programı da dener
+//   CLI_IKILI=cikti/diszort-linux-x64 node test/cli.js   derlenmiş programla (yoksa cli/'den derlenir)
 //
-// Gerekenler: cli/ bağımlılıkları (cd cli && npm ci), playwright + Chromium, PulseAudio (deneme
-// kendi PulseAudio'sunu sanal aygıtlarla başlatır; yoksa atlanır, CLI_ZORUNLU=1 ise hata).
+// Gerekenler: playwright + Chromium, PulseAudio (deneme kendi PulseAudio'sunu sanal aygıtlarla
+// başlatır; yoksa atlanır, CLI_ZORUNLU=1 ise hata), ekran için Xvfb (yoksa o deneme atlanır).
 'use strict';
 
 const assert = require('node:assert/strict');
@@ -27,8 +25,8 @@ const os = require('node:os');
 const path = require('node:path');
 const zlib = require('node:zlib');
 const crypto = require('node:crypto');
+const readline = require('node:readline');
 const { spawn, spawnSync } = require('node:child_process');
-const { PassThrough, Writable } = require('node:stream');
 
 const KOK = path.resolve(__dirname, '..');
 const zorunlu = process.env.CLI_ZORUNLU === '1';
@@ -41,16 +39,6 @@ try {
 	({ chromium } = require('playwright'));
 } catch {
 	atla('playwright kurulu değil (npm install --no-save playwright && npx playwright install chromium)');
-}
-let Kabuk, gomuluVarliklar, Terminal, Arayuz, Goruntu;
-try {
-	({ Kabuk } = require('../cli/kabuk/kabuk'));
-	({ gomuluVarliklar } = require('../cli/varlik'));
-	({ Terminal } = require('../cli/arayuz/terminal'));
-	({ Arayuz } = require('../cli/arayuz/arayuz'));
-	({ Goruntu } = require('../cli/arayuz/goruntu'));
-} catch (h) {
-	atla('cli/ bağımlılıkları kurulu değil (cd cli && npm ci): ' + h.message);
 }
 if (spawnSync('pulseaudio', ['--version']).status !== 0) atla('PulseAudio yok (sudo apt install pulseaudio pulseaudio-utils)');
 
@@ -73,7 +61,7 @@ async function dene(ad, fn) {
 	} catch (e) {
 		process.exitCode = 1;
 		console.error('HATA ' + ad + '\n     ' + (e && e.stack ? e.stack : e));
-		if (arayuz) console.error('     ekran:\n' + ekranMetni().replace(/^/gm, '     | '));
+		console.error('     CLI çıktısının sonu:\n' + cikti.slice(-25).map((s) => '     | ' + s).join('\n'));
 	}
 }
 async function kosul(aciklama, fn, ms = 20000, aralik = 100) {
@@ -112,9 +100,13 @@ async function sunucuBaslat() {
 }
 
 // ---------------------------------------------------------------- ses: kendi PulseAudio'muz
+//
+// CLI: hoparlörü diszort_hoparlor, mikrofonu diszort_mik (diszort_mikkaynak'a çalınan ses). Chromium'un
+// çaldıkları ayrı bir çıkışa gider (diszort_tarayici): CLI'nın hoparlörünü ölçmeye karışmasın.
 
 const PULSE = path.join(gecici, 'pulse');
 const pulseOrtami = { ...process.env, XDG_RUNTIME_DIR: PULSE, PULSE_RUNTIME_PATH: path.join(PULSE, 'pulse') };
+delete pulseOrtami.PULSE_SERVER;
 function pulseBaslat() {
 	fs.mkdirSync(PULSE, { mode: 0o700 });
 	const r = spawnSync(
@@ -128,24 +120,24 @@ function pulseBaslat() {
 			'--load=module-native-protocol-unix',
 			'--load=module-null-sink sink_name=diszort_hoparlor rate=48000 channels=2 sink_properties=device.description=Deneme-Hoparlor',
 			'--load=module-null-sink sink_name=diszort_mikkaynak rate=48000 channels=2 sink_properties=device.description=Deneme-Mik-Kaynagi',
+			'--load=module-null-sink sink_name=diszort_tarayici rate=48000 channels=2 sink_properties=device.description=Deneme-Tarayici',
 			'--load=module-remap-source master=diszort_mikkaynak.monitor source_name=diszort_mik source_properties=device.description=Deneme-Mikrofon',
 		],
 		{ env: pulseOrtami, encoding: 'utf8' },
 	);
 	if (r.status !== 0) throw new Error('PulseAudio başlamadı: ' + r.stderr + (fs.existsSync(path.join(PULSE, 'pulse.log')) ? fs.readFileSync(path.join(PULSE, 'pulse.log'), 'utf8').slice(-800) : ''));
-	// Kabuk bu süreçte: ses sunucusunu buradan bulur.
-	Object.assign(process.env, { XDG_RUNTIME_DIR: pulseOrtami.XDG_RUNTIME_DIR, PULSE_RUNTIME_PATH: pulseOrtami.PULSE_RUNTIME_PATH });
-	delete process.env.PULSE_SERVER;
+	spawnSync('pactl', ['set-default-sink', 'diszort_hoparlor'], { env: pulseOrtami });
+	spawnSync('pactl', ['set-default-source', 'diszort_mik'], { env: pulseOrtami });
 }
 function pulseDurdur() {
 	spawnSync('pulseaudio', ['--kill'], { env: pulseOrtami });
 }
-// Bir aygıta wav'ı döngüde çal; dönüş: durdur().
-function cal(aygit, dosya) {
+// Bir aygıta wav'ı döngüde çal (ayrı bir uygulama gibi); dönüş: durdur().
+function cal(aygit, dosya, ad = 'deneme') {
 	let p = null;
 	let bitti = false;
 	const basla = () => {
-		p = spawn('paplay', ['--device=' + aygit, dosya], { env: pulseOrtami, stdio: 'ignore' });
+		p = spawn('paplay', ['--device=' + aygit, '--client-name=' + ad, dosya], { env: pulseOrtami, stdio: 'ignore' });
 		p.on('exit', () => !bitti && setTimeout(basla, 10));
 	};
 	basla();
@@ -205,7 +197,7 @@ function konusmaWav(dosya, saniye = 12, { perde: perdeTaban = 140, hece: heceHiz
 	wavBasligi(v, N, 1);
 	fs.writeFileSync(dosya, v);
 }
-// Stereo müzik: solda 500 Hz, sağda 800 Hz (bilgisayarın sesi yerine).
+// Stereo müzik: solda 500 Hz, sağda 800 Hz (bilgisayarda çalan bir uygulama).
 function muzikWav(dosya, saniye = 10) {
 	const N = 48000 * saniye;
 	const v = Buffer.alloc(44 + N * 4);
@@ -261,83 +253,109 @@ function png(dosya, w = 24, h = 16) {
 }
 const ozet = (dosya) => crypto.createHash('sha256').update(fs.readFileSync(dosya)).digest('hex');
 
-// ---------------------------------------------------------------- CLI (kabuk + arayüz, sahte terminal)
+// ---------------------------------------------------------------- ekran: Xvfb
 
-let kabuk = null;
-let arayuz = null;
-let terminal = null;
-const kabukHatalari = [];
-function sahteTerminal(W, H) {
-	const girdi = new PassThrough();
-	girdi.isTTY = false;
-	const cikti = new Writable({ write: (c, e, cb) => cb() });
-	cikti.columns = W;
-	cikti.rows = H;
-	const t = new Terminal({ girdi, cikti });
-	t.gonder = (s) => girdi.write(s);
-	return t;
+let xvfb = null;
+let EKRAN = '';
+async function xvfbBaslat() {
+	if (spawnSync('which', ['Xvfb']).status !== 0) return false;
+	const no = 90 + Math.floor(Math.random() * 9);
+	xvfb = spawn('Xvfb', [':' + no, '-screen', '0', '1280x720x24', '-nolisten', 'tcp'], { stdio: 'ignore' });
+	EKRAN = ':' + no;
+	await bekle(800);
+	if (xvfb.exitCode !== null) return false;
+	// Ekranda değişen bir şey olsun (kodlayıcı boş kareleri atlamasın): renkli arka plan.
+	spawnSync('xsetroot', ['-solid', 'steelblue'], { env: { ...process.env, DISPLAY: EKRAN } });
+	return true;
 }
-function ekranMetni() {
-	arayuz.ciz();
-	const e = arayuz.ekran;
-	const satirlar = [];
-	for (let y = 0; y < e.yukseklik; y++) {
-		let s = '';
-		for (let x = 0; x < e.genislik; x++) s += e.kar[y * e.genislik + x];
-		satirlar.push(s.replace(/\s+$/, ''));
+
+// ---------------------------------------------------------------- CLI süreci
+
+let cli = null;
+let cikti = [];
+let PROGRAM = '';
+let klasor = '';
+const ev = path.join(gecici, 'ev');
+
+function programHazirla() {
+	klasor = path.join(gecici, 'program');
+	fs.mkdirSync(klasor, { recursive: true });
+	PROGRAM = path.join(klasor, 'diszort');
+	if (process.env.CLI_IKILI) {
+		fs.copyFileSync(path.resolve(process.env.CLI_IKILI), PROGRAM);
+	} else {
+		if (!fs.existsSync(path.join(KOK, 'cli/gurultu/rnnoise_w2c.c'))) spawnSync('sh', [path.join(KOK, 'cli/gurultu/uret.sh')], { stdio: 'inherit' });
+		const r = spawnSync('go', ['build', '-o', PROGRAM, '.'], { cwd: path.join(KOK, 'cli'), stdio: 'inherit' });
+		if (r.status !== 0) atla('CLI derlenemedi (go, libopus-dev, libvpx-dev, libyuv-dev, wabt gerekir) ya da CLI_IKILI verilmedi');
 	}
-	return satirlar.join('\n');
+	fs.chmodSync(PROGRAM, 0o755);
 }
-const $ = (id) => kabuk.document.getElementById(id);
-// Ekranda (arayüzün çizdiği) bir öğeye fareyle tıkla.
-async function fareyleTikla(bul, aciklama) {
-	arayuz.ciz();
-	const t = arayuz.hedefler.find((h) => h.h && bul(h.h));
-	assert.ok(t, `ekranda yok: ${aciklama}`);
-	const x = t.x + Math.floor(t.g / 2) + 1;
-	terminal.gonder(`\x1b[<0;${x};${t.y + 1}M\x1b[<0;${x};${t.y + 1}m`);
-	await bekle(150);
+
+function cliBaslat(argv = [], ek = {}) {
+	cikti = [];
+	const ortam = { ...pulseOrtami, HOME: ev, DISZORT_BETIK: '1', ...ek };
+	delete ortam.XDG_CONFIG_HOME;
+	if (EKRAN) ortam.DISPLAY = EKRAN;
+	else delete ortam.DISPLAY;
+	delete ortam.WAYLAND_DISPLAY;
+	cli = spawn('./diszort', argv, { cwd: klasor, env: ortam, stdio: ['pipe', 'pipe', 'pipe'] });
+	readline.createInterface({ input: cli.stdout }).on('line', (s) => cikti.push(s));
+	readline.createInterface({ input: cli.stderr }).on('line', (s) => cikti.push('[stderr] ' + s));
+	return cli;
 }
-// Odak (Tab ile) istenen öğeye gelene kadar.
-async function tablaGit(kosulu, enCok = 80) {
-	for (let i = 0; i < enCok; i++) {
-		const a = kabuk.document.activeElement;
-		if (a && kosulu(a)) return i;
-		terminal.gonder('\t');
-		await bekle(40);
-	}
-	throw new Error('odak istenen öğeye gelmedi');
+const cliYaz = (s) => cli.stdin.write(s + '\n');
+// cliBekle: çıktıda kalıba uyan satır (bas: bu sıradan sonrası).
+async function cliBekle(kalip, ms = 20000, bas = 0) {
+	return kosul('CLI çıktısında ' + kalip, () => cikti.slice(bas).find((s) => kalip.test(s)), ms);
 }
-// Eşin mikrofon kanalının istatistikleri (sayfanın kendi değişkenlerinden; tarayıcıda da kabukta da aynı).
+async function cliDurum() {
+	const bas = cikti.length;
+	cliYaz('/durum json');
+	const s = await cliBekle(/^DURUM /, 5000, bas);
+	return JSON.parse(s.slice(6));
+}
+async function cliKapat() {
+	if (!cli || cli.exitCode !== null) return;
+	cliYaz('/çık');
+	cli.stdin.end();
+	await kosul('CLI kapandı', () => cli.exitCode !== null, 8000).catch(() => cli.kill('SIGKILL'));
+}
+
+// Chromium'daki sayfanın eşlerinin istatistikleri (sayfanın kendi değişkenlerinden).
 const OLCUM = `(async () => {
 	const s = {};
 	for (const [ad, es] of esler) {
-		const o = { durum: es.pc ? es.pc.connectionState : 'yok', caliyor: !!(es.ses && es.ses.srcObject && !es.ses.paused) };
-		const oku = async (n, tur) => { let b = null; if (n) (await n.getStats()).forEach((x) => { if (x.type === tur) b = x; }); return b; };
+		const o = { durum: es.pc ? es.pc.connectionState : 'yok' };
+		const oku = async (n, tur) => { let b = null; let r = null; if (n) { r = await n.getStats(); r.forEach((x) => { if (x.type === tur) b = x; }); } return [b, r]; };
 		if (es.pc && es.tr) {
-			const g = await oku(es.tr.receiver, 'inbound-rtp');
-			if (g) Object.assign(o, { enerji: g.totalAudioEnergy || 0, bayt: g.bytesReceived || 0 });
-			o.red = redAnlasildi(es.tr, 'giden');
-			const y = await oku(es.trSes && es.trSes.receiver, 'inbound-rtp');
+			const [g, r] = await oku(es.tr.receiver, 'inbound-rtp');
+			if (g) {
+				o.enerji = g.totalAudioEnergy || 0;
+				o.bayt = g.bytesReceived || 0;
+				o.paket = g.packetsReceived || 0;
+				o.uydurulan = (g.concealedSamples || 0) - (g.silentConcealedSamples || 0);
+				o.ornek = g.totalSamplesReceived || 0;
+			}
+			o.gidenRed = redAnlasildi(es.tr, 'giden');
+			const [y] = await oku(es.trSes && es.trSes.receiver, 'inbound-rtp');
 			o.yayinEnerji = y ? y.totalAudioEnergy || 0 : 0;
+			const [v] = await oku(es.trGoruntu && es.trGoruntu.receiver, 'inbound-rtp');
+			if (v) Object.assign(o, { kare: v.framesDecoded || 0, genislik: v.frameWidth || 0, yukseklik: v.frameHeight || 0, goruntuKodek: (r && v.codecId && r.get(v.codecId)) ? r.get(v.codecId).mimeType : '' });
 		}
 		s[ad] = o;
 	}
 	return JSON.stringify(s);
 })()`;
-const olcCli = async () => JSON.parse(await kabuk.window.eval(OLCUM));
+let sayfa = null;
 const olcTarayici = async () => JSON.parse(await sayfa.evaluate(OLCUM));
-async function enerjiFarki(olc, ad, alan = 'enerji', ms = 3000) {
+async function farki(olc, ad, alan, ms = 3000) {
 	const a = (await olc())[ad] || {};
 	await bekle(ms);
 	const b = (await olc())[ad] || {};
 	return (b[alan] || 0) - (a[alan] || 0);
 }
 
-// ---------------------------------------------------------------- tarayıcı
-
 let tarayici = null;
-let sayfa = null;
 const tarayiciHatalari = [];
 
 // ---------------------------------------------------------------- denemeler
@@ -345,127 +363,144 @@ const tarayiciHatalari = [];
 (async () => {
 	pulseBaslat();
 	await sunucuBaslat();
+	programHazirla();
+	const ekranVar = await xvfbBaslat();
 	const konusma = path.join(gecici, 'konusma.wav');
 	const konusma2 = path.join(gecici, 'konusma2.wav');
 	const muzik = path.join(gecici, 'muzik.wav');
 	konusmaWav(konusma);
 	konusmaWav(konusma2, 12, { perde: 205, hece: 4.3, tohum: 99 });
 	muzikWav(muzik);
-	// İndirilenler bu klasöre (kabuk ev dizininin İndirilenler'ini kullanır).
-	const ev = path.join(gecici, 'ev');
 	fs.mkdirSync(path.join(ev, 'Downloads'), { recursive: true });
-	process.env.HOME = ev;
-	delete process.env.XDG_CONFIG_HOME;
 
 	tarayici = await chromium.launch({
 		args: ['--use-fake-ui-for-media-stream', '--use-fake-device-for-media-stream', '--use-file-for-fake-audio-capture=' + konusma2, '--autoplay-policy=no-user-gesture-required'],
+		env: { ...pulseOrtami, PULSE_SINK: 'diszort_tarayici' },
 	});
 	const ctx = await tarayici.newContext({ permissions: ['microphone'] });
 	sayfa = await ctx.newPage();
 	sayfa.on('pageerror', (e) => tarayiciHatalari.push(e.message));
-	const ADI = 'cli' + crypto.randomBytes(2).toString('hex'); // Chromium'daki kişi (her koşuda yeni ad)
-	console.log(`CLI denemesi: ${ADRES} (Chromium ${tarayici.version()}, kişi ${ADI})`);
+	const ADI = 'web' + crypto.randomBytes(2).toString('hex');
+	console.log(`CLI denemesi: ${ADRES} (Chromium ${tarayici.version()}, kişi ${ADI}; program ${(fs.statSync(PROGRAM).size / 1e6).toFixed(1)} MB${ekranVar ? '' : '; Xvfb yok: ekran denenmez'})`);
 
-	await dene('giriş: anahtar bağlantısıyla; arayüz kanalları ve kişiyi terminale çiziyor', async () => {
-		kabuk = new Kabuk({
-			sunucu: ADRES + '/#anahtar=' + ANAHTAR,
-			depo: { 'ses-ayarlari': JSON.stringify({ mikId: 'diszort_mik', cikisId: 'diszort_hoparlor' }) },
-			varliklar: gomuluVarliklar(),
-			gunluk: (...a) => {
-				const s = a.map((x) => (x && x.stack ? x.stack.split('\n').slice(0, 3).join(' | ') : typeof x === 'string' ? x : JSON.stringify(x))).join(' ');
-				if (/sayfa|yakalanmamış|hata|AudioWorklet/i.test(s) && !/konsol\.(log|info|debug)/.test(s)) kabukHatalari.push(s.slice(0, 400));
-			},
-		});
-		await kabuk.baslat();
-		terminal = sahteTerminal(120, 34);
-		arayuz = new Arayuz({ kabuk, terminal, surum: 'deneme' });
-		arayuz.goruntu = new Goruntu({ kabuk, arayuz });
-		arayuz.baslat();
-		await kosul('uygulama ekranı', () => !$('uygulama').hidden);
-		await bekle(300);
-		const e = ekranMetni();
-		assert.match(e, /Yazılı Kanallar/);
-		assert.match(e, /Sesli Kanallar/);
-		assert.match(e, /# genel/);
-		assert.equal(kabuk.window.location.hash.includes('anahtar'), false, 'anahtar adresten silinmeli');
-		assert.match(kabuk.depo.anahtar || '', /^[0-9a-f]{128}$/, 'anahtar depoya (ayar dosyasına) yazılmalı');
+	await dene('giriş: anahtar bağlantısıyla; ayar dosyası programın yanında, anahtar içinde', async () => {
+		// Ses aygıtları ayar dosyasından (kullanıcı /ayar mik ile seçer).
+		fs.writeFileSync(path.join(klasor, 'diszort.json'), JSON.stringify({ sunucu: ADRES, ses: { mik: 'diszort_mik', hoparlor: 'diszort_hoparlor', mikSeviye: 100, esik: 10, kalite: 96, yayinSes: 192, mikRed: true, yayinRed: true, sesler: true, kare: 15 } }));
+		cliBaslat([ADRES + '/#anahtar=' + ANAHTAR]);
+		await cliBekle(/^Girdin: taha/);
+		await cliBekle(/── #genel ──/);
+		const ayar = JSON.parse(fs.readFileSync(path.join(klasor, 'diszort.json'), 'utf8'));
+		assert.equal(ayar.anahtar, ANAHTAR, 'anahtar ayar dosyasına yazılmalı');
+		assert.equal(ayar.ad, 'taha');
+		assert.equal(fs.statSync(path.join(klasor, 'diszort.json')).mode & 0o777, 0o600, 'ayar dosyası yalnızca kullanıcıya açık olmalı');
+		assert.deepEqual(fs.readdirSync(klasor).sort(), ['diszort', 'diszort.json'], 'programın yanında yalnızca ayar dosyası olmalı');
 	});
 
-	await dene('kapıyı çalma: Chromium\'daki kişinin isteği CLI ekranında; klavyeyle (Tab, Enter) kabul edilir', async () => {
+	await dene('kapıyı çalma: Chromium\'daki kişinin isteği CLI\'da; /kabul ile içeri alınır', async () => {
 		await sayfa.goto(ADRES + '/');
 		await sayfa.fill('#ad', ADI);
 		await sayfa.click('#gir');
-		await kosul('istek CLI ekranında', () => ekranMetni().includes(`${ADI} girmek istiyor`));
-		await tablaGit((a) => a.textContent === 'Kabul et');
-		terminal.gonder('\r');
+		await cliBekle(new RegExp(`! ${ADI} girmek istiyor`));
+		cliYaz('/kabul ' + ADI);
 		await sayfa.waitForSelector('#uygulama:not([hidden])', { timeout: 20000 });
-		await kosul('CLI üye listesinde', () => ekranMetni().includes(ADI));
+		await cliBekle(new RegExp(`${ADI} içeri alındı`));
 	});
 
-	await dene('yazı: CLI\'da klavyeyle yazılan Chromium\'a, Chromium\'un yazdığı CLI ekranına', async () => {
+	await dene('yazı: CLI\'dan Chromium\'a, Chromium\'dan CLI\'a', async () => {
 		const metin = 'terminalden merhaba ' + crypto.randomBytes(3).toString('hex') + ' 😀';
-		$('metin').focus();
-		terminal.gonder(metin);
-		await bekle(100);
-		terminal.gonder('\r');
+		cliYaz(metin);
 		await kosul('Chromium mesajı gördü', () => sayfa.evaluate((m) => [...document.querySelectorAll('#mesajlar .metin')].some((e) => e.textContent === m), metin));
-		assert.equal($('metin').value, '', 'gönderince mesaj kutusu boşalmalı');
-		const yanit = 'tarayıcıdan selam ' + crypto.randomBytes(3).toString('hex');
+		const yanit = 'tarayıcıdan selam @taha ' + crypto.randomBytes(3).toString('hex');
 		await sayfa.fill('#metin', yanit);
 		await sayfa.press('#metin', 'Enter');
-		await kosul('CLI ekranında', () => ekranMetni().includes(yanit));
+		await cliBekle(new RegExp(ADI + ': ' + yanit.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
 	});
 
 	const durCal = cal('diszort_mikkaynak', konusma);
 	await dene('ses: CLI ↔ Chromium iki yönde; CLI hoparlöre çalıyor; kayıplara karşı yedek (RED) iki yönde', async () => {
-		await fareyleTikla((el) => el.classList.contains('kanal') && /Sesli Sohbet/.test(el.textContent), 'Sesli Sohbet');
-		await kosul('CLI sesli kanalda', () => !$('ses-karti').hidden);
+		cliYaz('/ses Sesli Sohbet');
+		await cliBekle(/Sesli Sohbet kanalına girdin/);
 		await sayfa.locator('#ses-kanallari .kanal', { hasText: 'Sesli Sohbet' }).click();
-		await kosul('CLI → Chromium bağlı ve çalıyor', async () => {
-			const o = (await olcCli())[ADI];
-			return o && o.durum === 'connected' && o.caliyor;
+		await kosul('CLI ↔ Chromium bağlı', async () => {
+			const c = (await cliDurum()).esler[ADI];
+			const t = (await olcTarayici()).taha;
+			return c && c.durum === 'connected' && t && t.durum === 'connected';
 		}, 30000);
-		await kosul('Chromium → CLI bağlı', async () => {
-			const o = (await olcTarayici()).taha;
-			return o && o.durum === 'connected';
-		}, 30000);
-		await bekle(1000);
-		const cliDuyuyor = await enerjiFarki(olcCli, ADI);
-		const tarayiciDuyuyor = await enerjiFarki(olcTarayici, 'taha');
+		await bekle(1500);
+		const tarayiciDuyuyor = await farki(olcTarayici, 'taha', 'enerji');
+		const once = (await cliDurum()).esler[ADI].mik || {};
 		const hoparlor = await kaydet('diszort_hoparlor.monitor', 3000);
-		console.log(`     CLI ← Chromium enerji +${cliDuyuyor.toFixed(3)}, Chromium ← CLI +${tarayiciDuyuyor.toFixed(3)}; CLI'nın hoparlörü ${hoparlor.rmsDb.toFixed(1)} dBFS, %${Math.round(hoparlor.sesliOran * 100)} sesli`);
-		assert.ok(cliDuyuyor > 0.02, 'CLI Chromium\'u duymuyor');
+		const sonra = (await cliDurum()).esler[ADI];
+		const t = (await olcTarayici()).taha;
+		// RED: Chromium alırken kodeği Opus diye bildirir (Chromium'un kendi RED'inde de böyle); RED açıkken
+		// her paket bir öncekini de taşır: paket başına bayt kapalıyken olanın ~iki katı.
+		const paketBasina = async () => {
+			const a = (await olcTarayici()).taha;
+			await bekle(2000);
+			const b = (await olcTarayici()).taha;
+			return { bayt: (b.bayt - a.bayt) / Math.max(1, b.paket - a.paket), uydurulan: (b.uydurulan - a.uydurulan) / Math.max(1, b.ornek - a.ornek) };
+		};
+		const redli = await paketBasina();
+		cliYaz('/ayar red kapalı');
+		await bekle(500);
+		const redsiz = await paketBasina();
+		cliYaz('/ayar red açık');
+		console.log(`     Chromium ← CLI enerji +${tarayiciDuyuyor.toFixed(3)}; paket başına ${redli.bayt.toFixed(0)} B (RED'siz ${redsiz.bayt.toFixed(0)} B), uydurulan %${(redli.uydurulan * 100).toFixed(1)}; CLI ← Chromium ${sonra.mik.alinan - (once.alinan || 0)} paket (RED'li ${sonra.mik.red}), uydurulan ${sonra.mik.uydurulan}; CLI'nın hoparlörü ${hoparlor.rmsDb.toFixed(1)} dBFS, %${Math.round(hoparlor.sesliOran * 100)} sesli; bağlantı ${sonra.tip} ${sonra.rttMs} ms`);
 		assert.ok(tarayiciDuyuyor > 0.02, 'Chromium CLI\'ı duymuyor');
+		assert.ok(sonra.mik.alinan - (once.alinan || 0) > 100, 'CLI Chromium\'dan ses almıyor');
 		assert.ok(hoparlor.rmsDb > -45 && hoparlor.sesliOran > 0.2, 'CLI gelen sesi hoparlöre çalmıyor');
-		assert.equal((await olcCli())[ADI].red, true, 'CLI → Chromium RED\'li gitmeli');
-		assert.equal((await olcTarayici()).taha.red, true, 'Chromium → CLI RED\'li gitmeli');
-		assert.match(ekranMetni(), /P2P|TURN/, 'ses kartında bağlantı türü');
+		assert.ok(redli.bayt > redsiz.bayt * 1.5, `CLI → Chromium RED'li gitmeli (paket başına ${redli.bayt.toFixed(0)} B, RED'siz ${redsiz.bayt.toFixed(0)} B)`);
+		assert.ok(redli.uydurulan < 0.05, 'Chromium CLI\'ın sesini çözerken çok uyduruyor');
+		assert.ok(sonra.mik.red > 0 && t.gidenRed, 'Chromium → CLI RED\'li gitmeli');
+		assert.equal(sonra.gidenRed, true);
+		assert.match(sonra.tip, /P2P|TURN/);
 	});
 
-	await dene('ekransız paylaşım: CLI bilgisayarın sesini (Monitor of …) paylaşır, Chromium alır', async () => {
-		const durMuzik = cal('diszort_hoparlor', muzik);
+	await dene('ses paylaşımı: CLI uygulamaların sesini paylaşır (kendi çaldığı hariç), Chromium alır', async () => {
+		const durMuzik = cal('diszort_hoparlor', muzik, 'muzikcalar');
 		try {
-			await fareyleTikla((el) => el.id === 'yayin-ac', 'paylaş düğmesi');
-			await kosul('paylaşım menüsü açık', () => !$('yayin-menu').hidden);
-			await fareyleTikla((el) => el.classList.contains('yayin-menu-oge') && /Ekransız paylaş/.test(el.textContent), 'Ekransız paylaş');
-			await kosul('CLI paylaşıyor', () => kabuk.window.eval('!!yayin.ses && yayin.ekransiz'), 15000);
-			const aygit = kabuk.window.eval('yayin.aygitAdi');
-			assert.match(aygit, /Monitor of Deneme-Hoparlor/, 'çıkışın monitörü kendiliğinden seçilmeli');
-			await kosul('Chromium\'da yayın kartı', () => sayfa.evaluate(() => !!document.querySelector('#yayinlar .yayin-kart[data-ad="taha"]')));
+			cliYaz('/paylaş ses');
+			await kosul('CLI paylaşıyor ve uygulamayı yakaladı', async () => {
+				const d = await cliDurum();
+				return d.yayin.ses && (d.yayin.uygulamalar || []).includes('muzikcalar');
+			}, 15000);
+			const d = await cliDurum();
+			assert.ok(!(d.yayin.uygulamalar || []).some((a) => /diszort/i.test(a)), 'Diszort kendi çaldığını paylaşmamalı: ' + d.yayin.uygulamalar);
+			await kosul('Chromium paylaşımı görüyor', () => sayfa.evaluate(() => !!document.querySelector('#yayinlar .yayin-kart[data-ad="taha"]')), 15000);
 			await bekle(1000);
-			const yayin = await enerjiFarki(olcTarayici, 'taha', 'yayinEnerji');
-			console.log(`     Chromium ← CLI paylaşımın sesi enerji +${yayin.toFixed(3)} (aygıt: ${aygit})`);
+			const yayin = await farki(olcTarayici, 'taha', 'yayinEnerji');
+			console.log(`     Chromium ← CLI paylaşımın sesi enerji +${yayin.toFixed(3)} (paylaşılan: ${d.yayin.uygulamalar.join(', ')})`);
 			assert.ok(yayin > 0.02, 'Chromium paylaşılan sesi almıyor');
-			await fareyleTikla((el) => el.id === 'yayin-ac', 'paylaş düğmesi');
-			await fareyleTikla((el) => el.classList.contains('yayin-menu-oge') && /Paylaşımı durdur/.test(el.textContent), 'Paylaşımı durdur');
-			await kosul('paylaşım bitti', () => kabuk.window.eval('!yayin.ses'));
+			cliYaz('/paylaş dur');
+			await kosul('paylaşım bitti', async () => !(await cliDurum()).yayin.ses);
 		} finally {
 			durMuzik();
 		}
 	});
 	durCal();
 
-	await dene('dosya: Chromium → CLI (indirilen dosyanın özeti aynı), CLI → Chromium (resim önizlemesi)', async () => {
+	if (ekranVar) {
+		await dene('ekran paylaşımı: CLI ekranını (X11) paylaşır, Chromium görüntüyü çözer', async () => {
+			cliYaz('/paylaş ekran');
+			await cliBekle(/Ekranın paylaşılıyor/, 15000);
+			await kosul('Chromium kareleri çözüyor', async () => {
+				const t = (await olcTarayici()).taha;
+				return t && t.kare > 10 && t.genislik > 0;
+			}, 30000);
+			const t = (await olcTarayici()).taha;
+			const k1 = t.kare;
+			await bekle(2000);
+			const k2 = (await olcTarayici()).taha.kare;
+			const d = await cliDurum();
+			console.log(`     ${d.yayin.bilgi}; Chromium ${t.genislik}×${t.yukseklik} ${t.goruntuKodek}, ${((k2 - k1) / 2).toFixed(1)} kare/sn`);
+			assert.equal(t.genislik, 1280);
+			assert.ok(k2 - k1 >= 10, 'kareler akmıyor');
+			cliYaz('/paylaş dur');
+			await kosul('paylaşım bitti', async () => !(await cliDurum()).yayin.ekran);
+		});
+	}
+
+	await dene('dosya: Chromium → CLI (indirilenin özeti aynı), CLI → Chromium (resim önizlemesi)', async () => {
 		const veri = crypto.randomBytes(3 * 1024 * 1024);
 		const beklenen = crypto.createHash('sha256').update(veri).digest('hex');
 		await sayfa.evaluate((b64) => {
@@ -474,72 +509,34 @@ const tarayiciHatalari = [];
 			for (let i = 0; i < ikili.length; i++) v[i] = ikili.charCodeAt(i);
 			dosyalariPaylas([new File([v], 'chromiumdan.bin', { type: 'application/octet-stream' })]);
 		}, veri.toString('base64'));
-		await kosul('CLI dosya kartını gördü', () => ekranMetni().includes('chromiumdan.bin'));
-		await kosul('İndir düğmesi açık', () => {
-			arayuz.ciz();
-			return arayuz.hedefler.some((h) => h.h && h.h.textContent === 'İndir' && !h.h.disabled);
-		});
-		await fareyleTikla((el) => el.textContent === 'İndir' && !!el.closest('.p2p-dosya'), 'İndir');
-		const inen = path.join(ev, 'Downloads', 'chromiumdan.bin');
-		await kosul('dosya indi', () => fs.existsSync(inen) && fs.statSync(inen).size === veri.length, 30000);
+		await cliBekle(/\[\d+\] chromiumdan\.bin/);
+		cliYaz('/indir chromiumdan.bin');
+		const satir = await cliBekle(/İndirildi: /, 30000);
+		const inen = satir.replace(/^.*İndirildi: /, '').replace(/ · .*$/, '');
+		assert.equal(inen, path.join(ev, 'Downloads', 'chromiumdan.bin'));
 		assert.equal(ozet(inen), beklenen, 'indirilen dosyanın içeriği farklı');
-		// Mesajın içindeki kart değişti (indirildi): ekranda da güncel olmalı (mesajların çizimi saklanır).
-		await kosul('CLI ekranında "indirildi"', () => /chromiumdan\.bin[\s\S]*indirildi/.test(ekranMetni()), 5000);
 		const resim = path.join(gecici, 'cliden.png');
 		png(resim);
-		assert.ok(kabuk.dosyalariBirak([resim]), 'bırakılan dosya paylaşılmalı');
+		cliYaz('/dosya ' + resim);
 		await kosul('Chromium önizlemeyi (CLI\'dan doğrudan) aldı', () => sayfa.evaluate(() => {
 			const r = [...document.querySelectorAll('#mesajlar .p2p-dosya img.onizleme')].pop();
 			return !!r && r.complete && r.naturalWidth === 24;
 		}), 30000);
 	});
 
-	await dene('sunucu güncellenince (sayfa kendini yeniler): CLI sayfayı yeniden kurar, sesli kanala döner, yazılan kalır', async () => {
-		const eski = kabuk.window;
-		$('metin').value = 'yarım kalan taslak';
-		kabuk.window.eval('surumYenile()');
-		await kosul('yeni sayfa kuruldu ve girildi', () => kabuk.window !== eski && !$('uygulama').hidden, 30000);
-		await kosul('sesli kanala döndü', () => !!kabuk.window.eval('sesKanal'), 20000);
-		assert.equal($('metin').value, 'yarım kalan taslak', 'yazılan mesaj yenilemeden sonra geri gelmeli');
-		await kosul('Chromium\'la ses yeniden bağlandı', async () => {
-			const o = (await olcCli())[ADI];
-			return o && o.durum === 'connected' && o.caliyor;
-		}, 30000);
-		assert.match(ekranMetni(), /Sesli Sohbet/);
+	await dene('program: --surum; adres vermeden ayar dosyasındaki sunucuya bağlanır', async () => {
+		await cliKapat();
+		const surum = spawnSync('./diszort', ['--surum'], { cwd: klasor, encoding: 'utf8' }).stdout.trim();
+		assert.match(surum, /^Diszort /);
+		const mesaj = 'yeniden açılan programdan ' + crypto.randomBytes(3).toString('hex');
+		cliBaslat([]);
+		await cliBekle(/^Girdin: taha/);
+		cliYaz(mesaj);
+		await kosul('Chromium mesajı gördü', () => sayfa.evaluate((m) => [...document.querySelectorAll('#mesajlar .metin')].some((e) => e.textContent === m), mesaj));
+		assert.equal(JSON.parse(fs.readFileSync(path.join(klasor, 'diszort.json'), 'utf8')).sunucu, new URL(ADRES).origin);
+		console.log(`     ${surum}`);
 	});
 
-	if (process.env.CLI_IKILI) {
-		await dene('derlenmiş program: tek dosya, kendi klasöründe ayar dosyasıyla giriş yapar ve klavyeden mesaj gönderir', async () => {
-			const klasor = path.join(gecici, 'program');
-			fs.mkdirSync(klasor);
-			const program = path.join(klasor, 'diszort');
-			fs.copyFileSync(path.resolve(process.env.CLI_IKILI), program);
-			fs.chmodSync(program, 0o755);
-			// Oturum programa geçecek: kabuk önce kapanır.
-			await kabuk.kapat();
-			arayuz.bitir();
-			arayuz = null;
-			const mesaj = 'derlenmiş programdan ' + crypto.randomBytes(3).toString('hex');
-			// Kullanıcı gibi: kendi klasöründe, göreli yolla (./diszort).
-			const r = spawnSync('./diszort', [ADRES + '/#anahtar=' + ANAHTAR], { cwd: klasor, env: { ...process.env, DISZORT_DENEME: '1', DISZORT_DENEME_MESAJ: mesaj, COLUMNS: '100', LINES: '24' }, encoding: 'utf8', timeout: 90000 });
-			assert.equal(r.status, 0, 'program başarısız: ' + (r.stdout || '').slice(-1500) + (r.stderr || '').slice(-1500));
-			assert.match(r.stdout, /DENEME: TAMAM/);
-			assert.deepEqual(fs.readdirSync(klasor).sort(), ['diszort', 'diszort.json'], 'programın yanında yalnızca ayar dosyası olmalı');
-			assert.equal(fs.statSync(path.join(klasor, 'diszort.json')).mode & 0o777, 0o600, 'ayar dosyası (anahtar içerir) yalnızca kullanıcıya açık olmalı');
-			const surum = spawnSync('./diszort', ['--surum'], { cwd: klasor, encoding: 'utf8' }).stdout.trim();
-			// Adres verilmeden: ayar dosyasındaki sunucuya bağlanır (programın adı adres sanılmamalı).
-			const r2 = spawnSync('./diszort', [], { cwd: klasor, env: { ...process.env, DISZORT_DENEME: '1', COLUMNS: '100', LINES: '24' }, encoding: 'utf8', timeout: 90000 });
-			assert.equal(r2.status, 0, 'ayar dosyasıyla açılamadı: ' + (r2.stdout || '').slice(-800) + (r2.stderr || '').slice(-800));
-			assert.equal(JSON.parse(fs.readFileSync(path.join(klasor, 'diszort.json'), 'utf8')).sunucu, new URL(ADRES).origin, 'ayar dosyasındaki sunucu değişmemeli');
-			console.log(`     ${surum}; ${(fs.statSync(program).size / 1e6).toFixed(1)} MB`);
-			await kosul('Chromium programın mesajını gördü', () => sayfa.evaluate((m) => [...document.querySelectorAll('#mesajlar .metin')].some((e) => e.textContent === m), mesaj));
-		});
-	}
-
-	if (kabukHatalari.length) {
-		process.exitCode = 1;
-		console.error('HATA kabukta sayfa hataları:\n     ' + kabukHatalari.slice(0, 10).join('\n     '));
-	}
 	if (tarayiciHatalari.length) {
 		process.exitCode = 1;
 		console.error('HATA Chromium\'da sayfa hataları:\n     ' + tarayiciHatalari.slice(0, 10).join('\n     '));
@@ -554,13 +551,13 @@ const tarayiciHatalari = [];
 });
 
 async function bitir() {
-	if (kabuk) await kabuk.kapat().catch(() => {});
-	if (arayuz) arayuz.bitir();
+	await cliKapat().catch(() => {});
 	if (tarayici) await tarayici.close().catch(() => {});
 	if (sunucu) {
 		sunucu.kill('SIGTERM');
 		await bekle(300);
 	}
+	if (xvfb) xvfb.kill();
 	pulseDurdur();
 	fs.rmSync(gecici, { recursive: true, force: true });
 }

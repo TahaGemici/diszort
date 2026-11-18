@@ -2,7 +2,9 @@ package main
 
 import (
 	"encoding/json"
+	"io"
 	"math/rand"
+	"os"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -11,6 +13,7 @@ import (
 
 	"github.com/TahaGemici/diszort/cli/ses"
 	"github.com/pion/interceptor"
+	"github.com/pion/logging"
 	"github.com/pion/rtcp"
 	"github.com/pion/rtp"
 	"github.com/pion/webrtc/v4"
@@ -168,6 +171,13 @@ func (s *sesIzi) kodekleriGuncelle(snd *webrtc.RTPSender) {
 	s.mu.Unlock()
 }
 
+// redGidiyor: bu eşe RED gönderiliyor mu.
+func (s *sesIzi) redGidiyor() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.redIstek && s.redPT != 0
+}
+
 func (s *sesIzi) redAyarla(v bool) {
 	s.mu.Lock()
 	s.redIstek = v
@@ -235,9 +245,29 @@ func (u *Uygulama) api() (*webrtc.API, error) {
 	if err := webrtc.ConfigureStatsInterceptor(ir); err != nil {
 		return nil, err
 	}
+	return webrtc.NewAPI(webrtc.WithMediaEngine(me), webrtc.WithInterceptorRegistry(ir), webrtc.WithSettingEngine(u.ayarMotoru())), nil
+}
+
+// ayarMotoru: ICE süreleri ve günlük. Pion'un günlüğü terminali bozmasın: yalnızca DISZORT_GUNLUK
+// verildiyse oraya (uyarı ve üstü).
+func (u *Uygulama) ayarMotoru() webrtc.SettingEngine {
 	se := webrtc.SettingEngine{}
 	se.SetICETimeouts(5*time.Second, 25*time.Second, 2*time.Second)
-	return webrtc.NewAPI(webrtc.WithMediaEngine(me), webrtc.WithInterceptorRegistry(ir), webrtc.WithSettingEngine(se)), nil
+	lf := logging.NewDefaultLoggerFactory()
+	lf.Writer = io.Discard
+	if y := os.Getenv("DISZORT_GUNLUK"); y != "" {
+		if f, err := os.OpenFile(y, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600); err == nil {
+			lf.Writer = f
+			lf.DefaultLogLevel = logging.LogLevelWarn
+		}
+	}
+	se.LoggerFactory = lf
+	return se
+}
+
+// dosyaAPI: dosya aktarımı bağlantıları (yalnızca veri kanalı).
+func (u *Uygulama) dosyaAPI() *webrtc.API {
+	return webrtc.NewAPI(webrtc.WithSettingEngine(u.ayarMotoru()))
 }
 
 func (u *Uygulama) pcAyari() webrtc.Configuration {
