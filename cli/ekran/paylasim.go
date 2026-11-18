@@ -93,11 +93,21 @@ func Baslat(s Secim) (*Paylasim, error) {
 	if err != nil {
 		return nil, err
 	}
+	return kaynaktan(k, s, belirtec), nil
+}
+
+func kaynaktan(k kaynak, s Secim, belirtec string) *Paylasim {
+	if s.Kare <= 0 {
+		s.Kare = 30
+	}
+	if s.EnCokG <= 0 || s.EnCokY <= 0 {
+		s.EnCokG, s.EnCokY = 1920, 1080
+	}
 	p := &Paylasim{k: k, secim: s, dur: make(chan struct{}), Bitti: make(chan struct{}), IzinBelirteci: belirtec}
 	p.hedefKbps.Store(2500)
 	p.anahtar.Store(true)
 	go p.dongu()
-	return p, nil
+	return p
 }
 
 func (p *Paylasim) AnahtarKare() { p.anahtar.Store(true) }

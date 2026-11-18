@@ -137,7 +137,7 @@ func (u *UzakSes) ekle(ts uint32, veri []byte, simdi float64, birincil bool) {
 		u.enYeni = son
 		u.enYeniVar = true
 	}
-	if birincil {
+	if birincil && u.alinan%5 == 0 {
 		u.hedefGuncelle()
 	}
 }

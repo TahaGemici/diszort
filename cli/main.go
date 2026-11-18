@@ -17,6 +17,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"runtime/pprof"
 	"strings"
 	"syscall"
 	"time"
@@ -81,9 +82,19 @@ func main() {
 		}
 		return
 	}
+	// Az iş parçacığı: goroutine'ler çoğunlukla bekler; çok çekirdekte boşuna dönen iş parçacıkları
+	// (zamanlayıcı) işlemci harcamasın. Ekran kodlayıcısının kendi (C) iş parçacıkları bundan etkilenmez.
+	runtime.GOMAXPROCS(min(2, runtime.NumCPU()))
 	if runtime.GOOS != "linux" {
 		fmt.Fprintln(os.Stderr, "Diszort CLI yalnızca Linux'ta çalışır.")
 		os.Exit(1)
+	}
+	// Geliştirme: işlemci profili (DISZORT_PROFIL=dosya).
+	if y := os.Getenv("DISZORT_PROFIL"); y != "" {
+		if f, err := os.Create(y); err == nil {
+			pprof.StartCPUProfile(f)
+			defer pprof.StopCPUProfile()
+		}
 	}
 	if err := calistir(argv, ayarDosyasi); err != nil {
 		fmt.Fprintln(os.Stderr, err)

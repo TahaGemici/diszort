@@ -293,7 +293,7 @@ function programHazirla() {
 
 function cliBaslat(argv = [], ek = {}) {
 	cikti = [];
-	const ortam = { ...pulseOrtami, HOME: ev, DISZORT_BETIK: '1', ...ek };
+	const ortam = { ...pulseOrtami, HOME: ev, DISZORT_BETIK: '1', ...(process.env.DISZORT_PROFIL ? { DISZORT_PROFIL: process.env.DISZORT_PROFIL } : {}), ...ek };
 	delete ortam.XDG_CONFIG_HOME;
 	if (EKRAN) ortam.DISPLAY = EKRAN;
 	else delete ortam.DISPLAY;
@@ -313,6 +313,20 @@ async function cliDurum() {
 	cliYaz('/durum json');
 	const s = await cliBekle(/^DURUM /, 5000, bas);
 	return JSON.parse(s.slice(6));
+}
+// Sürecin işlemci (tek çekirdeğin yüzdesi) ve bellek kullanımı (ms boyunca).
+async function kaynakOlc(pid, ms = 5000) {
+	const oku = () => {
+		const a = fs.readFileSync(`/proc/${pid}/stat`, 'utf8').split(') ')[1].split(' ');
+		return Number(a[11]) + Number(a[12]);
+	};
+	const hz = 100;
+	const t0 = Date.now();
+	const c0 = oku();
+	await bekle(ms);
+	const c1 = oku();
+	const rss = Number((fs.readFileSync(`/proc/${pid}/status`, 'utf8').match(/VmRSS:\s+(\d+)/) || [])[1] || 0) / 1024;
+	return { cpu: ((c1 - c0) / hz / ((Date.now() - t0) / 1000)) * 100, rss };
 }
 async function cliKapat() {
 	if (!cli || cli.exitCode !== null) return;
@@ -416,7 +430,7 @@ const tarayiciHatalari = [];
 		await cliBekle(new RegExp(ADI + ': ' + yanit.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
 	});
 
-	const durCal = cal('diszort_mikkaynak', konusma);
+	let durCal = cal('diszort_mikkaynak', konusma);
 	await dene('ses: CLI ↔ Chromium iki yönde; CLI hoparlöre çalıyor; kayıplara karşı yedek (RED) iki yönde', async () => {
 		cliYaz('/ses Sesli Sohbet');
 		await cliBekle(/Sesli Sohbet kanalına girdin/);
@@ -446,6 +460,8 @@ const tarayiciHatalari = [];
 		const redsiz = await paketBasina();
 		cliYaz('/ayar red açık');
 		console.log(`     Chromium ← CLI enerji +${tarayiciDuyuyor.toFixed(3)}; paket başına ${redli.bayt.toFixed(0)} B (RED'siz ${redsiz.bayt.toFixed(0)} B), uydurulan %${(redli.uydurulan * 100).toFixed(1)}; CLI ← Chromium ${sonra.mik.alinan - (once.alinan || 0)} paket (RED'li ${sonra.mik.red}), uydurulan ${sonra.mik.uydurulan}; CLI'nın hoparlörü ${hoparlor.rmsDb.toFixed(1)} dBFS, %${Math.round(hoparlor.sesliOran * 100)} sesli; bağlantı ${sonra.tip} ${sonra.rttMs} ms`);
+		const k = await kaynakOlc(cli.pid);
+		console.log(`     CLI iki kişilik görüşmede: işlemci tek çekirdeğin %${k.cpu.toFixed(1)}'i, bellek ${k.rss.toFixed(0)} MB`);
 		assert.ok(tarayiciDuyuyor > 0.02, 'Chromium CLI\'ı duymuyor');
 		assert.ok(sonra.mik.alinan - (once.alinan || 0) > 100, 'CLI Chromium\'dan ses almıyor');
 		assert.ok(hoparlor.rmsDb > -45 && hoparlor.sesliOran > 0.2, 'CLI gelen sesi hoparlöre çalmıyor');
@@ -454,6 +470,27 @@ const tarayiciHatalari = [];
 		assert.ok(sonra.mik.red > 0 && t.gidenRed, 'Chromium → CLI RED\'li gitmeli');
 		assert.equal(sonra.gidenRed, true);
 		assert.match(sonra.tip, /P2P|TURN/);
+	});
+
+	await dene('yankı engelleme: hoparlörden mikrofona dönen ses (oda) /ayar yankı açıkken Chromium\'a geri gitmez', async () => {
+		durCal(); // CLI'nın kendi konuşması dursun: mikrofona yalnızca hoparlörün yankısı gelsin
+		const modul = spawnSync('pactl', ['load-module', 'module-loopback', 'source=diszort_hoparlor.monitor', 'sink=diszort_mikkaynak', 'latency_msec=30'], { env: pulseOrtami, encoding: 'utf8' }).stdout.trim();
+		assert.match(modul, /^\d+$/, 'loopback modülü yüklenemedi');
+		try {
+			cliYaz('/ayar eşik kapalı'); // eşik yankıyı gizlemesin: yalnızca yankı engelleme ölçülsün
+			await bekle(2500);
+			const kapali = await farki(olcTarayici, 'taha', 'enerji', 3000);
+			cliYaz('/ayar yankı açık');
+			await bekle(4000); // mikrofon yeniden açılır, süzgeç oturur
+			const acik = await farki(olcTarayici, 'taha', 'enerji', 3000);
+			console.log(`     Chromium'a geri dönen kendi sesi: yankı engelleme kapalıyken enerji +${kapali.toFixed(4)}, açıkken +${acik.toFixed(4)} (${(10 * Math.log10(kapali / Math.max(acik, 1e-9))).toFixed(1)} dB)`);
+			assert.ok(kapali > 0.005, 'yankı oluşmadı (deneme düzeni)');
+			assert.ok(acik < kapali / 5, 'yankı engellenmedi');
+		} finally {
+			spawnSync('pactl', ['unload-module', modul], { env: pulseOrtami });
+			cliYaz('/ayar yankı kapalı');
+			cliYaz('/ayar eşik 10');
+		}
 	});
 
 	await dene('ses paylaşımı: CLI uygulamaların sesini paylaşır (kendi çaldığı hariç), Chromium alır', async () => {
@@ -477,7 +514,6 @@ const tarayiciHatalari = [];
 			durMuzik();
 		}
 	});
-	durCal();
 
 	if (ekranVar) {
 		await dene('ekran paylaşımı: CLI ekranını (X11) paylaşır, Chromium görüntüyü çözer', async () => {

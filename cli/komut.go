@@ -863,6 +863,7 @@ func (u *Uygulama) kAyar(arg string) {
 			{"red", acikKapali(s.MikRed) + " (mikrofonda kayıplara karşı yedek)"},
 			{"paylaşım-red", acikKapali(s.YayinRed) + fmt.Sprintf(" (paylaşılan seste yedek; en çok %d kbps'de)", redSiganHiz)},
 			{"sesler", acikKapali(s.Sesler) + " (giriş/çıkış sesleri)"},
+			{"yankı", acikKapali(s.YankiEngel) + " (yankı engelleme: hoparlörle konuşuyorsan aç; kulaklıkta gerekmez)"},
 			{"kare", fmt.Sprintf("%d (ekran paylaşımının kare hızı: 15, 30, 60)", s.Kare)},
 			{"paylaşım-aygıt", firstNonEmpty(s.YayinAygit, "uygulamaların sesi (Diszort hariç)")},
 		}
@@ -990,6 +991,13 @@ func (u *Uygulama) kAyar(arg string) {
 			return
 		}
 		s.Sesler = v
+	case "yanki", "yanki-engelleme":
+		v, ok := mantik()
+		if !ok {
+			return
+		}
+		s.YankiEngel = v
+		u.mikUygula()
 	case "kare":
 		n, ok := sayi(15, 30, 60)
 		if !ok {
@@ -1240,11 +1248,11 @@ func (u *Uygulama) tamamlaIc(girdi string) (string, []string) {
 		}
 	case "ayar":
 		if !strings.Contains(arg, " ") {
-			return tamamlaListe(girdi, son, []string{"mik", "hoparlör", "seviye", "eşik", "kalite", "paylaşım-kalite", "red", "paylaşım-red", "sesler", "kare", "paylaşım-aygıt", "ekran-seçimi"}, true)
+			return tamamlaListe(girdi, son, []string{"mik", "hoparlör", "seviye", "eşik", "kalite", "paylaşım-kalite", "red", "paylaşım-red", "sesler", "yankı", "kare", "paylaşım-aygıt", "ekran-seçimi"}, true)
 		}
 		alt := sadelestir(strings.Fields(arg)[0])
 		switch alt {
-		case "red", "paylasim-red", "sesler":
+		case "red", "paylasim-red", "sesler", "yanki":
 			return tamamlaListe(girdi, son, []string{"açık", "kapalı"}, false)
 		case "kalite":
 			return tamamlaListe(girdi, son, []string{"48", "96", "128"}, false)

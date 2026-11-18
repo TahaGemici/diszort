@@ -36,9 +36,10 @@ func (k *Kaynak) kazancAl() float64 { return math.Float64frombits(k.kazanc.Load(
 
 // MikAyari: mikrofonun yolu.
 type MikAyari struct {
-	Aygit  string  // ses sunucusundaki adı ("" = varsayılan)
-	Kazanc float64 // 1 = %100
-	EsikDb float64 // NaN = eşik kapalı
+	Aygit      string  // ses sunucusundaki adı ("" = varsayılan)
+	Kazanc     float64 // 1 = %100
+	EsikDb     float64 // NaN = eşik kapalı
+	YankiEngel bool    // hoparlörden çalınanı mikrofondan çıkar
 }
 
 // Motor: ses motoru. Yöntemleri her goroutine'den çağrılabilir.
@@ -165,7 +166,7 @@ func (m *Motor) Cikis(acik bool, aygit string) {
 // Mikrofon: mikrofonu aç/kapat ya da ayarını değiştir (seviye ve eşik konuşurken de geçerli).
 func (m *Motor) Mikrofon(acik bool, a MikAyari) {
 	m.mu.Lock()
-	aygitDegisti := m.mikAyar.Aygit != a.Aygit
+	aygitDegisti := m.mikAyar.Aygit != a.Aygit || m.mikAyar.YankiEngel != a.YankiEngel
 	m.mikIstendi, m.mikAyar = acik, a
 	mk := m.mik
 	m.mu.Unlock()
@@ -333,7 +334,7 @@ func (m *Motor) cikisAc(pb *pulse.Baglanti, aygit string) {
 }
 
 func (m *Motor) cikisDongusu(c *pulse.Calma) {
-	tik := time.NewTicker(5 * time.Millisecond)
+	tik := time.NewTicker(10 * time.Millisecond)
 	defer tik.Stop()
 	blok := make([]float32, 960)
 	gecici := make([]float32, 960)
@@ -390,7 +391,16 @@ func (m *Motor) karistir(cikis, gecici []float32) {
 			cikis[i] += t[i]
 		}
 	}
-	// Yumuşak sınırlayıcı: taşma cızırtısı olmasın.
+	// Yumuşak sınırlayıcı: taşma cızırtısı olmasın (döngü aşağıda); sonra çalınan yankı engelleyiciye.
+	defer func() {
+		m.mu.Lock()
+		mk := m.mik
+		hedef := m.cikisHedefMs
+		m.mu.Unlock()
+		if mk != nil && mk.yanki != nil {
+			mk.yanki.calindi(cikis, hedef+10)
+		}
+	}()
 	for i, x := range cikis {
 		if x > 0.95 || x < -0.95 {
 			cikis[i] = float32(math.Tanh(float64(x)))
@@ -451,16 +461,20 @@ func (m *Motor) Ton(tur string) {
 // ---------------------------------------------------------------- mikrofon
 
 type mikrofon struct {
-	m       *Motor
-	kayit   *pulse.Kayit
-	yol     *gurultu.Yol
-	kod     *Kodlayici
-	gelen   chan []float32
-	dur     chan struct{}
-	bittiMi atomic.Bool
-	kapandi sync.Once
-	sonSes  atomic.Int64
-	Aygit   string
+	yanki    *yankiEngeli
+	m        *Motor
+	kayit    *pulse.Kayit
+	yol      *gurultu.Yol
+	kod      *Kodlayici
+	bittiMi  atomic.Bool
+	kapandi  sync.Once
+	sonSes   atomic.Int64
+	Aygit    string
+	islemMu  sync.Mutex // işleme (ses sunucusunun okuma goroutine'inde) ve kapatma arasında
+	kapali   bool
+	bekleyen []float32
+	cerceve  []float32
+	basla    bool
 }
 
 func (m *Motor) mikAc(pb *pulse.Baglanti, a MikAyari) {
@@ -475,21 +489,23 @@ func (m *Motor) mikAc(pb *pulse.Baglanti, a MikAyari) {
 		m.bildir("mik", "Opus kodlayıcısı kurulamadı: "+err.Error(), true)
 		return
 	}
-	mk := &mikrofon{m: m, yol: yol, kod: kod, gelen: make(chan []float32, 64), dur: make(chan struct{})}
-	veri := func(o []float32) {
-		select {
-		case mk.gelen <- o:
-		default:
+	mk := &mikrofon{m: m, yol: yol, kod: kod, cerceve: make([]float32, 0, 960), basla: true}
+	if a.YankiEngel {
+		if y, err := yeniYankiEngeli(); err == nil {
+			mk.yanki = y
+		} else {
+			m.bildir("yanki", "Yankı engelleme kurulamadı: "+err.Error(), true)
 		}
 	}
-	k, err := pb.KayitAc(a.Aygit, 1, 10, pulse.TumAkislar, "Diszort mikrofon", veri)
+	// Mikrofonun sesi gelir gelmez işlenir (ayrı bir goroutine'e aktarmak her 10 ms'de bir uyandırma
+	// demek): RNNoise + Opus bir çerçevede ~0,3 ms.
+	k, err := pb.KayitAc(a.Aygit, 1, 10, pulse.TumAkislar, "Diszort mikrofon", mk.isle)
 	if err != nil && a.Aygit != "" {
 		m.bildir("mik", fmt.Sprintf("Seçili mikrofon (%s) açılamadı: %v; varsayılan kullanılıyor.", a.Aygit, err), true)
-		k, err = pb.KayitAc("", 1, 10, pulse.TumAkislar, "Diszort mikrofon", veri)
+		k, err = pb.KayitAc("", 1, 10, pulse.TumAkislar, "Diszort mikrofon", mk.isle)
 	}
 	if err != nil {
-		yol.Kapat()
-		kod.Kapat()
+		mk.serbest()
 		m.bildir("mik", "Mikrofon açılamadı: "+err.Error(), true)
 		return
 	}
@@ -500,7 +516,13 @@ func (m *Motor) mikAc(pb *pulse.Baglanti, a MikAyari) {
 	m.mu.Lock()
 	m.mik = mk
 	m.mu.Unlock()
-	go mk.dongu()
+	go func() {
+		// Aygıt çıkarıldı / ses sunucusu kapandı: denetçi yeniden açsın.
+		<-k.Bitti
+		mk.bittiMi.Store(true)
+		mk.serbest()
+		m.durt()
+	}()
 }
 
 func (mk *mikrofon) bitti() bool { return mk.bittiMi.Load() || mk.kayit.Kapali() }
@@ -509,58 +531,65 @@ func (mk *mikrofon) kapat() {
 	mk.kapandi.Do(func() {
 		mk.bittiMi.Store(true)
 		mk.kayit.Kapat()
-		close(mk.dur)
+		mk.serbest()
 	})
 }
 
-func (mk *mikrofon) dongu() {
-	defer func() {
-		mk.yol.Kapat()
-		mk.kod.Kapat()
-	}()
-	var bekleyen []float32
-	cerceve := make([]float32, 0, 960)
-	basla := true
-	for {
-		var o []float32
-		select {
-		case <-mk.dur:
-			return
-		case <-mk.kayit.Bitti:
-			mk.bittiMi.Store(true)
-			mk.m.durt()
-			return
-		case o = <-mk.gelen:
+// serbest: C durumlarını bırak (işlem sürüyorsa bitmesini bekler).
+func (mk *mikrofon) serbest() {
+	mk.islemMu.Lock()
+	defer mk.islemMu.Unlock()
+	if mk.kapali {
+		return
+	}
+	mk.kapali = true
+	mk.yol.Kapat()
+	if mk.yanki != nil {
+		mk.yanki.kapat()
+	}
+	mk.kod.Kapat()
+}
+
+// isle: ses sunucusundan gelen mikrofon sesi (okuma goroutine'inde).
+func (mk *mikrofon) isle(o []float32) {
+	mk.islemMu.Lock()
+	defer mk.islemMu.Unlock()
+	if mk.kapali {
+		return
+	}
+	mk.bekleyen = append(mk.bekleyen, o...)
+	for len(mk.bekleyen) >= gurultu.Cerceve {
+		c := mk.bekleyen[:gurultu.Cerceve]
+		if mk.yanki != nil {
+			mk.yanki.isle(c)
 		}
-		bekleyen = append(bekleyen, o...)
-		for len(bekleyen) >= gurultu.Cerceve {
-			c := bekleyen[:gurultu.Cerceve]
-			mk.yol.Isle(c)
-			var e float64
-			for _, x := range c {
-				e += float64(x) * float64(x)
+		mk.yol.Isle(c)
+		var e float64
+		for _, x := range c {
+			e += float64(x) * float64(x)
+		}
+		if 10*math.Log10(e/gurultu.Cerceve+1e-12) > -48 {
+			mk.sonSes.Store(time.Now().UnixMilli())
+		}
+		mk.cerceve = append(mk.cerceve, c...)
+		mk.bekleyen = mk.bekleyen[gurultu.Cerceve:]
+		if len(mk.cerceve) >= 960 {
+			if b := mk.m.mikBps.Load(); b > 0 {
+				mk.kod.BitHizi(int(b))
 			}
-			if 10*math.Log10(e/gurultu.Cerceve+1e-12) > -48 {
-				mk.sonSes.Store(time.Now().UnixMilli())
-			}
-			cerceve = append(cerceve, c...)
-			bekleyen = bekleyen[gurultu.Cerceve:]
-			if len(cerceve) >= 960 {
-				if b := mk.m.mikBps.Load(); b > 0 {
-					mk.kod.BitHizi(int(b))
-				}
-				mk.kod.Kayip(int(mk.m.mikKay.Load()))
-				p, err := mk.kod.Kodla(cerceve[:960])
-				cerceve = cerceve[:0]
-				if err == nil && mk.m.MikPaketi != nil {
-					mk.m.MikPaketi(p, 960, basla)
-					basla = false
-				}
+			mk.kod.Kayip(int(mk.m.mikKay.Load()))
+			p, err := mk.kod.Kodla(mk.cerceve[:960])
+			mk.cerceve = mk.cerceve[:0]
+			if err == nil && mk.m.MikPaketi != nil {
+				mk.m.MikPaketi(p, 960, mk.basla)
+				mk.basla = false
 			}
 		}
-		if len(bekleyen) == 0 {
-			bekleyen = bekleyen[:0]
-		}
+	}
+	if len(mk.bekleyen) == 0 {
+		mk.bekleyen = mk.bekleyen[:0]
+	} else if cap(mk.bekleyen) > 8*gurultu.Cerceve {
+		mk.bekleyen = append([]float32(nil), mk.bekleyen...)
 	}
 }
 

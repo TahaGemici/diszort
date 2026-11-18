@@ -43,7 +43,7 @@ func esikDb(esik int) float64 {
 }
 
 func (u *Uygulama) mikAyari() ses.MikAyari {
-	return ses.MikAyari{Aygit: u.ayar.Ses.Mik, Kazanc: float64(u.ayar.Ses.MikSeviye) / 100, EsikDb: esikDb(u.ayar.Ses.Esik)}
+	return ses.MikAyari{Aygit: u.ayar.Ses.Mik, Kazanc: float64(u.ayar.Ses.MikSeviye) / 100, EsikDb: esikDb(u.ayar.Ses.Esik), YankiEngel: u.ayar.Ses.YankiEngel}
 }
 
 // mikUygula: mikrofon açık olmalı mı? Sesli kanaldayken (ya da denemede), susturulmamış ve sağır

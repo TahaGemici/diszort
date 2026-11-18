@@ -77,8 +77,12 @@ typedef struct {
 	struct spa_video_info_raw bilgi;
 } pwa;
 
+static int pw_iz = -1;
+static int iz_acik(void) { if (pw_iz < 0) pw_iz = getenv("DISZORT_PW_IZ") != NULL; return pw_iz; }
+
 static void pw_durum(void *v, enum pw_stream_state eski, enum pw_stream_state yeni, const char *hata) {
 	pwa *a = v;
+	if (iz_acik()) fprintf(stderr, "pw: durum %d -> %d %s\n", eski, yeni, hata ? hata : "");
 	if (yeni == PW_STREAM_STATE_ERROR) {
 		pthread_mutex_lock(&a->mu);
 		snprintf(a->hata, sizeof(a->hata), "%s", hata ? hata : "PipeWire akışı hata verdi");
@@ -93,11 +97,13 @@ static void pw_durum(void *v, enum pw_stream_state eski, enum pw_stream_state ye
 
 static void pw_param(void *v, uint32_t id, const struct spa_pod *param) {
 	pwa *a = v;
+	if (iz_acik()) fprintf(stderr, "pw: param %u %p\n", id, (void *)param);
 	if (param == NULL || id != SPA_PARAM_Format) return;
 	uint32_t tur, alt;
 	if (spa_format_parse(param, &tur, &alt) < 0 || tur != SPA_MEDIA_TYPE_video || alt != SPA_MEDIA_SUBTYPE_raw) return;
 	struct spa_video_info_raw b;
 	if (spa_format_video_raw_parse(param, &b) < 0) return;
+	if (iz_acik()) fprintf(stderr, "pw: biçim %u %ux%u\n", b.format, b.size.width, b.size.height);
 	pthread_mutex_lock(&a->mu);
 	a->bilgi = b;
 	pthread_mutex_unlock(&a->mu);
@@ -105,7 +111,9 @@ static void pw_param(void *v, uint32_t id, const struct spa_pod *param) {
 	struct spa_pod_builder bld = SPA_POD_BUILDER_INIT(tampon, sizeof(tampon));
 	const struct spa_pod *p[1];
 	p[0] = spa_pod_builder_add_object(&bld, SPA_TYPE_OBJECT_ParamBuffers, SPA_PARAM_Buffers,
-		SPA_PARAM_BUFFERS_dataType, SPA_POD_CHOICE_FLAGS_Int((1 << SPA_DATA_MemPtr) | (1 << SPA_DATA_MemFd)));
+		// Süreçler arası paylaşılabilen bellek (MemPtr yalnızca aynı süreçte geçerli: istenirse bağlantı
+		// tampon anlaşmasında kopar).
+		SPA_PARAM_BUFFERS_dataType, SPA_POD_CHOICE_FLAGS_Int(1 << SPA_DATA_MemFd));
 	p_update_params(a->akis, p, 1);
 }
 
@@ -113,6 +121,7 @@ static void pw_param(void *v, uint32_t id, const struct spa_pod *param) {
 static void pw_isle(void *v) {
 	pwa *a = v;
 	struct pw_buffer *b = p_dequeue(a->akis);
+	if (iz_acik()) { static int n = 0; if (n++ < 3) fprintf(stderr, "pw: kare %p\n", (void *)b); }
 	if (!b) return;
 	struct spa_buffer *sb = b->buffer;
 	struct spa_data *d = &sb->datas[0];
@@ -203,6 +212,9 @@ import (
 	"errors"
 	"fmt"
 	"math/rand"
+	"net"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
 	"unsafe"
@@ -389,8 +401,33 @@ func (w *wayland) kapat() {
 	w.birak()
 	C.pw_kapat(w.a)
 	w.a = nil
-	if w.oturum != "" {
-		w.conn.Object(portalAdi, w.oturum).Call("org.freedesktop.portal.Session.Close", 0)
+	if w.conn != nil {
+		if w.oturum != "" {
+			w.conn.Object(portalAdi, w.oturum).Call("org.freedesktop.portal.Session.Close", 0)
+		}
+		w.conn.Close()
 	}
-	w.conn.Close()
+}
+
+// pipewireDogrudan: portalsız, doğrudan bir PipeWire düğümüne bağlan (denemeler için).
+func pipewireDogrudan(dugum uint32, kare int) (*wayland, error) {
+	var hata [200]C.char
+	if C.pw_yukle(&hata[0], 200) != 0 {
+		return nil, errors.New(C.GoString(&hata[0]))
+	}
+	c, err := net.Dial("unix", filepath.Join(os.Getenv("XDG_RUNTIME_DIR"), "pipewire-0"))
+	if err != nil {
+		return nil, err
+	}
+	defer c.Close()
+	f, err := c.(*net.UnixConn).File()
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	a := C.pw_ac(C.int(f.Fd()), C.uint32_t(dugum), C.int(kare), &hata[0], 200)
+	if a == nil {
+		return nil, errors.New(C.GoString(&hata[0]))
+	}
+	return &wayland{a: a, adi: "PipeWire (doğrudan)"}, nil
 }
