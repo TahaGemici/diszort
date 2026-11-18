@@ -1,7 +1,7 @@
-# Diszort: main'e her push'ta Docker imajı ve terminal istemcisi (CLI) derlenir, uçtan uca denenir
+# Diszort: main'e her push'ta Docker imajı ve terminal istemcisi (CLI, Go) derlenir, uçtan uca denenir
 # (sunucu denemeleri + jsdom arayüz denemesi + gerçek Chromium'la WebRTC/ses denemesi + CLI'ın
-# Chromium'la aynı kanalda denemesi), imaj ghcr.io'ya yüklenir, kur.sh ve CLI GitHub sürümü olarak
-# yayınlanır.
+# Chromium'la aynı kanalda denemesi: ses, RED, yankı engelleme, ses ve ekran paylaşımı, dosya), imaj
+# ghcr.io'ya yüklenir, kur.sh ve CLI GitHub sürümü olarak yayınlanır.
 #
 # Sürüm adı tarihtir (Türkiye saatiyle): vYY.AA.GG, ör. v26.11.15. Aynı gün birden çok koşu olursa o
 # günün önceki sürümü silinir, yenisi aynı adla çıkar. İmajın kendi sürümü buna commit'i ekler
@@ -60,10 +60,15 @@ jobs:
           echo "YAPI=$SURUM-$KISA" >> "$GITHUB_ENV"
           echo "Sürüm: $SURUM (yapı $SURUM-$KISA)"
 
-      # jsdom (CLI) Node 22.22+ ister; CLI de bu Node'un üstüne tek dosya olarak derlenir.
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
+
+      # Terminal istemcisi (Go; sürümü cli/go.mod'dan).
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: cli/go.mod
+          cache-dependency-path: cli/go.sum
 
       - name: Sözdizimi
         run: |
@@ -77,20 +82,31 @@ jobs:
           node --check test/arayuz.js
           node --check test/tarayici.js
           node --check test/cli.js
-          for f in cli/*.js cli/kabuk/*.js cli/kabuk/ses/*.js cli/arayuz/*.js; do node --check "$f"; done
           sh -n kurulum/kur.sh
+          sh -n cli/derle.sh
+          sh -n cli/gurultu/uret.sh
+          BICIMSIZ=$(gofmt -l cli)
+          if [ -n "$BICIMSIZ" ]; then echo "gofmt gerekli: $BICIMSIZ"; exit 1; fi
           docker compose -f docker-compose.yml config --quiet
 
-      - name: Deneme bağımlılıkları (ws, jsdom, Playwright + Chromium, PulseAudio; CLI'ınkiler)
+      - name: Deneme bağımlılıkları (ws, jsdom, Playwright + Chromium, PulseAudio, Xvfb; CLI'ın C kitaplıkları)
         run: |
           npm install --no-audit --no-fund
           npm install --no-save --no-audit --no-fund "jsdom@$JSDOM_SURUM" "playwright@$PLAYWRIGHT_SURUM"
           npx playwright install --with-deps chromium
-          sudo apt-get install -y --no-install-recommends pulseaudio pulseaudio-utils
-          (cd cli && npm ci --no-audit --no-fund)
+          # CLI'a gömülen C kitaplıkları (Opus, VP8, libyuv, SpeexDSP), PipeWire başlıkları (Wayland ekranı,
+          # çalışırken sistemdekini açar), wasm2c (web/rnnoise.wasm → C); denemede ses ve ekran.
+          sudo apt-get install -y --no-install-recommends pulseaudio pulseaudio-utils xvfb x11-xserver-utils \
+            libopus-dev libvpx-dev libyuv-dev libspeexdsp-dev libpipewire-0.3-dev wabt
 
-      - name: CLI'ı derle (tek dosya, Linux x64)
-        run: node cli/derle.js --surum "$SURUM" --commit "$KISA" --depo "$GITHUB_REPOSITORY" --cikti cikti
+      - name: CLI'ı derle (tek dosya, Linux x64) ve birim denemeleri
+        run: |
+          SURUM="$SURUM" COMMIT="$KISA" DEPO="$GITHUB_REPOSITORY" sh cli/derle.sh
+          (cd cli && go vet ./... && go test ./...)
+          ./cikti/diszort-linux-x64 --surum
+          # Sistemden yalnızca libc istemeli (gerisi gömülü).
+          ldd cikti/diszort-linux-x64
+          if ldd cikti/diszort-linux-x64 | grep -Ev 'linux-vdso|libc\.so|libm\.so|ld-linux' | grep -q '=>'; then echo "beklenmeyen paylaşımlı kitaplık"; exit 1; fi
 
       - name: Arayüz (jsdom)
         run: node test/arayuz.js
@@ -135,7 +151,7 @@ jobs:
           TARAYICI_ZORUNLU: '1'
         run: node test/tarayici.js http://127.0.0.1:8080
 
-      - name: CLI, gerçek Chromium'la aynı kanalda (ve derlenmiş program)
+      - name: CLI, gerçek Chromium'la aynı kanalda (ses, RED, yankı, paylaşım, ekran, dosya)
         env:
           CLI_ZORUNLU: '1'
           CLI_IKILI: cikti/diszort-linux-x64
@@ -204,9 +220,9 @@ jobs:
             "**Sunucu.** Kurmak ya da güncellemek için sunucuda:" "" \
             "    curl -fsSL $INDIR/kur.sh | sudo sh" "" \
             "Bu sürüme dönmek için sonuna \`-s $SURUM\` ekle. İmaj: $IMAJ:$SURUM (yapı $YAPI)." "" \
-            "**Terminal istemcisi (CLI, Linux x64).** Kurulum yok: indir, çalıştır. Ayarlar programın yanındaki diszort.json'da." "" \
+            "**Terminal istemcisi (CLI, Linux x64, ~15 MB).** Kurulum yok: indir, çalıştır; içeride /yardım. Ayarlar programın yanındaki diszort.json'da." "" \
             "    curl -fsSLo diszort $INDIR/diszort-linux-x64 && chmod +x diszort && ./diszort" "" \
-            "Sonraki sürümlerde program kendini günceller (Ctrl+U ya da ./diszort --guncelle).")
+            "Program yeni sürümü kendisi haber verir: /güncelle (ya da ./diszort --guncelle).")
           # Eski düzendeki sürümler (v1, v2, …): etiketleriyle silinir (sürüm adı artık tarih).
           gh release list --limit 1000 --json tagName --jq '.[].tagName' | { grep -E '^v[0-9]+$' || true; } | while read -r ETIKET; do
             echo "eski sürüm siliniyor: $ETIKET"

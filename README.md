@@ -167,9 +167,10 @@ dosya sonra silinebilir.
 
 ## Terminal istemcisi (CLI)
 
-Tarayıcı açmadan, terminalden: aynı sunucuya bağlanır, web'deki her şey var (yazılı ve sesli kanallar,
-RNNoise ve konuşma eşiği, kayıplara karşı yedek (RED, Firefox'ta olmayan), bilgisayarın sesini stereo
-paylaşma, sınırsız P2P dosya, giriş istekleri, ayarlar, sunucu penceresi). Kurulum yok, tek dosya:
+Tarayıcı açmadan, terminalden: aynı sunucuya bağlanır, web'deki işlevlerin hepsi var (yazılı ve sesli
+kanallar, RNNoise ve konuşma eşiği, kayıplara karşı yedek (RED, Firefox'ta olmayan), yankı engelleme,
+ekran ve bilgisayarın sesini paylaşma, sınırsız P2P dosya, giriş istekleri, beyaz liste, kanal ve sunucu
+yönetimi). Başkalarının ekranını göstermez (sesleri gelir). Kurulum yok, tek dosya (~15 MB):
 
 ```sh
 curl -fsSLo diszort https://github.com/TahaGemici/diszort/releases/latest/download/diszort-linux-x64
@@ -179,33 +180,46 @@ chmod +x diszort
 
 İlk açılışta sunucunun adresi (ya da sana verilen giriş bağlantısı, `…/#anahtar=…`) sorulur. Ayarlar
 programın yanındaki `diszort.json`'da durur (giriş anahtarın da: yalnızca sana açık, 0600); başka bir
-yere bir şey yazılmaz. Klasörü taşıyınca kimliğin de taşınır. Yeni sürüm çıkınca alt satırda yazar:
-**Ctrl+U** programı günceller ve yeniden başlatır (ya da `./diszort --guncelle`).
+yere bir şey yazılmaz. Klasörü taşıyınca kimliğin de taşınır. Yeni sürüm çıkınca giriş satırında yazar:
+`/güncelle` programı günceller ve yeniden başlatır (ya da `./diszort --guncelle`).
+
+Arayüz satır tabanlıdır, fare yoktur: yazdığın açık kanala mesaj olarak gider, işler komutlarla yapılır
+(`/yardım` hepsini listeler; Tab komutları, kanal, kişi ve dosya adlarını tamamlar):
+
+| İş | Komut |
+|---|---|
+| Kanallar, kanala geç, eski mesajlar | `/kanallar` · `/git muhabbet` · `/eski` |
+| Sesli kanal | `/ses Sesli Sohbet` · `/ayrıl` · `/mik` (Alt+M) · `/sağır` (Alt+D) |
+| Birinin sesi (yalnızca sende) | `/seviye zeynep 70` · `/sustur zeynep` · `/seviye zeynep paylaşım 50` |
+| Paylaşım | `/paylaş` (ekran + ses) · `/paylaş ekran` · `/paylaş ses` · `/paylaş gizle` · `/paylaş dur` |
+| Dosya | `/dosya ~/video.mp4` (ya da dosyayı terminale sürükle) · `/indir 3` · `/aktarımlar` |
+| Kapıyı çalan, beyaz liste | `/kabul ad` · `/reddet ad` · `/kişiler` · `/at ad` · `/limit 12` |
+| Kanal ve sunucu | `/kanal ekle ses Oyun` · `/kanal sil Oyun` · `/sunucu` · `/temizle #genel 30` |
+| Ayarlar | `/ayar` · `/ayar mik 2` · `/ayar eşik 15` · `/ayar yankı açık` · `/aygıtlar` · `/dene` |
+| Durum | `/durum` (eşler: P2P/TURN, gecikme, kayıp; paylaşım; aktarımlar) |
 
 - **Gerekenler:** Linux x64 (glibc 2.34+: Ubuntu 22.04, Debian 12, Fedora 35 ve sonrası), PulseAudio ya
-  da PipeWire (`pipewire-pulse`; masaüstü dağıtımlarında hazır). Renkler en iyi gerçek renkli
-  (truecolor) terminalde görünür.
-- **Tuşlar:** Tab ya da ↑/↓ gez, Enter/boşluk bas, ←/→ kaydırıcı ve seçim, Esc kapat; yazmaya
-  başlamak mesaj kutusuna yazar (Alt+Enter yeni satır). Alt+M mikrofon, Alt+D sağırlaştır (web'deki
-  Ctrl+Shift+M/D), PgUp/PgDn sohbeti kaydırır, Ctrl+C çıkar. Fare de çalışır (tıklama, tekerlek,
-  kaydırıcıyı sürükleme); terminalde metin seçmek için Shift'e basılı tutarak sürükle.
-- **Dosya paylaşmak:** dosyayı terminale sürükleyip bırak (yolu yapıştırmak da olur) ya da + düğmesi
-  (yolu sorar, Tab tamamlar). İndirilenler `İndirilenler` (`~/Downloads`) klasörüne; büyük dosyada
-  nereye kaydedileceği sorulur.
-- **Tarayıcıdan farkları:** ekranını paylaşamaz (bilgisayarın sesini "Ekransız paylaş" ile paylaşır);
-  başkalarının ekranını terminalde düşük çözünürlükte gösterir ("tam ekran" terminalin tamamı).
-  Resimler terminalde görünmez: büyüteçteki "orijinalini aç" sistemin resim görüntüleyicisinde açar
-  (ses/video dosyaları da öyle). Tarayıcının yankı engelleyicisi yok: hoparlörle konuşacaksan kulaklık
-  kullan.
+  da PipeWire (masaüstü dağıtımlarında hazır). Ekran paylaşımı X11'de doğrudan; Wayland'de masaüstünün
+  ekran paylaşım penceresi bir kez sorar (seçim hatırlanır; xdg-desktop-portal ve PipeWire, GNOME, KDE
+  ve wlroots masaüstlerinde hazır).
+- **Bilgisayarın sesini paylaşmak** uygulama uygulama olur: ses sunucusundaki her çalma akışı (oyun,
+  müzik, tarayıcı) ayrı yakalanır, Diszort'un kendi çaldıkları (kanaldakilerin sesi) hiç karışmaz;
+  kimse kendi sesini geri duymaz. Belli bir aygıtı paylaşmak için: `/paylaş ses <aygıt>`.
+- **Ekran:** 1920×1080'e kadar (büyüğü küçültülür), 30 kare/sn (`/ayar kare 60`), VP8; bit hızı her
+  izleyenin bağlantısına göre ayarlanır, izleyen yokken ekran yakalanmaz (işlemci harcanmaz).
+- **Paylaşılan dosyalar** program açık kaldıkça (sonraki açılışlarda da) sunulur; indirilenler
+  `İndirilenler`/`~/Downloads` klasörüne.
+- **Hafif:** iki kişilik görüşmede tek çekirdeğin ~%9'u ve ~22 MB bellek (aynı makinede başsız
+  Chromium'da aynı görüşme ~%27 ve ~250 MB). Gürültü bastırma web'dekiyle aynı RNNoise'dur
+  (`web/rnnoise.wasm` derlemede C'ye çevrilir).
 
-**Web ile nasıl aynı kalıyor:** CLI ayrı bir istemci değil; web istemcisinin kendisini (`web/`)
-çalıştırır. Sayfa pencere çizmeyen küçük bir "tarayıcı"nın içinde açılır: belge jsdom'da durur,
-WebRTC tarayıcılarınkiyle aynı motordan (libwebrtc), ses PulseAudio/PipeWire'dan, Web Audio
-(RNNoise'un ve yankı çıkarmanın AudioWorklet'leri dahil) bir ses motorundan gelir; arayüzü terminale
-çizen katman yalnızca sayfanın DOM'una bakar ve tıklamayı sayfadaki öğeye iletir. Web'e eklenen bir
-düğme, ayar ya da davranış CLI'da kendiliğinden vardır; her sürümde sunucu ve CLI aynı commit'ten
-çıkar ve CI, CLI'ı gerçek Chromium'la aynı kanalda (ses, yazı, dosya, paylaşım) dener. Yeni bir
-tarayıcı özelliği kullanılırsa onun karşılığı `cli/kabuk/`'a eklenir; eksikse denemeler bunu gösterir.
+**Web ile nasıl uyumlu kalıyor:** CLI, Go ile yazılmış ayrı bir istemcidir (WebRTC: Pion; ses:
+PulseAudio/PipeWire'ın protokolü, Opus, RNNoise, SpeexDSP; ekran: libvpx, libyuv; hepsi programa
+gömülü) ve web'le aynı protokolü konuşur. Web'in arayüzündeki değişiklikler (düzen, düğmeler,
+görünüm) CLI'ı etkilemez. Protokol ya da ses davranışı değişirse (yeni bir ileti, SDP ayarı) aynı
+değişiklik `cli/`'a da yapılır. Unutulursa CI yakalar: her gönderimde CLI gerçek Chromium'la aynı
+kanalda denenir (giriş, kapıyı çalma, yazı, iki yönde ses ve RED, yankı engelleme, ses ve ekran
+paylaşımı, iki yönde dosya); bozulan bir şey sürüm çıkmadan kırmızı yanar.
 
 ## Ayarlar
 
@@ -267,9 +281,8 @@ make arayuz     # arayüz denemeleri (jsdom)
 make yanki      # paylaşılan sesten kanaldakilerin sesini çıkarma (benzetim)
 make tarayici   # gerçek Chromium'la sesli kanal denemeleri (Playwright)
 make kayip      # paket kaybında RED'in etkisi (gerçek Chromium, araya paket düşüren UDP aracısı)
-make cli        # terminal istemcisini tek dosya olarak derle → cikti/diszort-linux-x64
-make cli-dene   # terminal istemcisini gerçek Chromium'la dene (PulseAudio ve Playwright gerekir)
-node cli/diszort.js https://sunucu   # derlemeden çalıştır (cd cli && npm ci)
+make cli        # terminal istemcisini (Go) derle → cikti/diszort-linux-x64 (bkz. cli/derle.sh)
+make cli-dene   # terminal istemcisini gerçek Chromium'la dene (PulseAudio, Playwright; ekran için Xvfb)
 ```
 
 `main`'e her gönderimde GitHub Actions arayüz, ses çıkarma ve paket kaybı denemelerini çalıştırır,
@@ -277,9 +290,10 @@ imajı ve CLI'ı derler, sunucu, tarayıcı ve CLI denemelerini imaja karşı ç
 yükler ve sürüm çıkarır (`kur.sh`, `diszort-linux-x64`, `surum.json`).
 
 Yapı: `sunucu/` (Node: web, sohbet, signaling, coturn yönetimi, SQLite), `web/` (düz HTML/CSS/JS),
-`cli/` (terminal istemcisi: `kabuk/` web istemcisini çalıştıran ortam, `arayuz/` terminale çizen
-katman, `derle.js` tek dosya), `kurulum/` (kurulum betiği, Caddy örneği), `test/`. WebSocket protokolü `sunucu/sunucu.js` içinde
-açıklanmıştır.
+`cli/` (terminal istemcisi, Go: kök klasörde uygulama — sunucu bağlantısı, sohbet, eşler, dosya,
+komutlar, terminal —, `ses/` ses motoru, `pulse/` PulseAudio/PipeWire istemcisi, `gurultu/` RNNoise,
+`ekran/` ekran yakalama ve VP8; `derle.sh` tek dosya), `kurulum/` (kurulum betiği, Caddy örneği),
+`test/`. WebSocket protokolü `sunucu/sunucu.js` içinde açıklanmıştır.
 
 ## Güvenlik
 
