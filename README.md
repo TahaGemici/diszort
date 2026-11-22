@@ -180,23 +180,48 @@ chmod +x diszort
 
 İlk açılışta sunucunun adresi (ya da sana verilen giriş bağlantısı, `…/#anahtar=…`) sorulur. Ayarlar
 programın yanındaki `diszort.json`'da durur (giriş anahtarın da: yalnızca sana açık, 0600); başka bir
-yere bir şey yazılmaz. Klasörü taşıyınca kimliğin de taşınır. Yeni sürüm çıkınca giriş satırında yazar:
+yere bir şey yazılmaz. Klasörü taşıyınca kimliğin de taşınır. Yeni sürüm çıkınca durum çubuğunda yazar:
 `/güncelle` programı günceller ve yeniden başlatır (ya da `./diszort --guncelle`).
 
-Arayüz satır tabanlıdır, fare yoktur: yazdığın açık kanala mesaj olarak gider, işler komutlarla yapılır
-(`/yardım` hepsini listeler; Tab komutları, kanal, kişi ve dosya adlarını tamamlar):
+**İki terminal, fare yok.** `./diszort` sohbeti tam ekran gösterir: üstte durum çubuğu (bağlantı,
+sesli kanal, paylaşım, aktarımlar), solda kanallar, sesli kanaldakiler (konuşan yeşil yanar; sessiz,
+sağır, ekran/ses paylaşıyor) ve çevrimiçi kişiler, ortada açık kanalın mesajları. Orada yazılan her
+şey açık kanala mesaj olarak gider; komutlar ikinci bir terminalde:
 
-| İş | Komut |
+```sh
+./diszort komut
+```
+
+Komut konsolu açık programa bağlanır (hangisini önce açtığın fark etmez; program güncellenip yeniden
+başlayınca kendiliğinden yeniden bağlanır). Orada yazılan komut olarak gider, başına `/` gerekmez
+(`yardım` hepsini listeler; Tab komutları, kanal, kişi ve dosya adlarını tamamlar; terminale dosya
+sürüklersen açık kanalda paylaşılsın mı diye sorar). Konsoldan `Ctrl+C` yalnızca konsolu kapatır.
+tmux kullanıyorsan `./diszort --tmux` ikisini tek pencerede açar (üstte sohbet, altta komutlar;
+bölmeler arası `Ctrl+B` ve ok). Eski tek terminallik arayüz (mesajlar ve `/komutlar` aynı satırda):
+`./diszort --satir`.
+
+| Sohbet penceresinde | Tuş |
 |---|---|
-| Kanallar, kanala geç, eski mesajlar | `/kanallar` · `/git muhabbet` · `/eski` |
-| Sesli kanal | `/ses Sesli Sohbet` · `/ayrıl` · `/mik` (Alt+M) · `/sağır` (Alt+D) |
-| Birinin sesi (yalnızca sende) | `/seviye zeynep 70` · `/sustur zeynep` · `/seviye zeynep paylaşım 50` |
-| Paylaşım | `/paylaş` (ekran + ses) · `/paylaş ekran` · `/paylaş ses` · `/paylaş gizle` · `/paylaş dur` |
-| Dosya | `/dosya ~/video.mp4` (ya da dosyayı terminale sürükle) · `/indir 3` · `/aktarımlar` |
-| Kapıyı çalan, beyaz liste | `/kabul ad` · `/reddet ad` · `/kişiler` · `/at ad` · `/limit 12` |
-| Kanal ve sunucu | `/kanal ekle ses Oyun` · `/kanal sil Oyun` · `/sunucu` · `/temizle #genel 30` |
-| Ayarlar | `/ayar` · `/ayar mik 2` · `/ayar eşik 15` · `/ayar yankı açık` · `/aygıtlar` · `/dene` |
-| Durum | `/durum` (eşler: P2P/TURN, gecikme, kayıp; paylaşım; aktarımlar) |
+| Kanallar arasında | `Alt+↑` / `Alt+↓` · `Alt+1`…`Alt+9` (soldaki sırayla) |
+| Kaydır | `↑` / `↓` (fare tekerleği de), `PgUp` / `PgDn`, `Esc` en alta; yukarıda eski mesajlar kendiliğinden gelir |
+| Yazarken | `Alt+Enter` yeni satır · `Tab` @ad tamamlar · dosya sürükle: paylaşılsın mı diye sorar |
+| Ses | `Alt+M` mikrofon · `Alt+D` sağırlaştır |
+| Çık | `Ctrl+C` iki kez |
+
+| Komut konsolunda | Komut |
+|---|---|
+| Kanallar, kanala geç | `kanallar` · `git muhabbet` |
+| Sesli kanal | `ses Sesli Sohbet` · `ayrıl` · `mik` · `sağır` |
+| Birinin sesi (yalnızca sende) | `seviye zeynep 70` · `sustur zeynep` · `seviye zeynep paylaşım 50` |
+| Paylaşım | `paylaş` (ekran + ses) · `paylaş ekran` · `paylaş ses` · `paylaş gizle` · `paylaş dur` |
+| Dosya | `dosya ~/video.mp4` (ya da dosyayı sürükle) · `indir 3` · `aktarımlar` |
+| Kapıyı çalan, beyaz liste | `kabul ad` · `reddet ad` · `kişiler` · `at ad` · `limit 12` |
+| Kanal ve sunucu | `kanal ekle ses Oyun` · `kanal sil Oyun` · `sunucu` · `temizle #genel 30` |
+| Ayarlar | `ayar` · `ayar mik 2` · `ayar eşik 15` · `ayar yankı açık` · `aygıtlar` · `dene` |
+| Durum | `durum` (eşler: P2P/TURN, gecikme, kayıp; paylaşım; aktarımlar) |
+
+Konsol, programla Linux'un yerel soketiyle konuşur (soyut ad alanında: dosya oluşmaz); yalnızca aynı
+kullanıcının süreçleri bağlanabilir. Aynı klasördeki program ikinci kez açılmaz.
 
 - **Gerekenler:** Linux x64 (glibc 2.34+: Ubuntu 22.04, Debian 12, Fedora 35 ve sonrası), PulseAudio ya
   da PipeWire (masaüstü dağıtımlarında hazır). Ekran paylaşımı X11'de doğrudan; Wayland'de masaüstünün
@@ -219,8 +244,8 @@ PulseAudio/PipeWire'ın protokolü, Opus, RNNoise, SpeexDSP; ekran: libvpx, liby
 gömülü) ve web'le aynı protokolü konuşur. Web'in arayüzündeki değişiklikler (düzen, düğmeler,
 görünüm) CLI'ı etkilemez. Protokol ya da ses davranışı değişirse (yeni bir ileti, SDP ayarı) aynı
 değişiklik `cli/`'a da yapılır. Unutulursa CI yakalar: her gönderimde CLI gerçek Chromium'la aynı
-kanalda denenir (giriş, kapıyı çalma, yazı, iki yönde ses ve RED, yankı engelleme, ses ve ekran
-paylaşımı, iki yönde dosya); bozulan bir şey sürüm çıkmadan kırmızı yanar.
+kanalda denenir (giriş, kapıyı çalma, yazı, komut konsolu, iki yönde ses ve RED, yankı engelleme, ses
+ve ekran paylaşımı, iki yönde dosya); bozulan bir şey sürüm çıkmadan kırmızı yanar.
 
 ## Ayarlar
 

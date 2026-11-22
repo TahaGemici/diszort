@@ -1,8 +1,10 @@
 // Diszort terminal istemcisi (CLI): tarayıcı açmadan Diszort. Tek dosya, kurulum yok; ayarlar
 // programın yanındaki diszort.json'da. Web istemcisiyle aynı protokolü konuşur: yazılı ve sesli
 // kanallar, RNNoise ve konuşma eşiği, kayıplara karşı yedek (RED), ekran ve ses paylaşımı, P2P
-// dosya, giriş istekleri, beyaz liste, kanal ve sunucu yönetimi. Arayüz satır tabanlıdır: yazılan
-// mesaj olarak gider, işler /komutlarla yapılır (fare yok). Başkalarının ekranı gösterilmez.
+// dosya, giriş istekleri, beyaz liste, kanal ve sunucu yönetimi. Fare yok; başkalarının ekranı
+// gösterilmez. İki terminal: ./diszort sohbeti tam ekran gösterir (yazılan mesaj olarak gider),
+// ./diszort komut başka bir terminalde komutları alır (--tmux ikisini tek pencerede açar).
+// --satir: eski tek terminallik satır arayüzü (mesajlar ve /komutlar aynı yerde).
 package main
 
 import (
@@ -39,14 +41,18 @@ func surumYazisi() string {
 
 const yardimMetni = `%s — terminalden Diszort
 
-  ./diszort                      ayar dosyasındaki sunucuya bağlanır (ilk açılışta adres sorulur)
+  ./diszort                      sohbet (tam ekran): ayar dosyasındaki sunucuya bağlanır
+                                 (ilk açılışta adres sorulur); yazdığın mesaj olarak gider
+  ./diszort komut                komut konsolu: başka bir terminalde; açık Diszort'a bağlanır
+  ./diszort --tmux               ikisini tmux'ta tek pencerede açar (üstte sohbet, altta komutlar)
   ./diszort https://sunucu/…     o sunucuya bağlanır (giriş bağlantısı, #anahtar=… da olur)
+  ./diszort --satir              tek terminal: mesajlar ve /komutlar aynı satırda (eski arayüz)
   ./diszort --guncelle           son sürüme günceller
   ./diszort --surum              sürümü yazar
 
 Ayarlar: %s
-Program içinde /yardım komutların listesini verir. Kısayollar: Alt+M mikrofon, Alt+D sağırlaştır,
-Tab tamamlar, ↑/↓ önceki satırlar, Ctrl+C (boş satırda) çıkar.
+Komut konsolunda "yardım" komutların listesini verir. Sohbette: Alt+↑/↓ kanal, ↑/↓ ve PgUp/PgDn
+kaydır, Esc en alta, Alt+M mikrofon, Alt+D sağırlaştır, Ctrl+C iki kez: çık.
 `
 
 func main() {
@@ -63,6 +69,18 @@ func main() {
 	}
 	ayarDosyasi := ayarYolu()
 	switch {
+	case len(argv) > 0 && (argv[0] == "komut" || argv[0] == "--komut"):
+		if err := konsolIstemcisi(ayarDosyasi); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		return
+	case bayrak("--tmux"):
+		if err := tmuxAc(argv); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		return
 	case bayrak("--surum", "-v", "--version"):
 		fmt.Println(surumYazisi())
 		return
@@ -96,11 +114,19 @@ func main() {
 			defer pprof.StopCPUProfile()
 		}
 	}
-	if err := calistir(argv, ayarDosyasi); err != nil {
+	err := calistir(argv, ayarDosyasi)
+	if errors.Is(err, errYenidenBaslat) {
+		pprof.StopCPUProfile()
+		err = yenidenBaslat()
+	}
+	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
 }
+
+// errYenidenBaslat: /güncelle: program yeni sürümle aynı terminalde yeniden başlar.
+var errYenidenBaslat = errors.New("yeniden başlatılacak")
 
 func calistir(argv []string, ayarDosyasi string) error {
 	ayar, err := ayarOku(ayarDosyasi)
@@ -115,6 +141,26 @@ func calistir(argv []string, ayarDosyasi string) error {
 		}
 	}
 	betik := os.Getenv("DISZORT_BETIK") == "1" || !terminalMi()
+	tamEkran := !betik && os.Getenv("TERM") != "dumb"
+	for _, a := range argv {
+		if a == "--satir" {
+			tamEkran = false
+		}
+	}
+	// Komut konsolunun soketi: aynı ayar dosyasıyla açık bir Diszort varsa ikincisi açılmaz (ayar
+	// dosyasına da dokunulmaz).
+	dinleyici, err := konsolDinle(konsolAdi(ayarDosyasi))
+	if errors.Is(err, errZatenAcik) {
+		return errors.New("Diszort bu klasörde zaten açık. Komutlar için başka bir terminalde: ./diszort komut")
+	}
+	if err != nil {
+		dinleyici = nil
+		if tamEkran {
+			// Konsol olmadan tam ekranda komut verilemez: satır arayüzüyle aç.
+			fmt.Fprintln(os.Stderr, "Komut konsolu açılamadı ("+err.Error()+"); tek terminallik arayüzle açılıyor.")
+			tamEkran = false
+		}
+	}
 	sunucu, anahtar := ayar.Sunucu, ""
 	if adresArg != "" {
 		k, an, ok := adresDuzelt(adresArg)
@@ -150,7 +196,7 @@ func calistir(argv []string, ayarDosyasi string) error {
 	if err := ayar.Kaydet(); err != nil {
 		return fmt.Errorf("ayar dosyası yazılamıyor (%s): %w\nProgramı yazabildiğin bir klasöre taşı (ayarlar programın yanında tutulur)", ayarDosyasi, err)
 	}
-	u := yeniUygulama(ayar, betik)
+	u := yeniUygulama(ayar, betik, tamEkran, dinleyici)
 	return u.Calis()
 }
 

@@ -91,8 +91,8 @@ func (u *Uygulama) satirGeldi(s string) {
 	}
 	if !u.oturumVardi && !u.bekleyenIstek && !u.durduruldu {
 		if k := komutBul(strings.Fields(strings.TrimPrefix(s, "/") + " ")[0]); !strings.HasPrefix(s, "/") || k == nil || !girmedenOlur[k.adlar[0]] {
-			if len(u.bekleyenSatirlar) < 50 {
-				u.bekleyenSatirlar = append(u.bekleyenSatirlar, s)
+			if len(u.bekleyenler) < 50 {
+				u.bekleyenler = append(u.bekleyenler, func() { u.satirGeldi(s) })
 			}
 			if !u.betik {
 				u.durum("Girince yapılacak (bağlanılıyor…).", false)
@@ -128,6 +128,53 @@ func (u *Uygulama) satirGeldi(s string) {
 				}
 			})
 		})
+		return
+	}
+	u.yaziGonder(s)
+}
+
+// konsolSatiri: komut konsolundan (./diszort komut) gelen satır: her zaman komut ("/" yazmak şart
+// değil). Yalnızca dosya yolları yapıştırıldıysa (sürükle-bırak) açık kanalda paylaşılsın mı diye sorar.
+func (u *Uygulama) konsolSatiri(s string) {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return
+	}
+	if strings.HasPrefix(s, "//") {
+		u.durum("Mesajlar sohbet penceresinden yazılır; burası yalnızca komutlar için.", true)
+		return
+	}
+	if !strings.HasPrefix(s, "/") {
+		if yollar := yollariAyir(s); len(yollar) > 0 && hepsiDosyaMi(yollar) {
+			if u.aktifKanal == "" || !u.bagli {
+				u.durum("Dosya paylaşmak için önce sunucuya bağlan ve bir yazılı kanal seç.", true)
+				return
+			}
+			u.onayla(fmt.Sprintf("%d dosya #%s kanalında paylaşılsın mı?", len(yollar), u.kanalAdi(u.aktifKanal)), func() { u.dosyalariPaylas(yollar) })
+			return
+		}
+		ad, _, _ := strings.Cut(s, " ")
+		if komutBul(ad) == nil {
+			u.durum("Bilinmeyen komut: "+ad+" (komutların listesi: yardım; mesajlar sohbet penceresinden yazılır)", true)
+			return
+		}
+		s = "/" + s
+	}
+	u.satirGeldi(s)
+}
+
+// sohbetMesaji: tam ekranda yazılan: her zaman açık kanala mesaj (komut değil).
+func (u *Uygulama) sohbetMesaji(s string) {
+	if strings.TrimSpace(s) == "" {
+		return
+	}
+	if !u.oturumVardi {
+		if !u.bekleyenIstek && !u.durduruldu && len(u.bekleyenler) < 50 {
+			u.bekleyenler = append(u.bekleyenler, func() { u.sohbetMesaji(s) })
+			u.durum("Girince gönderilecek (bağlanılıyor…).", false)
+			return
+		}
+		u.durum("Henüz girmedin; mesaj gönderilemedi.", true)
 		return
 	}
 	u.yaziGonder(s)
@@ -222,6 +269,11 @@ func (u *Uygulama) kYardim(string) {
 		}
 		u.ui.Yaz("  " + adlar + arg + u.ui.Soluk(" — "+k.acik))
 	}
+	if u.ekran != nil {
+		u.ui.Yaz(u.ui.Soluk("Bu konsolda yazılan komut olarak gider (başına / gerekmez; dosya sürüklersen açık kanalda paylaşılır). Tab tamamlar, ↑/↓ önceki komutlar, Ctrl+C konsoldan çıkar (Diszort açık kalır)."))
+		u.ui.Yaz(u.ui.Soluk("Sohbet penceresi: yazılan mesaj olarak gider (Alt+Enter yeni satır, Tab @ad tamamlar). Alt+↑/↓ ya da Alt+1…9 kanal, ↑/↓ ve PgUp/PgDn kaydır, Esc en alta, Alt+M mikrofon, Alt+D sağır, Ctrl+C iki kez: çık."))
+		return
+	}
 	u.ui.Yaz(u.ui.Soluk("Düz yazı açık kanala mesaj olarak gider (Alt+Enter yeni satır; '/' ile başlayan mesaj için '//'). Tab tamamlar, ↑/↓ önceki satırlar. Alt+M mikrofon, Alt+D sağır, Ctrl+C çık."))
 }
 
@@ -256,11 +308,9 @@ func (u *Uygulama) kGuncelle(string) {
 				u.durum("Zaten son sürüm: "+surum, false)
 			default:
 				u.durum("Güncellendi: "+yeni+"; yeniden başlatılıyor…", false)
-				u.bitir(nil)
-				u.ui.Bitir()
-				if err := yenidenBaslat(); err != nil {
-					fmt.Fprintln(os.Stderr, "Yeniden başlatılamadı:", err)
-				}
+				// Yeniden başlatmayı main yapar (terminal eski haline döndükten sonra).
+				u.yenidenBasliyor = true
+				u.bitir(errYenidenBaslat)
 			}
 		})
 	}()
@@ -384,6 +434,14 @@ func (u *Uygulama) kEski(string) {
 		u.durum("Bu kanalın başına geldin.", false)
 		return
 	}
+	if u.ekran != nil {
+		u.durum("Sohbet penceresinde yukarı kaydır (PgUp): eski mesajlar kendiliğinden gelir.", false)
+	}
+	u.eskiIste()
+}
+
+// eskiIste: açık kanalın yüklenenlerden daha eski mesajlarını iste.
+func (u *Uygulama) eskiIste() {
 	var once int64
 	if len(u.mesajlar) > 0 {
 		once = u.mesajlar[0].ID

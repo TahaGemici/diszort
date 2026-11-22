@@ -430,6 +430,30 @@ const tarayiciHatalari = [];
 		await cliBekle(new RegExp(ADI + ': ' + yanit.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
 	});
 
+	await dene('komut konsolu: ./diszort komut açık programa bağlanır; yazılan komut olarak çalışır, mesaj olarak gitmez; ikinci kopya açılmaz', async () => {
+		const ortam = { ...process.env, HOME: ev, DISZORT_BETIK: '1' };
+		const konsol = spawn('./diszort', ['komut'], { cwd: klasor, env: ortam, stdio: ['pipe', 'pipe', 'pipe'] });
+		const kc = [];
+		readline.createInterface({ input: konsol.stdout }).on('line', (s) => kc.push(s));
+		try {
+			await kosul('konsol bağlandı (son satırlar geldi)', () => kc.some((s) => /Girdin: taha/.test(s)));
+			const bas = kc.length;
+			konsol.stdin.write('durum json\n');
+			const s = await kosul('konsolda "durum json" (başında / yok)', () => kc.slice(bas).find((x) => /^DURUM /.test(x)));
+			assert.equal(JSON.parse(s.slice(6)).ben, 'taha');
+			const gitmemeli = 'konsoldan gitmemeli ' + crypto.randomBytes(3).toString('hex');
+			konsol.stdin.write(gitmemeli + '\n');
+			await kosul('düz yazı konsolda komut sayılır', () => kc.slice(bas).some((x) => /Bilinmeyen komut/.test(x)));
+			await bekle(500);
+			assert.ok(!(await sayfa.evaluate((m) => [...document.querySelectorAll('#mesajlar .metin')].some((e) => e.textContent.includes(m)), gitmemeli)), 'konsola yazılan mesaj olarak gitti');
+			const ikinci = spawnSync('./diszort', [], { cwd: klasor, env: ortam, input: '', encoding: 'utf8', timeout: 10000 });
+			assert.notEqual(ikinci.status, 0, 'aynı klasörde ikinci kopya açıldı');
+			assert.match(ikinci.stderr, /zaten açık/);
+		} finally {
+			konsol.kill();
+		}
+	});
+
 	let durCal = cal('diszort_mikkaynak', konusma);
 	await dene('ses: CLI ↔ Chromium iki yönde; CLI hoparlöre çalıyor; kayıplara karşı yedek (RED) iki yönde', async () => {
 		cliYaz('/ses Sesli Sohbet');
@@ -482,7 +506,12 @@ const tarayiciHatalari = [];
 			const kapali = await farki(olcTarayici, 'taha', 'enerji', 3000);
 			cliYaz('/ayar yankı açık');
 			await bekle(4000); // mikrofon yeniden açılır, süzgeç oturur
-			const acik = await farki(olcTarayici, 'taha', 'enerji', 3000);
+			let acik = await farki(olcTarayici, 'taha', 'enerji', 3000);
+			if (acik >= kapali / 5) {
+				// Süzgecin oturması makineye göre değişir (yerelde bir kez 4 sn yetmedi): bir kez daha ölç.
+				await bekle(3000);
+				acik = await farki(olcTarayici, 'taha', 'enerji', 3000);
+			}
 			console.log(`     Chromium'a geri dönen kendi sesi: yankı engelleme kapalıyken enerji +${kapali.toFixed(4)}, açıkken +${acik.toFixed(4)} (${(10 * Math.log10(kapali / Math.max(acik, 1e-9))).toFixed(1)} dB)`);
 			assert.ok(kapali > 0.005, 'yankı oluşmadı (deneme düzeni)');
 			assert.ok(acik < kapali / 5, 'yankı engellenmedi');

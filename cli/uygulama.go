@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"math/rand"
+	"net"
 	"os"
 	"regexp"
 	"sort"
@@ -183,11 +184,20 @@ type Uygulama struct {
 	// dosyalar (dosya.go)
 	dosyalar dosyaDurumu
 
-	guncelleme       *surumBilgisi
-	bekleyenSatirlar []string
+	guncelleme      *surumBilgisi
+	bekleyenler     []func() // girmeden yazılanlar (girince yapılır)
+	bahsedilen      map[string]bool
+	yenidenBasliyor bool
+
+	// tam ekran sohbet (tamekran.go) ve komut konsolu (konsol.go)
+	ekran     *TamEkran
+	konsol    *konsolSunucu
+	dinleyici *net.UnixListener
 }
 
-func yeniUygulama(ayar *Ayar, betik bool) *Uygulama {
+// yeniUygulama: tamEkran: sohbet terminali kaplar, komutlar komut konsolundan (yoksa satır arayüzü).
+// dinleyici: komut konsolunun soketi (nil: konsol yok).
+func yeniUygulama(ayar *Ayar, betik, tamEkran bool, dinleyici *net.UnixListener) *Uygulama {
 	u := &Uygulama{
 		is:           make(chan func(), 1024),
 		ayar:         ayar,
@@ -203,7 +213,13 @@ func yeniUygulama(ayar *Ayar, betik bool) *Uygulama {
 		yaziyorlar:   map[string]time.Time{},
 		sesDurumlari: map[string]SesKisi{},
 		esler:        map[string]*Es{},
+		bahsedilen:   map[string]bool{},
 		gecmisBitti:  true,
+		dinleyici:    dinleyici,
+	}
+	if tamEkran {
+		u.ui.uzak = true
+		u.ekran = yeniTamEkran(u)
 	}
 	u.dosyalar.kur()
 	u.motor = ses.YeniMotor()
@@ -241,19 +257,55 @@ func (u *Uygulama) gunluk(s string) {
 func (u *Uygulama) Calis() error {
 	u.sesMotorunuBagla()
 	u.ui.Satir = func(s string) { u.calistir(func() { u.satirGeldi(s) }) }
+	u.ui.KonsolSatir = func(s string) { u.calistir(func() { u.konsolSatiri(s) }) }
 	u.ui.Degisti = func(s string) { u.calistir(func() { u.girdiDegisti(s) }) }
 	u.ui.Tus = func(t string) { u.calistir(func() { u.tusGeldi(t) }) }
 	u.ui.Tamamla = u.tamamla
+	if u.dinleyici != nil {
+		u.konsol = yeniKonsolSunucu(u.dinleyici, u.ui)
+		u.konsol.tamamla = u.tamamla
+		u.konsol.tus = func(t string) { u.calistir(func() { u.tusGeldi(t) }) }
+		if u.ekran != nil {
+			u.konsol.Sayi = func(n int) { u.calistir(func() { u.ekran.konsolSayisi = n }) }
+		}
+		u.ui.konsol = u.konsol
+	}
 	if err := u.ui.Baslat(); err != nil {
 		return err
 	}
 	defer u.ui.Bitir()
-	u.ui.Yaz(u.ui.Kalin(surumYazisi()) + u.ui.Soluk(" · "+u.ayar.Sunucu+" · /yardım komutları listeler"))
+	if u.ekran != nil {
+		if err := u.ekran.Baslat(); err != nil {
+			return err
+		}
+		defer u.ekran.Bitir()
+	}
+	if u.konsol != nil {
+		u.konsol.baslat()
+	}
+	if u.ekran != nil {
+		u.ui.Yaz(u.ui.Kalin(surumYazisi()) + u.ui.Soluk(" · "+u.ayar.Sunucu+" · yardım: komutların listesi"))
+	} else {
+		u.ui.Yaz(u.ui.Kalin(surumYazisi()) + u.ui.Soluk(" · "+u.ayar.Sunucu+" · /yardım komutları listeler"))
+	}
 	u.istemGuncelle()
 	u.dosyalar.yukle(u)
 	go func() {
+		// Çökerse terminal ham kipte kalmasın.
+		defer func() {
+			if r := recover(); r != nil {
+				if u.ekran != nil {
+					u.ekran.Bitir()
+				}
+				u.ui.Bitir()
+				panic(r)
+			}
+		}()
 		for f := range u.is {
 			f()
+			if u.ekran != nil {
+				u.ekran.belkiCiz()
+			}
 		}
 	}()
 	u.calistir(u.basla)
@@ -291,7 +343,11 @@ func (u *Uygulama) adSor(not string) {
 	if onceki != "" {
 		soru = fmt.Sprintf("Adın [%s]: ", onceki)
 	}
-	u.ui.Sor(soru, false, func(s string) {
+	sor := u.ui.Sor
+	if u.ekran != nil {
+		sor = func(m string, _ bool, c func(string)) { u.ekran.Sor(m, false, c) }
+	}
+	sor(soru, false, func(s string) {
 		u.calistir(func() {
 			s = strings.TrimSpace(s)
 			if s == "" {
@@ -326,6 +382,16 @@ func (u *Uygulama) bitir(err error) {
 		u.ws.kapat()
 	}
 	u.ayarKaydet()
+	if u.konsol != nil {
+		neden := "bitti"
+		if u.yenidenBasliyor {
+			neden = "yeniden"
+		}
+		u.konsol.kapat(neden)
+	}
+	if u.ekran != nil {
+		u.ekran.Bitir()
+	}
 	select {
 	case u.cikis <- err:
 	default:
@@ -349,6 +415,18 @@ func (u *Uygulama) durum(metin string, hata bool) {
 	} else {
 		u.ui.Yaz(u.ui.Soluk("· " + metin))
 	}
+	if u.ekran != nil {
+		u.ekran.bildir(metin, hata)
+	}
+}
+
+// zil: adın geçince, kapı çalınınca (tam ekranda sohbetin terminalinde).
+func (u *Uygulama) zil() {
+	if u.ekran != nil {
+		u.ekran.zil()
+	} else {
+		u.ui.Zil()
+	}
 }
 
 func (u *Uygulama) ton(tur string) {
@@ -357,8 +435,24 @@ func (u *Uygulama) ton(tur string) {
 	}
 }
 
-// istemGuncelle: giriş satırının başı: bağlantı, sesli kanal, açık kanal, okunmamış, yazanlar.
+// istemGuncelle: giriş satırının (tam ekranda: komut konsolunun) başı: bağlantı, sesli kanal,
+// açık kanal; satır arayüzünde okunmamışlar ve yazanlar da.
 func (u *Uygulama) istemGuncelle() {
+	p := u.durumParcalari(u.ekran != nil)
+	kanal := "#" + u.kanalAdi(u.aktifKanal)
+	if u.aktifKanal == "" {
+		kanal = ""
+	}
+	ist := strings.Join(p, " ")
+	if ist != "" {
+		ist += " "
+	}
+	u.ui.Istem(ist + u.ui.Kalin(kanal) + "> ")
+}
+
+// durumParcalari: istemin (ya da tam ekranın durum çubuğunun) parçaları. tam: okunmamışlar ve
+// yazanlar hariç (tam ekranda kendi yerlerinde görünür), kapıda bekleyenler dahil.
+func (u *Uygulama) durumParcalari(tam bool) []string {
 	var p []string
 	switch {
 	case u.bekleyenIstek:
@@ -386,17 +480,21 @@ func (u *Uygulama) istemGuncelle() {
 	} else if u.sesGiriliyor {
 		p = append(p, u.ui.Soluk("[sesli kanala giriliyor…]"))
 	}
-	var ok []string
-	for _, k := range u.kanallar {
-		if n := u.okunmamis[k.ID]; n > 0 && k.Tur == "yazi" {
-			ok = append(ok, fmt.Sprintf("+%d #%s", n, k.Ad))
+	if !tam {
+		var ok []string
+		for _, k := range u.kanallar {
+			if n := u.okunmamis[k.ID]; n > 0 && k.Tur == "yazi" {
+				ok = append(ok, fmt.Sprintf("+%d #%s", n, k.Ad))
+			}
 		}
-	}
-	if len(ok) > 0 {
-		p = append(p, u.ui.Sari(strings.Join(ok, " ")))
-	}
-	if y := u.yazanlar(); y != "" {
-		p = append(p, u.ui.Soluk(y))
+		if len(ok) > 0 {
+			p = append(p, u.ui.Sari(strings.Join(ok, " ")))
+		}
+		if y := u.yazanlar(); y != "" {
+			p = append(p, u.ui.Soluk(y))
+		}
+	} else if len(u.istekler) > 0 {
+		p = append(p, u.ui.Sari(fmt.Sprintf("[kapıda %d kişi]", len(u.istekler))))
 	}
 	if a := u.aktarimOzeti(); a != "" {
 		p = append(p, u.ui.Mavi("["+a+"]"))
@@ -404,18 +502,10 @@ func (u *Uygulama) istemGuncelle() {
 	if u.denemede {
 		p = append(p, u.denemeIstemi())
 	}
-	kanal := "#" + u.kanalAdi(u.aktifKanal)
-	if u.aktifKanal == "" {
-		kanal = ""
-	}
 	if u.guncelleme != nil {
 		p = append(p, u.ui.Mavi("[yeni sürüm "+u.guncelleme.Surum+": /güncelle]"))
 	}
-	ist := strings.Join(p, " ")
-	if ist != "" {
-		ist += " "
-	}
-	u.ui.Istem(ist + u.ui.Kalin(kanal) + "> ")
+	return p
 }
 
 func (u *Uygulama) yazanlar() string {
@@ -535,12 +625,17 @@ func (u *Uygulama) kanalSec(id string) {
 	}
 	u.aktifKanal = id
 	delete(u.okunmamis, id)
+	delete(u.bahsedilen, id)
 	u.mesajlar = nil
 	u.yaziyorlar = map[string]time.Time{}
 	u.gecmisBitti = true
 	u.ayar.Kanal = id
 	u.ayarKaydet()
-	u.ui.Yaz(u.ui.Kalin("── #" + k.Ad + " ──"))
+	if u.ekran != nil {
+		u.ekran.kanalDegisti()
+	} else {
+		u.ui.Yaz(u.ui.Kalin("── #" + k.Ad + " ──"))
+	}
 	u.gecmisIstegi = id
 	u.gonder(map[string]any{"type": "gecmis", "kanal": id, "once": 0})
 	u.istemGuncelle()
@@ -652,6 +747,9 @@ func (u *Uygulama) gecmisGeldi(m Gelen) {
 	if len(u.mesajlar) == 0 {
 		u.gecmisBitti = m.Bitti
 		u.mesajlar = gelen
+		if u.ekran != nil {
+			return
+		}
 		goster := gelen
 		if len(goster) > 25 {
 			goster = goster[len(goster)-25:]
@@ -685,6 +783,9 @@ func (u *Uygulama) gecmisGeldi(m Gelen) {
 		// Daha eski mesajlar istendi.
 		u.gecmisBitti = m.Bitti
 		u.mesajlar = append(yeniler, u.mesajlar...)
+		if u.ekran != nil {
+			return
+		}
 		u.ui.Yaz(u.ui.Soluk("── daha eski mesajlar ──"))
 		u.mesajlariYaz(yeniler, "")
 		u.ui.Yaz(u.ui.Soluk("── (eski mesajların sonu) ──"))
@@ -699,7 +800,7 @@ func (u *Uygulama) gecmisGeldi(m Gelen) {
 		}
 	}
 	u.mesajlar = append(u.mesajlar, kacan...)
-	if len(kacan) > 0 {
+	if len(kacan) > 0 && u.ekran == nil {
 		u.ui.Yaz(u.ui.Soluk("── bağlantı koptuğu sırada ──"))
 		u.mesajlariYaz(kacan, "")
 	}
@@ -719,20 +820,33 @@ func (u *Uygulama) mesajGeldi(kanal string, m Mesaj) {
 		if n := len(u.mesajlar); n > 0 {
 			onceki = gunEtiketi(u.mesajlar[n-1].Zaman)
 		}
-		u.mesajlar = append(u.mesajlar, m)
+		// Kimlik sırasıyla (geçmiş de öyle gelir): sunucudan sırası karışık gelse de yeri doğru olsun.
+		i := len(u.mesajlar)
+		for i > 0 && u.mesajlar[i-1].ID > m.ID {
+			i--
+		}
+		u.mesajlar = append(u.mesajlar[:i], append([]Mesaj{m}, u.mesajlar[i:]...)...)
 		if len(u.mesajlar) > 2000 {
 			u.mesajlar = u.mesajlar[len(u.mesajlar)-2000:]
 		}
 		delete(u.yaziyorlar, m.Ad)
-		u.mesajlariYaz([]Mesaj{m}, onceki)
+		if u.ekran != nil {
+			u.ekran.mesajEklendi(m, onceki)
+		} else {
+			u.mesajlariYaz([]Mesaj{m}, onceki)
+		}
 		if m.Ad != u.ben && m.Metin != "" && u.bahsediyorMu(m.Metin) {
-			u.ui.Zil()
+			u.zil()
 		}
 	} else if m.Ad != u.ben {
 		u.okunmamis[kanal]++
 		if m.Metin != "" && u.bahsediyorMu(m.Metin) {
+			u.bahsedilen[kanal] = true
 			u.ui.Yaz(u.ui.Sari("@ #"+u.kanalAdi(kanal)) + " " + u.mesajSatiri(m) + u.ui.Soluk("  (/git "+u.kanalAdi(kanal)+")"))
-			u.ui.Zil()
+			if u.ekran != nil {
+				u.ekran.bildir(u.ui.Sari("@ #"+u.kanalAdi(kanal))+" "+u.ui.Ad(m.Ad)+": "+kisalt(m.Metin, 80)+u.ui.Soluk("  (Alt+↑↓ ile kanala geç)"), false)
+			}
+			u.zil()
 		}
 	}
 	u.istemGuncelle()
@@ -773,7 +887,10 @@ func (u *Uygulama) istekEkle(id, ad string, kayitli bool) {
 		satir += "\n  " + u.ui.Kirmizi("Bu ad beyaz listede kayıtlı. Kabul edersen eski cihazının anahtarı iptal olur; gerçekten o mu, emin ol.")
 	}
 	u.ui.Yaz(satir)
-	u.ui.Zil()
+	if u.ekran != nil {
+		u.ekran.bildir(u.ui.Ad(ad)+u.ui.Sari(" girmek istiyor")+u.ui.Soluk(" · komut penceresinde: kabul "+ad+" ya da reddet "+ad), false)
+	}
+	u.zil()
 	u.ton("kapi")
 }
 
@@ -952,14 +1069,17 @@ func (u *Uygulama) oturumHazir(m Gelen) {
 	u.kanallarGeldi(m.Kanallar)
 	if ilk {
 		u.ui.Yaz(u.ui.Yesil("Girdin: ") + u.ui.Ad(u.ben) + u.ui.Soluk(fmt.Sprintf(" · %d kişi çevrimiçi · /kanallar · /kişiler", len(u.kimler))))
+		if u.ekran != nil {
+			u.ekran.bildir(u.ui.Yesil("Girdin: ")+u.ui.Ad(u.ben), false)
+		}
 		if ilk := u.ilkKanal(); ilk != "" {
 			u.kanalSec(ilk)
 		}
 		// Girmeden önce yazılanlar (betikte hemen gelir).
-		bekleyen := u.bekleyenSatirlar
-		u.bekleyenSatirlar = nil
-		for _, s := range bekleyen {
-			u.satirGeldi(s)
+		bekleyen := u.bekleyenler
+		u.bekleyenler = nil
+		for _, f := range bekleyen {
+			f()
 		}
 	} else {
 		u.durum("Yeniden bağlandın.", false)

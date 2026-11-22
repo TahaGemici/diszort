@@ -10,8 +10,6 @@ import (
 	"strings"
 	"sync"
 	"syscall"
-	"time"
-	"unicode"
 	"unicode/utf8"
 
 	"github.com/mattn/go-runewidth"
@@ -58,14 +56,29 @@ type Arayuz struct {
 	eskiDurum *term.State
 	bitti     bool
 
+	// konsol: yazılanların komut konsollarına (./diszort komut) giden kopyası (ana programda).
+	konsol konsolBag
+	// uzak: bu terminalde satır arayüzü yok (tam ekran sohbet açık): çıktı yalnızca konsollara gider.
+	uzak bool
+
 	// Satir: Enter (arayüz goroutine'inden).
 	Satir func(string)
-	// Tus: özel tuşlar ("alt+m", "alt+d", "ctrl+c", "ctrl+d").
+	// KonsolSatir: komut konsolundan gelen satır.
+	KonsolSatir func(string)
+	// Tus: özel tuşlar ("alt+m", "alt+d", "ctrl+c", "ctrl+d", "eof").
 	Tus func(string)
 	// Tamamla: Tab. Dönüş: yeni girdi (imleç sonda) ve gösterilecek seçenekler.
 	Tamamla func(girdi string) (string, []string)
 	// Degisti: girdi değişti (yazıyor göstergesi için).
 	Degisti func(girdi string)
+}
+
+// konsolBag: komut konsollarına giden yol (konsol.go).
+type konsolBag interface {
+	yaz(metin string)
+	istem(s string)
+	sor(metin string, gizli bool)
+	sorBitti()
 }
 
 func yeniArayuz(betik bool) *Arayuz {
@@ -80,6 +93,9 @@ func yeniArayuz(betik bool) *Arayuz {
 
 // Baslat: ham kipe geç ve tuşları okumaya başla.
 func (a *Arayuz) Baslat() error {
+	if a.uzak {
+		return nil
+	}
 	if a.betik {
 		go a.betikOku()
 		return nil
@@ -102,7 +118,16 @@ func (a *Arayuz) Baslat() error {
 			a.mu.Unlock()
 		}
 	}()
-	go a.tusOku()
+	go tuslariOku(os.Stdin, tusAlici{
+		Tus:      a.tus,
+		Harf:     a.harf,
+		Yapistir: a.yapistirildi,
+		Bitti: func() {
+			if a.Tus != nil {
+				a.Tus("eof")
+			}
+		},
+	})
 	a.mu.Lock()
 	a.ciz()
 	a.mu.Unlock()
@@ -131,8 +156,18 @@ func (a *Arayuz) Bitir() {
 
 // ---------------------------------------------------------------- çıktı
 
-// Yaz: giriş satırının üstüne bir (ya da birkaç) satır.
+// Yaz: giriş satırının üstüne bir (ya da birkaç) satır; komut konsollarına da.
 func (a *Arayuz) Yaz(metin string) {
+	if a.konsol != nil {
+		a.konsol.yaz(metin)
+	}
+	if !a.uzak {
+		a.yerelYaz(metin)
+	}
+}
+
+// yerelYaz: yalnızca bu terminale (ör. Tab'ın seçenekleri).
+func (a *Arayuz) yerelYaz(metin string) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	if a.betik {
@@ -153,7 +188,7 @@ func (a *Arayuz) Yaz(metin string) {
 
 // Zil: terminal zili (adın geçince, kapı çalınınca).
 func (a *Arayuz) Zil() {
-	if !a.betik {
+	if !a.betik && !a.uzak {
 		a.mu.Lock()
 		os.Stdout.WriteString("\a")
 		a.mu.Unlock()
@@ -168,16 +203,22 @@ func (a *Arayuz) Istem(s string) {
 		return
 	}
 	a.istem = s
+	if a.konsol != nil {
+		a.konsol.istem(s)
+	}
 	a.ciz()
 }
 
-// Sor: bir sonraki satır bu soruya cevaptır (ör. onay).
+// Sor: bir sonraki satır bu soruya cevaptır (ör. onay); komut konsolundan da cevaplanabilir.
 func (a *Arayuz) Sor(metin string, gizli bool, cevap func(string)) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	a.soru = &soru{metin: metin, cevap: cevap, gizli: gizli}
-	if a.betik {
+	if a.betik && !a.uzak {
 		fmt.Println(renksiz(metin))
+	}
+	if a.konsol != nil {
+		a.konsol.sor(metin, gizli)
 	}
 	a.ciz()
 }
@@ -200,7 +241,7 @@ func runeGenislik(r rune) int {
 
 // ciz: giriş satırını yeniden çiz (kilit altında).
 func (a *Arayuz) ciz() {
-	if a.betik || a.bitti {
+	if a.betik || a.bitti || a.uzak {
 		return
 	}
 	istem := a.istem
@@ -350,11 +391,7 @@ func (a *Arayuz) betikOku() {
 	s.Buffer(make([]byte, 64*1024), 1<<20)
 	for s.Scan() {
 		satir := s.Text()
-		a.mu.Lock()
-		so := a.soru
-		a.soru = nil
-		a.mu.Unlock()
-		if so != nil {
+		if so := a.soruyuAl(); so != nil {
 			so.cevap(satir)
 		} else if a.Satir != nil {
 			a.Satir(satir)
@@ -365,242 +402,56 @@ func (a *Arayuz) betikOku() {
 	}
 }
 
-// tusOku: ham kipte baytları tuşlara çevir.
-func (a *Arayuz) tusOku() {
-	gelen := make(chan []byte, 16)
-	go func() {
-		b := make([]byte, 4096)
-		for {
-			n, err := os.Stdin.Read(b)
-			if n > 0 {
-				gelen <- append([]byte(nil), b[:n]...)
-			}
-			if err != nil {
-				close(gelen)
-				return
-			}
-		}
-	}()
-	var tampon []byte
-	yapistir := false
-	var yapisan []byte
-	for {
-		var d []byte
-		var ok bool
-		if len(tampon) > 0 && tampon[0] == 0x1b && !tamamMi(tampon) {
-			// Yarım kaçış dizisi: kısa bir süre devamını bekle (yoksa tek başına Esc).
-			select {
-			case d, ok = <-gelen:
-			case <-time.After(40 * time.Millisecond):
-				d, ok = nil, true
-				a.tus("esc")
-				tampon = tampon[1:]
-				continue
-			}
-		} else if len(tampon) == 0 {
-			d, ok = <-gelen
-		}
-		if !ok {
-			if a.Tus != nil {
-				a.Tus("eof")
-			}
-			return
-		}
-		tampon = append(tampon, d...)
-		for len(tampon) > 0 {
-			if yapistir {
-				i := strings.Index(string(tampon), "\x1b[201~")
-				if i < 0 {
-					yapisan = append(yapisan, tampon...)
-					tampon = nil
-					break
-				}
-				yapisan = append(yapisan, tampon[:i]...)
-				tampon = tampon[i+6:]
-				yapistir = false
-				a.yapistirildi(string(yapisan))
-				yapisan = nil
-				continue
-			}
-			if tampon[0] == 0x1b {
-				if !tamamMi(tampon) {
-					break
-				}
-				n, ad := kacisCoz(tampon)
-				tampon = tampon[n:]
-				if ad == "yapistir" {
-					yapistir = true
-					continue
-				}
-				a.tus(ad)
-				continue
-			}
-			r, n := utf8.DecodeRune(tampon)
-			if r == utf8.RuneError && n <= 1 && !utf8.FullRune(tampon) {
-				break
-			}
-			tampon = tampon[n:]
-			a.rune_(r)
-		}
+// soruyuAl: bekleyen soruyu al (cevabı çağıran verir); komut konsoluna da sorunun bittiği söylenir.
+func (a *Arayuz) soruyuAl() *soru {
+	a.mu.Lock()
+	so := a.soru
+	a.soru = nil
+	if so != nil {
+		a.ciz()
+	}
+	a.mu.Unlock()
+	if so != nil && a.konsol != nil {
+		a.konsol.sorBitti()
+	}
+	return so
+}
+
+// UzakSatir: komut konsolundan gelen satır: bekleyen soru varsa onun cevabı, yoksa KonsolSatir.
+func (a *Arayuz) UzakSatir(s string) {
+	if so := a.soruyuAl(); so != nil {
+		so.cevap(s)
+		return
+	}
+	if a.KonsolSatir != nil {
+		a.KonsolSatir(s)
 	}
 }
 
-// tamamMi: kaçış dizisi bütün mü.
-func tamamMi(b []byte) bool {
-	if len(b) < 2 {
-		return false
+// SoruBitir: bekleyen soruyu cevaplamadan kaldır (komut konsolunda: soru başka yerde cevaplandı).
+func (a *Arayuz) SoruBitir() {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.soru != nil {
+		a.soru = nil
+		a.ciz()
 	}
-	switch b[1] {
-	case '[':
-		for i := 2; i < len(b); i++ {
-			if b[i] >= 0x40 && b[i] <= 0x7e {
-				return true
-			}
-		}
-		return false
-	case 'O':
-		return len(b) >= 3
-	}
-	return true
-}
-
-func kacisCoz(b []byte) (int, string) {
-	if b[1] == '[' {
-		i := 2
-		for i < len(b) && !(b[i] >= 0x40 && b[i] <= 0x7e) {
-			i++
-		}
-		govde := string(b[2:i])
-		son := b[i]
-		n := i + 1
-		switch {
-		case son == 'A':
-			return n, "yukari"
-		case son == 'B':
-			return n, "asagi"
-		case son == 'C':
-			if strings.Contains(govde, ";3") || strings.Contains(govde, ";5") {
-				return n, "sozcuk-sag"
-			}
-			return n, "sag"
-		case son == 'D':
-			if strings.Contains(govde, ";3") || strings.Contains(govde, ";5") {
-				return n, "sozcuk-sol"
-			}
-			return n, "sol"
-		case son == 'H':
-			return n, "bas"
-		case son == 'F':
-			return n, "son"
-		case son == '~':
-			switch govde {
-			case "1", "7":
-				return n, "bas"
-			case "4", "8":
-				return n, "son"
-			case "3":
-				return n, "sil"
-			case "200":
-				return n, "yapistir"
-			}
-		}
-		return n, ""
-	}
-	if b[1] == 'O' {
-		switch b[2] {
-		case 'H':
-			return 3, "bas"
-		case 'F':
-			return 3, "son"
-		case 'A':
-			return 3, "yukari"
-		case 'B':
-			return 3, "asagi"
-		case 'C':
-			return 3, "sag"
-		case 'D':
-			return 3, "sol"
-		}
-		return 3, ""
-	}
-	r, n := utf8.DecodeRune(b[1:])
-	switch r {
-	case '\r', '\n':
-		return 1 + n, "alt+enter"
-	case 0x7f, 0x08:
-		return 1 + n, "alt+sil"
-	}
-	return 1 + n, "alt+" + strings.ToLower(string(r))
 }
 
 func (a *Arayuz) yapistirildi(s string) {
-	s = strings.ReplaceAll(strings.ReplaceAll(s, "\r\n", "\n"), "\r", "\n")
 	a.mu.Lock()
-	defer a.mu.Unlock()
-	rs := []rune(strings.TrimRight(s, "\n"))
-	a.girdi = append(a.girdi[:a.imlec], append(rs, a.girdi[a.imlec:]...)...)
-	a.imlec += len(rs)
+	a.girdi, a.imlec = ekle(a.girdi, a.imlec, []rune(strings.TrimRight(s, "\n")))
 	a.ciz()
+	g := string(a.girdi)
+	a.mu.Unlock()
 	if a.Degisti != nil {
-		g := string(a.girdi)
-		go a.Degisti(g)
+		a.Degisti(g)
 	}
 }
 
-func (a *Arayuz) rune_(r rune) {
-	switch r {
-	case '\r', '\n':
-		a.gonder()
-		return
-	case 0x7f, 0x08:
-		a.tus("geri")
-		return
-	case 0x03:
-		a.tus("ctrl+c")
-		return
-	case 0x04:
-		a.tus("ctrl+d")
-		return
-	case 0x09:
-		a.tus("tab")
-		return
-	case 0x01:
-		a.tus("bas")
-		return
-	case 0x05:
-		a.tus("son")
-		return
-	case 0x02:
-		a.tus("sol")
-		return
-	case 0x06:
-		a.tus("sag")
-		return
-	case 0x0b:
-		a.tus("ctrl+k")
-		return
-	case 0x15:
-		a.tus("ctrl+u")
-		return
-	case 0x17:
-		a.tus("ctrl+w")
-		return
-	case 0x0c:
-		a.tus("ctrl+l")
-		return
-	case 0x10:
-		a.tus("yukari")
-		return
-	case 0x0e:
-		a.tus("asagi")
-		return
-	}
-	if r < 32 {
-		return
-	}
+func (a *Arayuz) harf(r rune) {
 	a.mu.Lock()
-	a.girdi = append(a.girdi[:a.imlec], append([]rune{r}, a.girdi[a.imlec:]...)...)
-	a.imlec++
+	a.girdi, a.imlec = ekle(a.girdi, a.imlec, []rune{r})
 	a.ciz()
 	g := string(a.girdi)
 	a.mu.Unlock()
@@ -612,9 +463,7 @@ func (a *Arayuz) rune_(r rune) {
 func (a *Arayuz) gonder() {
 	a.mu.Lock()
 	satir := string(a.girdi)
-	so := a.soru
-	a.soru = nil
-	if so == nil && strings.TrimSpace(satir) != "" && (len(a.gecmis) == 0 || a.gecmis[len(a.gecmis)-1] != satir) {
+	if a.soru == nil && strings.TrimSpace(satir) != "" && (len(a.gecmis) == 0 || a.gecmis[len(a.gecmis)-1] != satir) {
 		a.gecmis = append(a.gecmis, satir)
 		if len(a.gecmis) > 200 {
 			a.gecmis = a.gecmis[len(a.gecmis)-200:]
@@ -624,27 +473,26 @@ func (a *Arayuz) gonder() {
 	a.girdi, a.imlec, a.kaydir, a.taslak = nil, 0, 0, nil
 	a.ciz()
 	a.mu.Unlock()
-	if so != nil {
+	if so := a.soruyuAl(); so != nil {
 		so.cevap(satir)
 	} else if a.Satir != nil {
 		a.Satir(satir)
 	}
 }
 
-func sozcukMu(r rune) bool { return unicode.IsLetter(r) || unicode.IsDigit(r) }
-
 func (a *Arayuz) tus(ad string) {
 	switch ad {
+	case "enter":
+		a.gonder()
+		return
 	case "alt+m", "alt+d", "ctrl+c", "ctrl+d", "esc":
 		if ad == "ctrl+c" || ad == "esc" {
 			a.mu.Lock()
 			bos := len(a.girdi) == 0 && a.soru == nil
-			so := a.soru
-			a.soru = nil
 			a.girdi, a.imlec, a.kaydir = nil, 0, 0
 			a.ciz()
 			a.mu.Unlock()
-			if so != nil {
+			if so := a.soruyuAl(); so != nil {
 				so.cevap("")
 				return
 			}
@@ -679,7 +527,7 @@ func (a *Arayuz) tus(ad string) {
 		a.mu.Unlock()
 		yeni, oneriler := a.Tamamla(girdi)
 		if len(oneriler) > 1 {
-			a.Yaz(a.Soluk(strings.Join(oneriler, "  ")))
+			a.yerelYaz(a.Soluk(strings.Join(oneriler, "  ")))
 		}
 		a.mu.Lock()
 		a.girdi = []rune(yeni + kalan)
@@ -698,62 +546,9 @@ func (a *Arayuz) tus(ad string) {
 	defer a.mu.Unlock()
 	g := a.girdi
 	switch ad {
-	case "geri":
-		if a.imlec > 0 {
-			a.girdi = append(g[:a.imlec-1], g[a.imlec:]...)
-			a.imlec--
-		}
-	case "sil":
-		if a.imlec < len(g) {
-			a.girdi = append(g[:a.imlec], g[a.imlec+1:]...)
-		}
-	case "sol":
-		a.imlec = max(0, a.imlec-1)
-	case "sag":
-		a.imlec = min(len(g), a.imlec+1)
-	case "bas":
-		a.imlec = 0
-	case "son":
-		a.imlec = len(g)
-	case "sozcuk-sol", "alt+b":
-		i := a.imlec
-		for i > 0 && !sozcukMu(g[i-1]) {
-			i--
-		}
-		for i > 0 && sozcukMu(g[i-1]) {
-			i--
-		}
-		a.imlec = i
-	case "sozcuk-sag", "alt+f":
-		i := a.imlec
-		for i < len(g) && !sozcukMu(g[i]) {
-			i++
-		}
-		for i < len(g) && sozcukMu(g[i]) {
-			i++
-		}
-		a.imlec = i
-	case "ctrl+k":
-		a.girdi = g[:a.imlec]
-	case "ctrl+u":
-		a.girdi = append([]rune(nil), g[a.imlec:]...)
-		a.imlec = 0
-	case "ctrl+w", "alt+sil":
-		i := a.imlec
-		for i > 0 && !sozcukMu(g[i-1]) {
-			i--
-		}
-		for i > 0 && sozcukMu(g[i-1]) {
-			i--
-		}
-		a.girdi = append(g[:i], g[a.imlec:]...)
-		a.imlec = i
-	case "alt+enter":
-		a.girdi = append(g[:a.imlec], append([]rune{'\n'}, g[a.imlec:]...)...)
-		a.imlec++
 	case "yukari":
 		if a.soru != nil || a.gecmisI == 0 {
-			break
+			return
 		}
 		if a.gecmisI == len(a.gecmis) {
 			a.taslak = append([]rune(nil), g...)
@@ -763,7 +558,7 @@ func (a *Arayuz) tus(ad string) {
 		a.imlec = len(a.girdi)
 	case "asagi":
 		if a.soru != nil || a.gecmisI >= len(a.gecmis) {
-			break
+			return
 		}
 		a.gecmisI++
 		if a.gecmisI == len(a.gecmis) {
@@ -773,7 +568,10 @@ func (a *Arayuz) tus(ad string) {
 		}
 		a.imlec = len(a.girdi)
 	default:
-		return
+		var ok bool
+		if a.girdi, a.imlec, ok = duzenle(g, a.imlec, ad); !ok {
+			return
+		}
 	}
 	a.ciz()
 }
