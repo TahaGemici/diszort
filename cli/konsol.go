@@ -388,6 +388,7 @@ func konsolIstemcisi(ayarDosyasi string) error {
 				if len(satirlar) > 0 {
 					a.Yaz(strings.Join(satirlar, "\n"))
 				}
+				a.Yaz(a.Yesil("Diszort'a bağlandı.") + a.Soluk(" (yukarıdakiler programın son satırları)"))
 				a.Istem(m.S)
 			case "yaz":
 				a.Yaz(m.S)
@@ -413,7 +414,6 @@ func konsolIstemcisi(ayarDosyasi string) error {
 
 	go func() {
 		dendi := false
-		ilk := true
 		for {
 			select {
 			case <-cikis:
@@ -439,11 +439,7 @@ func konsolIstemcisi(ayarDosyasi string) error {
 			mu.Lock()
 			c = cc
 			mu.Unlock()
-			if !ilk || dendi {
-				a.Yaz(a.Yesil("Diszort'a bağlandı."))
-			}
 			neden := oku(cc)
-			ilk = false
 			mu.Lock()
 			c = nil
 			mu.Unlock()

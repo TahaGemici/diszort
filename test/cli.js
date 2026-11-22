@@ -436,7 +436,7 @@ const tarayiciHatalari = [];
 		const kc = [];
 		readline.createInterface({ input: konsol.stdout }).on('line', (s) => kc.push(s));
 		try {
-			await kosul('konsol bağlandı (son satırlar geldi)', () => kc.some((s) => /Girdin: taha/.test(s)));
+			await kosul('konsol bağlandı', () => kc.some((s) => /Diszort'a bağlandı/.test(s)));
 			const bas = kc.length;
 			konsol.stdin.write('durum json\n');
 			const s = await kosul('konsolda "durum json" (başında / yok)', () => kc.slice(bas).find((x) => /^DURUM /.test(x)));

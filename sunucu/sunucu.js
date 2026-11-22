@@ -712,7 +712,7 @@ function oturumAc(ws, ad, kimlik, anahtar, sesDevam) {
 	ws.sagir = false;
 	ws.yayin = null;
 	ws.sunulan = new Set(); // istemci 'dosya-sun' ile bildirir
-	ws.dosyaKuyruk = Promise.resolve(); // dosya-paylas / dosya-sun sırayla işlensin
+	ws.kuyruk = Promise.resolve(); // mesajlar, dosya-paylas, dosya-sun sırayla işlensin (kisiSirasi)
 	// Askıdaki sesli kanal yeri: istemci o kanala devam etmeyecekse hemen bırak (diğerleri boşuna beklemesin).
 	const askida = askidakiKoltuk(ad);
 	if (askida && askida.kanal !== sesDevam && koltukBirak(askida.kanal, ad, askida.ws)) {
@@ -1009,13 +1009,16 @@ async function yaziGonder(ws, m) {
 	if (!metin) return;
 	if (metin.length > 2000) metin = metin.slice(0, 2000);
 	if (!wsSayaci(ws, 'yazi', 10000, 12)) return gonder(ws, { type: 'hata', message: 'Çok hızlı yazıyorsun; birkaç saniye bekle.' });
-	try {
-		const mesaj = await db.mesajEkle({ kanal, ad: ws.ad, metin });
-		herkes({ type: 'yazi', kanal, mesaj });
-	} catch (e) {
-		console.error('[veritabanı] mesaj yazılamadı:', e.message);
-		gonder(ws, { type: 'hata', message: 'Mesaj kaydedilemedi; tekrar dene.' });
-	}
+	const ad = ws.ad;
+	return kisiSirasi(ws, async () => {
+		try {
+			const mesaj = await db.mesajEkle({ kanal, ad, metin });
+			herkes({ type: 'yazi', kanal, mesaj });
+		} catch (e) {
+			console.error('[veritabanı] mesaj yazılamadı:', e.message);
+			gonder(ws, { type: 'hata', message: 'Mesaj kaydedilemedi; tekrar dene.' });
+		}
+	});
 }
 
 async function gecmisGonder(ws, m) {
@@ -1142,10 +1145,12 @@ function sunulanDegisti() {
 	}, 30);
 }
 
-// Aynı bağlantının dosya mesajları sırayla işlenir (paylaşım ile "şunları sunuyorum" yarışmasın).
-function dosyaSirasi(ws, is) {
-	ws.dosyaKuyruk = (ws.dosyaKuyruk || Promise.resolve()).then(is, is).catch((e) => console.error('[dosya] beklenmeyen hata:', e && e.stack ? e.stack : e));
-	return ws.dosyaKuyruk;
+// Aynı bağlantının mesajları ve dosya işleri sırayla işlenir: veritabanı sorguları paralel çalışır;
+// sıra olmasa art arda gönderilen mesajlar (ya da mesajın hemen ardından paylaşılan dosya) herkese
+// karışık sırayla gidebilir, paylaşım ile "şunları sunuyorum" yarışabilirdi.
+function kisiSirasi(ws, is) {
+	ws.kuyruk = (ws.kuyruk || Promise.resolve()).then(is, is).catch((e) => console.error('[sıra] beklenmeyen hata:', e && e.stack ? e.stack : e));
+	return ws.kuyruk;
 }
 
 function dosyaPaylas(ws, m) {
@@ -1160,7 +1165,7 @@ function dosyaPaylas(ws, m) {
 	const dosyaAd = guvenliAd(String(m.ad ?? 'dosya'));
 	const hamTur = String(m.tur ?? '').trim().slice(0, 100);
 	const tur = ONIZLEME_TURLERI[uzanti(dosyaAd)] || (MIME_KALIBI.test(hamTur) ? hamTur.toLowerCase() : 'application/octet-stream');
-	return dosyaSirasi(ws, async () => {
+	return kisiSirasi(ws, async () => {
 		if (!ws.ad) return;
 		const kayit = { id, kanal, dosyaAd, boyut, tur };
 		let mesaj;
@@ -1184,7 +1189,7 @@ function dosyaPaylas(ws, m) {
 function sunulanlariAyarla(ws, m) {
 	if (!ws.ad) return;
 	const istenen = [...new Set((Array.isArray(m.idler) ? m.idler : []).map(String).filter((x) => P2P_KIMLIK.test(x)))].slice(0, EN_FAZLA_SUNULAN);
-	return dosyaSirasi(ws, async () => {
+	return kisiSirasi(ws, async () => {
 		if (!ws.ad) return;
 		let gecerli = [];
 		try {

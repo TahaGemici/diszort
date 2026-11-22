@@ -108,9 +108,6 @@ function ac(klasor) {
 	}
 	const yol = path.join(klasor, 'sohbet.db');
 	const db = new sqlite3.Database(yol);
-	// Sorgular sırayla: node-sqlite3 öntanımlı olarak paralel çalıştırır; o zaman bir kişinin art arda
-	// gönderdiği mesajlar veritabanına ve herkese karışık sırayla gidebiliyordu.
-	db.serialize();
 	console.log(`[veritabanı] ${yol}`);
 
 	const calistir = (sql, params = []) =>
