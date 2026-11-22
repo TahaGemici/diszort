@@ -19,6 +19,40 @@ type soket struct {
 	c       *websocket.Conn
 	mu      sync.Mutex
 	kapandi atomic.Bool
+	gid     chan any
+	bitti   chan struct{}
+}
+
+// yeniSoket: giden iletiler tek bir goroutine'den, sırayla yazılır (mesajlar da SDP/ICE de art arda
+// gönderildiği sırayla gitsin).
+func yeniSoket(c *websocket.Conn) *soket {
+	s := &soket{c: c, gid: make(chan any, 1024), bitti: make(chan struct{})}
+	go func() {
+		for {
+			select {
+			case v := <-s.gid:
+				if err := s.yaz(v); err != nil {
+					s.kapat()
+					return
+				}
+			case <-s.bitti:
+				return
+			}
+		}
+	}()
+	return s
+}
+
+// sirala: sıraya koy; kuyruk dolduysa (bağlantı tıkandı) bağlantı kapanır, yeniden bağlanılır.
+func (s *soket) sirala(v any) {
+	if s.kapandi.Load() {
+		return
+	}
+	select {
+	case s.gid <- v:
+	default:
+		s.kapat()
+	}
 }
 
 func (s *soket) yaz(v any) error {
@@ -30,6 +64,7 @@ func (s *soket) yaz(v any) error {
 
 func (s *soket) kapat() {
 	if s.kapandi.CompareAndSwap(false, true) {
+		close(s.bitti)
 		s.c.Close()
 	}
 }
@@ -71,7 +106,7 @@ func (u *Uygulama) baglan() {
 				return
 			}
 			c.SetReadLimit(1 << 20)
-			s := &soket{c: c}
+			s := yeniSoket(c)
 			u.ws = s
 			u.sonSunucu = time.Now()
 			ses := u.sesKanal
@@ -110,12 +145,7 @@ func (u *Uygulama) gonder(v map[string]any) {
 	if u.ws == nil || !u.bagli {
 		return
 	}
-	s := u.ws
-	go func() {
-		if err := s.yaz(v); err != nil {
-			s.kapat()
-		}
-	}()
+	u.ws.sirala(v)
 }
 
 func (u *Uygulama) baglantiKoptu() {
