@@ -16,7 +16,7 @@ import (
 
 // Tam ekran sohbet: terminali kaplar: üstte durum çubuğu, solda kanallar ve kişiler, ortada açık
 // kanalın mesajları, altta bildirim ve yazma satırı. Yazılan her şey açık kanala mesaj olarak gider;
-// komutlar başka bir terminaldeki komut konsolundan verilir (./diszort komut). Fare yok.
+// komutlar tmux'un sağ bölmesindeki komut konsolundan verilir (tmux.go, konsol.go). Fare yok.
 //
 // Bütün durum olay döngüsünde değişir; çizim de orada yapılır: en çok ~30 kare/sn ve yalnızca
 // değişen satırlar yazılır (görüşmede konuşanları göstermek için saniyede 5 kez bakılır).
@@ -49,10 +49,8 @@ type TamEkran struct {
 
 	soru         *ekranSorusu
 	komutUyarisi string
-	cikisOnay    time.Time
 
-	konsolSayisi int
-	canli        atomic.Bool // sesli kanalda: konuşanlar için sık çiz
+	canli atomic.Bool // sesli kanalda: konuşanlar için sık çiz
 
 	mu            sync.Mutex
 	eskiDurum     *term.State
@@ -126,13 +124,11 @@ func (e *TamEkran) boyutAl() {
 func (e *TamEkran) Bitir() {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	if !e.bitti.CompareAndSwap(false, true) {
+	if !e.bitti.CompareAndSwap(false, true) || e.eskiDurum == nil {
 		return
 	}
 	os.Stdout.WriteString("\x1b[0m\x1b[?2004l\x1b[?7h\x1b[?25h\x1b[?1049l")
-	if e.eskiDurum != nil {
-		term.Restore(int(os.Stdin.Fd()), e.eskiDurum)
-	}
+	term.Restore(int(os.Stdin.Fd()), e.eskiDurum)
 }
 
 func (e *TamEkran) zil() { os.Stdout.WriteString("\a") }
@@ -419,14 +415,12 @@ func gunAyraci(ui *Arayuz, gun string, w int) string {
 	return ui.Soluk(strings.Repeat("─", sol) + ic + strings.Repeat("─", sag))
 }
 
-// bilgiSatiri: çıkış onayı, bildirim, geçmişte olduğun, yazanlar ya da tuş ipuçları.
+// bilgiSatiri: bildirim, geçmişte olduğun, yazanlar ya da tuş ipuçları.
 func (e *TamEkran) bilgiSatiri() string {
 	u := e.u
 	ui := u.ui
 	simdi := time.Now()
 	switch {
-	case !e.cikisOnay.IsZero() && simdi.Sub(e.cikisOnay) < 2*time.Second:
-		return " " + ui.Sari("Çıkmak için Ctrl+C'ye yeniden bas.")
 	case e.bildirim != "" && simdi.Sub(e.bildirimZaman) < 6*time.Second:
 		if e.bildirimHata {
 			return " " + ui.Kirmizi("! "+e.bildirim)
@@ -442,14 +436,15 @@ func (e *TamEkran) bilgiSatiri() string {
 	if y := u.yazanlar(); y != "" {
 		return " " + ui.Soluk(y)
 	}
-	ipucu := "Alt+↑↓ kanal · PgUp/PgDn kaydır · Alt+M mik · Alt+D sağır · Ctrl+C çık"
-	if e.konsolSayisi == 0 {
-		if os.Getenv("TMUX") != "" {
-			return " " + ui.Soluk("Komutlar alttaki bölmede (tmux: Ctrl+B ↓) ya da: ") + ui.Kalin("./diszort komut") + ui.Soluk(" · "+ipucu)
-		}
-		return " " + ui.Soluk("Komutlar için başka bir terminalde: ") + ui.Kalin("./diszort komut") + ui.Soluk(" · "+ipucu)
+	return " " + ui.Soluk(bolmeGecisi()+" komutlar · Alt+↑↓ kanal · PgUp/PgDn kaydır · Alt+M mik · Alt+D sağır · Ctrl+C kapat")
+}
+
+// bolmeGecisi: sohbet ile komut bölmesi arasında geçiş tuşu (Diszort'un tmux'unda Alt+←/→).
+func bolmeGecisi() string {
+	if os.Getenv("DISZORT_TMUX") == "kullanici" {
+		return "Ctrl+B →"
 	}
-	return " " + ui.Soluk(ipucu)
+	return "Alt+→"
 }
 
 // girdiSatiri: istem + yazılan (imleç görünsün diye yatay kayar). Dönüş: satır ve imlecin sütunu.
@@ -550,7 +545,6 @@ func (e *TamEkran) Sor(metin string, evetHayir bool, cevap func(string)) {
 
 func (e *TamEkran) harf(r rune) {
 	e.girdi, e.imlec = ekle(e.girdi, e.imlec, []rune{r})
-	e.cikisOnay = time.Time{}
 	e.yaziyor()
 }
 
@@ -605,7 +599,7 @@ func (e *TamEkran) gonder() {
 		ad, _, _ := strings.Cut(strings.TrimSpace(s[1:]), " ")
 		if komutBul(ad) != nil {
 			e.komutUyarisi = s
-			e.bildir("Bu bir komut; komut penceresine yaz (./diszort komut). Mesaj olarak göndermek için yeniden Enter.", false)
+			e.bildir("Bu bir komut; sağdaki komut bölmesine yaz ("+bolmeGecisi()+"). Mesaj olarak göndermek için yeniden Enter.", false)
 			return
 		}
 	}
@@ -654,9 +648,6 @@ func (e *TamEkran) kaydirmaYap(n int) {
 
 func (e *TamEkran) tus(ad string) {
 	u := e.u
-	if ad != "ctrl+c" && ad != "ctrl+d" {
-		e.cikisOnay = time.Time{}
-	}
 	sayfa := max(1, e.yuk-6)
 	switch ad {
 	case "enter":
@@ -670,21 +661,11 @@ func (e *TamEkran) tus(ad string) {
 		case e.kaydirma > 0:
 			e.kaydirma = 0
 		}
-	case "ctrl+c", "ctrl+d":
-		if ad == "ctrl+d" && len(e.girdi) > 0 {
-			e.girdi, e.imlec, _ = duzenle(e.girdi, e.imlec, "sil")
-			return
-		}
-		if len(e.girdi) > 0 && e.soru == nil {
-			e.girdi, e.imlec, e.kaydir = nil, 0, 0
-			return
-		}
-		if !e.cikisOnay.IsZero() && time.Since(e.cikisOnay) < 2*time.Second {
-			u.bitir(nil)
-			return
-		}
-		e.cikisOnay = time.Now()
-		u.sonra(2100*time.Millisecond, func() {})
+	case "ctrl+c":
+		// Hepsi kapanır: program, komut bölmesi, tmux.
+		u.bitir(nil)
+	case "ctrl+d":
+		e.girdi, e.imlec, _ = duzenle(e.girdi, e.imlec, "sil")
 	case "alt+m", "alt+d":
 		u.tusGeldi(ad)
 	case "yukari":

@@ -10,6 +10,8 @@
 # Sunucuya yazdıkları:
 #   /var/lib/chat/.env                 ayarlar (konteynerde /veri/.env). Güncellemede dokunulmaz.
 #   /var/lib/chat/docker-compose.yml   konteyner tanımı (her çalıştırmada yeniden yazılır)
+#   /usr/local/sbin/diszort-guncelle   otomatik güncelleme; systemd zamanlayıcısı açılışta ve saatte
+#   /etc/systemd/system/diszort-guncelle.{service,timer}   bir çalıştırır (sürüm sabitlenince kapanır)
 set -eu
 
 # GitHub deposu (kullanici/depo). GitHub sürümü oluşturulurken workflow buraya gerçek adı yazar.
@@ -35,6 +37,122 @@ dis_ip_bul() {
 	ipv4mu "$IP" || IP=$(curl -fsS -4 --max-time 5 https://api.ipify.org 2>/dev/null) || IP=
 	ipv4mu "$IP" || IP=$(curl -fsS -4 --max-time 5 https://ifconfig.me 2>/dev/null) || IP=
 	ipv4mu "$IP" && echo "$IP"
+}
+
+# guncelleyici_yaz: otomatik güncelleme betiği ($1). root çalıştırır; bu yüzden konteynerin
+# yazabildiği $VERI'de değil, kökün klasöründe durur; kilidi de /run'da.
+guncelleyici_yaz() {
+	{
+		echo '#!/bin/sh'
+		printf "DEPO='%s'\nKONTEYNER='%s'\nVARSAYILAN_VERI='%s'\n" "$DEPO" "$KONTEYNER" "$VERI"
+		cat <<'GUNCELLEYICI'
+# Diszort'un otomatik güncellemesi (kur.sh yazar). systemd zamanlayıcısı diszort-guncelle.timer
+# açılışta ve saatte bir çalıştırır. Yeni sürüm yayınlanmışsa, konteyner çalışıyorsa ve sesli kanalda
+# kimse yoksa son kur.sh'yi indirip çalıştırır (ayarlar korunur).
+# Kapatmak: /var/lib/chat/.env içinde OTOMATIK_GUNCELLEME=0. Günlük: journalctl -u diszort-guncelle
+set -eu
+VERI=${DISZORT_VERI:-$VARSAYILAN_VERI}
+INDIR=${DISZORT_INDIRME:-https://github.com/$DEPO/releases/latest/download}
+exec 9>"${DISZORT_KILIT:-/run/diszort-guncelle.kilit}"
+flock -n 9 || exit 0
+ayar() {
+	sed -n "s/^[[:space:]]*$1[[:space:]]*=[[:space:]]*\([^[:space:]#]*\).*/\1/p" "$VERI/.env" 2>/dev/null | tail -n 1
+}
+if [ "$(ayar OTOMATIK_GUNCELLEME)" = 0 ]; then
+	echo "otomatik güncelleme kapalı ($VERI/.env)"
+	exit 0
+fi
+# Elle durdurulmuş konteynere dokunulmaz.
+if [ "$(docker inspect -f '{{.State.Running}}' "$KONTEYNER" 2>/dev/null)" != true ]; then
+	echo "konteyner çalışmıyor; dokunulmadı"
+	exit 0
+fi
+PORT=$(ayar PORT)
+if ! SAGLIK=$(curl -fsS --max-time 5 "http://127.0.0.1:${PORT:-8080}/saglik" 2>/dev/null); then
+	echo "sunucu yanıt vermiyor; dokunulmadı"
+	exit 0
+fi
+CALISAN=$(printf '%s' "$SAGLIK" | sed -n 's/.*"surum":"\([^"]*\)".*/\1/p')
+if ! SON=$(curl -fsSL --max-time 30 "$INDIR/surum.json" 2>/dev/null); then
+	echo "son sürüm bilgisi alınamadı"
+	exit 0
+fi
+SURUM=$(printf '%s' "$SON" | sed -n 's/.*"surum": *"\([^"]*\)".*/\1/p' | head -n 1)
+COMMIT=$(printf '%s' "$SON" | sed -n 's/.*"commit": *"\([^"]*\)".*/\1/p' | head -n 1)
+if [ -z "$SURUM" ] || [ -z "$COMMIT" ]; then
+	echo "son sürüm bilgisi anlaşılamadı"
+	exit 0
+fi
+if [ "$CALISAN" = "$SURUM-$COMMIT" ]; then
+	exit 0
+fi
+KISI=$(printf '%s' "$SAGLIK" | sed -n 's/.*"kisi":\([0-9]*\).*/\1/p')
+if [ "${KISI:-0}" -gt 0 ]; then
+	echo "yeni sürüm $SURUM var; sesli kanalda $KISI kişi var, sonra denenecek"
+	exit 0
+fi
+echo "güncelleniyor: ${CALISAN:-?} -> $SURUM-$COMMIT"
+YENI=$(mktemp)
+trap 'rm -f "$YENI"' EXIT
+curl -fsSL --max-time 120 "$INDIR/kur.sh" -o "$YENI"
+sh -n "$YENI"
+sh "$YENI"
+GUNCELLEYICI
+	} >"$1"
+	chmod 0755 "$1"
+}
+
+# birimleri_yaz: systemd hizmeti ve zamanlayıcısı ($1 klasörüne; $2: güncelleyicinin yolu).
+birimleri_yaz() {
+	cat >"$1/diszort-guncelle.service" <<HIZMET
+[Unit]
+Description=Diszort otomatik güncelleme (yeni sürüm varsa ve sesli kanal boşsa)
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=$2
+TimeoutStartSec=20min
+HIZMET
+	cat >"$1/diszort-guncelle.timer" <<'ZAMANLAYICI'
+[Unit]
+Description=Diszort otomatik güncelleme: açılışta ve saatte bir
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=1h
+RandomizedDelaySec=3min
+
+[Install]
+WantedBy=timers.target
+ZAMANLAYICI
+}
+
+# otomatik_guncelleme: zamanlayıcıyı kur ve aç (acik) ya da kapat (sabit: sürüm sabitlendi).
+# Sonucu OTOMATIK_BILGI'ye yazar (kur.sh'nin son bilgisinde görünür).
+otomatik_guncelleme() {
+	if ! command -v systemctl >/dev/null 2>&1 || [ ! -d /run/systemd/system ]; then
+		OTOMATIK_BILGI="kurulmadı (systemd yok; güncellemek için kur.sh'yi yeniden çalıştır)"
+		return 0
+	fi
+	if [ "$1" = sabit ]; then
+		systemctl disable --now diszort-guncelle.timer >/dev/null 2>&1 || true
+		OTOMATIK_BILGI="kapalı (sürüm $ETIKET'e sabitlendi; açmak için kur.sh'yi -s olmadan çalıştır)"
+		return 0
+	fi
+	guncelleyici_yaz /usr/local/sbin/diszort-guncelle
+	birimleri_yaz /etc/systemd/system /usr/local/sbin/diszort-guncelle
+	systemctl daemon-reload
+	if ! systemctl enable --now diszort-guncelle.timer >/dev/null 2>&1; then
+		OTOMATIK_BILGI="kurulamadı (systemctl enable diszort-guncelle.timer başarısız)"
+		return 0
+	fi
+	if grep -Eq '^[[:space:]]*OTOMATIK_GUNCELLEME[[:space:]]*=[[:space:]]*0' "$VERI/.env" 2>/dev/null; then
+		OTOMATIK_BILGI="kapalı ($VERI/.env: OTOMATIK_GUNCELLEME=0)"
+	else
+		OTOMATIK_BILGI="açık (açılışta ve saatte bir bakar; sesli kanalda kimse yokken günceller)"
+	fi
 }
 
 main() {
@@ -103,6 +221,10 @@ TURN_ADRESI=
 
 # Bir sesli kanalda en fazla kaç kişi olur. Herkes herkese bağlandığı için (mesh) 10'dan fazlası zorlar.
 MAX_KISI=10
+
+# Otomatik güncelleme: sunucu açılışta ve saatte bir yeni sürüme bakar; yayınlanmışsa ve sesli
+# kanalda kimse yoksa kendini günceller (bu ayarlar korunur). Kapatmak için 0.
+OTOMATIK_GUNCELLEME=1
 
 # Beyaz liste: en fazla kaç kişi (ad) olabilir. Her kişinin kendi anahtarı vardır; yeni kişi
 # içeridekilerin onayıyla eklenir. İçeridekiler arayüzden (− / +) çalışırken değiştirebilir.
@@ -207,13 +329,25 @@ Personal access tokens -> yalnızca read:packages):
 	fi
 	SURUM=$(curl -fsS "http://127.0.0.1:$PORT/saglik" | sed -n 's/.*"surum":"\([^"]*\)".*/\1/p')
 
+	# 6) Otomatik güncelleme (geliştirme imajında kurulmaz; sürüm sabitlenince kapanır)
+	OTOMATIK_BILGI="kurulmadı (geliştirme imajı)"
+	if [ -z "$IMAJ_VERILDI" ]; then
+		if [ "$ETIKET" = latest ]; then
+			otomatik_guncelleme acik
+		else
+			otomatik_guncelleme sabit
+		fi
+	fi
+
 	echo ""
 	echo "Diszort ${SURUM:-$ETIKET} Docker konteynerinde çalışıyor; sunucu açılınca kendiliğinden başlar."
 	cat <<EOF
-  Günlük     sudo docker logs -f $KONTEYNER
-  Ayarlar    sudo nano $VERI/.env   sonra   sudo docker restart $KONTEYNER
-  Güncelle   $GUNCELLE
+  Günlük      sudo docker logs -f $KONTEYNER
+  Ayarlar     sudo nano $VERI/.env   sonra   sudo docker restart $KONTEYNER
+  Güncelle    $GUNCELLE
+  Otomatik    güncelleme $OTOMATIK_BILGI
 EOF
 }
 
-main "$@"
+# Denemeler işlevleri yükleyebilsin diye: KUR_KUTUPHANE=1 iken yalnızca tanımlanır, çalıştırılmaz.
+[ "${KUR_KUTUPHANE:-}" = 1 ] || main "$@"

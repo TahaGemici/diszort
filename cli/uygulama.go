@@ -265,9 +265,7 @@ func (u *Uygulama) Calis() error {
 		u.konsol = yeniKonsolSunucu(u.dinleyici, u.ui)
 		u.konsol.tamamla = u.tamamla
 		u.konsol.tus = func(t string) { u.calistir(func() { u.tusGeldi(t) }) }
-		if u.ekran != nil {
-			u.konsol.Sayi = func(n int) { u.calistir(func() { u.ekran.konsolSayisi = n }) }
-		}
+		u.konsol.cik = func() { u.calistir(func() { u.bitir(nil) }) }
 		u.ui.konsol = u.konsol
 	}
 	if err := u.ui.Baslat(); err != nil {

@@ -133,7 +133,7 @@ func (u *Uygulama) satirGeldi(s string) {
 	u.yaziGonder(s)
 }
 
-// konsolSatiri: komut konsolundan (./diszort komut) gelen satır: her zaman komut ("/" yazmak şart
+// konsolSatiri: komut bölmesinden (tmux'un sağ bölmesi) gelen satır: her zaman komut ("/" yazmak şart
 // değil). Yalnızca dosya yolları yapıştırıldıysa (sürükle-bırak) açık kanalda paylaşılsın mı diye sorar.
 func (u *Uygulama) konsolSatiri(s string) {
 	s = strings.TrimSpace(s)
@@ -270,8 +270,9 @@ func (u *Uygulama) kYardim(string) {
 		u.ui.Yaz("  " + adlar + arg + u.ui.Soluk(" — "+k.acik))
 	}
 	if u.ekran != nil {
-		u.ui.Yaz(u.ui.Soluk("Bu konsolda yazılan komut olarak gider (başına / gerekmez; dosya sürüklersen açık kanalda paylaşılır). Tab tamamlar, ↑/↓ önceki komutlar, Ctrl+C konsoldan çıkar (Diszort açık kalır)."))
-		u.ui.Yaz(u.ui.Soluk("Sohbet penceresi: yazılan mesaj olarak gider (Alt+Enter yeni satır, Tab @ad tamamlar). Alt+↑/↓ ya da Alt+1…9 kanal, ↑/↓ ve PgUp/PgDn kaydır, Esc en alta, Alt+M mikrofon, Alt+D sağır, Ctrl+C iki kez: çık."))
+		u.ui.Yaz(u.ui.Soluk("Bu bölmede yazılan komut olarak gider (başına / gerekmez; dosya sürüklersen açık kanalda paylaşılır). Tab tamamlar, ↑/↓ önceki komutlar."))
+		u.ui.Yaz(u.ui.Soluk("Sohbet (sol bölme): yazılan mesaj olarak gider (Alt+Enter yeni satır, Tab @ad tamamlar). Alt+↑/↓ ya da Alt+1…9 kanal, ↑/↓ ve PgUp/PgDn kaydır, Esc en alta, Alt+M mikrofon, Alt+D sağır."))
+		u.ui.Yaz(u.ui.Soluk("Bölmeler arası " + bolmeGecisi() + " / ←; Ctrl+C (hangi bölmede olursa) hepsini kapatır."))
 		return
 	}
 	u.ui.Yaz(u.ui.Soluk("Düz yazı açık kanala mesaj olarak gider (Alt+Enter yeni satır; '/' ile başlayan mesaj için '//'). Tab tamamlar, ↑/↓ önceki satırlar. Alt+M mikrofon, Alt+D sağır, Ctrl+C çık."))
@@ -299,7 +300,7 @@ func (u *Uygulama) kDurum(arg string) {
 func (u *Uygulama) kGuncelle(string) {
 	u.durum("Yeni sürüm aranıyor…", false)
 	go func() {
-		yeni, err := guncelle(func(m string) { u.calistir(func() { u.durum(m, false) }) })
+		yeni, err := guncelle(nil, func(m string) { u.calistir(func() { u.durum(m, false) }) })
 		u.calistir(func() {
 			switch {
 			case err != nil:
@@ -924,6 +925,7 @@ func (u *Uygulama) kAyar(arg string) {
 			{"yankı", acikKapali(s.YankiEngel) + " (yankı engelleme: hoparlörle konuşuyorsan aç; kulaklıkta gerekmez)"},
 			{"kare", fmt.Sprintf("%d (ekran paylaşımının kare hızı: 15, 30, 60)", s.Kare)},
 			{"paylaşım-aygıt", firstNonEmpty(s.YayinAygit, "uygulamaların sesi (Diszort hariç)")},
+			{"güncelleme", acikKapali(!u.ayar.OtoGuncellemeKapali) + " (açılışta yeni sürüm varsa kendiliğinden güncellenir)"},
 		}
 		u.ui.Yaz(u.ui.Kalin("Ayarlar") + u.ui.Soluk(" · değiştirmek: /ayar <ad> <değer> · "+u.ayar.yol))
 		for _, sa := range satirlar {
@@ -1084,6 +1086,12 @@ func (u *Uygulama) kAyar(arg string) {
 	case "ekran-secimi", "ekransecimi":
 		u.ayar.EkranIzni = ""
 		u.durum("Ekran seçimi unutuldu; bir sonraki paylaşımda yeniden sorulur.", false)
+	case "guncelleme", "otomatik-guncelleme":
+		v, ok := mantik()
+		if !ok {
+			return
+		}
+		u.ayar.OtoGuncellemeKapali = !v
 	default:
 		u.durum("Bilinmeyen ayar: "+ad+" (/ayar)", true)
 		return
@@ -1306,7 +1314,7 @@ func (u *Uygulama) tamamlaIc(girdi string) (string, []string) {
 		}
 	case "ayar":
 		if !strings.Contains(arg, " ") {
-			return tamamlaListe(girdi, son, []string{"mik", "hoparlör", "seviye", "eşik", "kalite", "paylaşım-kalite", "red", "paylaşım-red", "sesler", "yankı", "kare", "paylaşım-aygıt", "ekran-seçimi"}, true)
+			return tamamlaListe(girdi, son, []string{"mik", "hoparlör", "seviye", "eşik", "kalite", "paylaşım-kalite", "red", "paylaşım-red", "sesler", "yankı", "kare", "paylaşım-aygıt", "ekran-seçimi", "güncelleme"}, true)
 		}
 		alt := sadelestir(strings.Fields(arg)[0])
 		switch alt {

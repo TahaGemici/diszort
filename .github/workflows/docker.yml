@@ -83,11 +83,15 @@ jobs:
           node --check test/tarayici.js
           node --check test/cli.js
           sh -n kurulum/kur.sh
+          sh -n test/guncelleyici.sh
           sh -n cli/derle.sh
           sh -n cli/gurultu/uret.sh
           BICIMSIZ=$(gofmt -l cli)
           if [ -n "$BICIMSIZ" ]; then echo "gofmt gerekli: $BICIMSIZ"; exit 1; fi
           docker compose -f docker-compose.yml config --quiet
+
+      - name: Sunucunun otomatik güncelleyicisi (betik, systemd birimleri, hangi durumda günceller)
+        run: sh test/guncelleyici.sh
 
       - name: Deneme bağımlılıkları (ws, jsdom, Playwright + Chromium, PulseAudio, Xvfb; CLI'ın C kitaplıkları)
         run: |
@@ -237,11 +241,12 @@ jobs:
           NOTLAR=$(printf '%s\n' \
             "**Sunucu.** Kurmak ya da güncellemek için sunucuda:" "" \
             "    curl -fsSL $INDIR/kur.sh | sudo sh" "" \
-            "Bu sürüme dönmek için sonuna \`-s $SURUM\` ekle. İmaj: $IMAJ:$SURUM (yapı $YAPI)." "" \
+            "Kurulduktan sonra kendini günceller: açılışta ve saatte bir yeni sürüme bakar, sesli kanalda kimse yokken günceller (kapatmak: /var/lib/chat/.env içinde OTOMATIK_GUNCELLEME=0)." "" \
+            "Bu sürüme dönmek için sonuna \`-s $SURUM\` ekle (o zaman otomatik güncelleme kapanır). İmaj: $IMAJ:$SURUM (yapı $YAPI)." "" \
             "**Terminal istemcisi (CLI, Linux x64, ~15 MB).** Kurulum yok: indir, çalıştır. Ayarlar programın yanındaki diszort.json'da." "" \
             "    curl -fsSLo diszort $INDIR/diszort-linux-x64 && chmod +x diszort && ./diszort" "" \
-            "Sohbet tam ekran açılır (yazdığın mesaj olarak gider); komutlar başka bir terminalde: \`./diszort komut\` (içeride \`yardım\`). tmux ile tek pencerede: \`./diszort --tmux\`." "" \
-            "Program yeni sürümü kendisi haber verir: /güncelle (ya da ./diszort --guncelle).")
+            "tmux'ta açılır (tmux gerekir: sudo apt install tmux): solda sohbet (yazdığın mesaj olarak gider), sağda komutlar (\`yardım\`). Bölmeler arası Alt+←/→, Ctrl+C hepsini kapatır." "" \
+            "Açılışta yeni sürüm varsa kendini günceller (kapatmak: \`ayar güncelleme kapalı\`); elle: \`güncelle\` ya da \`./diszort --guncelle\`.")
           # Eski düzendeki sürümler (v1, v2, …): etiketleriyle silinir (sürüm adı artık tarih).
           gh release list --limit 1000 --json tagName --jq '.[].tagName' | { grep -E '^v[0-9]+$' || true; } | while read -r ETIKET; do
             echo "eski sürüm siliniyor: $ETIKET"

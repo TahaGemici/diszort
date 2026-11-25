@@ -151,9 +151,16 @@ curl -fsSL https://github.com/TahaGemici/diszort/releases/latest/download/kur.sh
 ```
 
 Betik imajı `ghcr.io/tahagemici/diszort`'tan çeker, ayarları ve veritabanını `/var/lib/chat` altında
-oluşturur ve `diszort` konteynerini başlatır. Güncellemek için aynı komut çalıştırılır; belirli bir
-sürüme dönmek için sonuna `-s v26.11.15` gibi bir sürüm eklenir. Sürümlerin adı çıktıkları gündür
-(Türkiye saatiyle `vYY.AA.GG`); aynı gün yeni bir sürüm çıkarsa o günün öncekinin yerini alır.
+oluşturur ve `diszort` konteynerini başlatır. Sürümlerin adı çıktıkları gündür (Türkiye saatiyle
+`vYY.AA.GG`); aynı gün yeni bir sürüm çıkarsa o günün öncekinin yerini alır.
+
+**Güncelleme kendiliğinden:** kur.sh bir systemd zamanlayıcısı kurar; sunucu açılışta ve saatte bir
+yeni sürüme bakar. Yayınlanmışsa ve sesli kanalda kimse yoksa son kur.sh'yi indirip çalıştırır
+(ayarlar ve veritabanı korunur; açık sayfalar yeni sürümle kendiliğinden yenilenir, görüşme P2P
+sürdüğü için ses kesilmez). Elle durdurulmuş konteynere dokunmaz. Kapatmak: `/var/lib/chat/.env`
+içinde `OTOMATIK_GUNCELLEME=0`; ne yaptığı: `journalctl -u diszort-guncelle`. Elle güncellemek için
+yukarıdaki komut yeniden çalıştırılır; belirli bir sürüme dönmek için sonuna `-s v26.11.15` gibi bir
+sürüm eklenir (o zaman otomatik güncelleme kapanır, `-s`'siz çalıştırınca yeniden açılır).
 
 **Açık olması gereken portlar:** TCP 80 ve 443 (HTTPS), UDP ve TCP 3478 (STUN/TURN), UDP 49152–61000
 (TURN aktarımı).
@@ -180,35 +187,37 @@ chmod +x diszort
 
 İlk açılışta sunucunun adresi (ya da sana verilen giriş bağlantısı, `…/#anahtar=…`) sorulur. Ayarlar
 programın yanındaki `diszort.json`'da durur (giriş anahtarın da: yalnızca sana açık, 0600); başka bir
-yere bir şey yazılmaz. Klasörü taşıyınca kimliğin de taşınır. Yeni sürüm çıkınca durum çubuğunda yazar:
-`/güncelle` programı günceller ve yeniden başlatır (ya da `./diszort --guncelle`).
+yere bir şey yazılmaz. Klasörü taşıyınca kimliğin de taşınır.
 
-**İki terminal, fare yok.** `./diszort` sohbeti tam ekran gösterir: üstte durum çubuğu (bağlantı,
-sesli kanal, paylaşım, aktarımlar), solda kanallar, sesli kanaldakiler (konuşan yeşil yanar; sessiz,
-sağır, ekran/ses paylaşıyor) ve çevrimiçi kişiler, ortada açık kanalın mesajları. Orada yazılan her
-şey açık kanala mesaj olarak gider; komutlar ikinci bir terminalde:
+**Güncelleme kendiliğinden:** her açılışta yeni sürüm yayınlanmış mı diye bakar; varsa indirir,
+özetini (sha256) denetler, kendini değiştirip yeni sürümle açılır (ağ yoksa beklemeden eski sürümle
+açılır). Kapatmak: komut bölmesinde `ayar güncelleme kapalı`. Çalışırken yeni sürüm çıkarsa durum
+çubuğunda yazar; elle: `güncelle` (ya da `./diszort --guncelle`).
 
-```sh
-./diszort komut
-```
+**tmux'ta iki bölme, fare yok.** `./diszort` tmux'ta açılır (tmux gerekir: `sudo apt install tmux`;
+yoksa söyler): solda sohbet, sağda komutlar.
 
-Komut konsolu açık programa bağlanır (hangisini önce açtığın fark etmez; program güncellenip yeniden
-başlayınca kendiliğinden yeniden bağlanır). Orada yazılan komut olarak gider, başına `/` gerekmez
-(`yardım` hepsini listeler; Tab komutları, kanal, kişi ve dosya adlarını tamamlar; terminale dosya
-sürüklersen açık kanalda paylaşılsın mı diye sorar). Konsoldan `Ctrl+C` yalnızca konsolu kapatır.
-tmux kullanıyorsan `./diszort --tmux` ikisini tek pencerede açar (üstte sohbet, altta komutlar;
-bölmeler arası `Ctrl+B` ve ok). Eski tek terminallik arayüz (mesajlar ve `/komutlar` aynı satırda):
-`./diszort --satir`.
+- **Sohbet (sol):** üstte durum çubuğu (bağlantı, sesli kanal, paylaşım, aktarımlar), solda kanallar,
+  sesli kanaldakiler (konuşan yeşil yanar; sessiz, sağır, ekran/ses paylaşıyor) ve çevrimiçi kişiler,
+  ortada açık kanalın mesajları. Orada yazılan her şey açık kanala mesaj olarak gider.
+- **Komutlar (sağ):** yazılan komut olarak gider, başına `/` gerekmez (`yardım` hepsini listeler; Tab
+  komutları, kanal, kişi ve dosya adlarını tamamlar; dosya sürüklersen açık kanalda paylaşılsın mı diye
+  sorar).
+- **Bölmeler arası `Alt+←` / `Alt+→`.** `Ctrl+C` (hangi bölmede olursa) hepsini kapatır; terminal
+  penceresini kapatmak da Diszort'u kapatır (arkada açık kalmaz). Diszort açıkken yeniden `./diszort`
+  yazılırsa ikincisi açılmaz, açık olana bağlanır.
+- Kendi tmux'unun içindeysen o pencere yan yana bölünür (bölmeler arası `Ctrl+B` ve ok); Diszort'un
+  kendi tmux'u ise ayrı çalışır, senin tmux ayarlarına dokunmaz.
 
-| Sohbet penceresinde | Tuş |
+| Sohbette | Tuş |
 |---|---|
 | Kanallar arasında | `Alt+↑` / `Alt+↓` · `Alt+1`…`Alt+9` (soldaki sırayla) |
 | Kaydır | `↑` / `↓` (fare tekerleği de), `PgUp` / `PgDn`, `Esc` en alta; yukarıda eski mesajlar kendiliğinden gelir |
 | Yazarken | `Alt+Enter` yeni satır · `Tab` @ad tamamlar · dosya sürükle: paylaşılsın mı diye sorar |
 | Ses | `Alt+M` mikrofon · `Alt+D` sağırlaştır |
-| Çık | `Ctrl+C` iki kez |
+| Komut bölmesine geç / kapat | `Alt+→` · `Ctrl+C` |
 
-| Komut konsolunda | Komut |
+| Komutlarda | Komut |
 |---|---|
 | Kanallar, kanala geç | `kanallar` · `git muhabbet` |
 | Sesli kanal | `ses Sesli Sohbet` · `ayrıl` · `mik` · `sağır` |
@@ -217,11 +226,11 @@ bölmeler arası `Ctrl+B` ve ok). Eski tek terminallik arayüz (mesajlar ve `/ko
 | Dosya | `dosya ~/video.mp4` (ya da dosyayı sürükle) · `indir 3` · `aktarımlar` |
 | Kapıyı çalan, beyaz liste | `kabul ad` · `reddet ad` · `kişiler` · `at ad` · `limit 12` |
 | Kanal ve sunucu | `kanal ekle ses Oyun` · `kanal sil Oyun` · `sunucu` · `temizle #genel 30` |
-| Ayarlar | `ayar` · `ayar mik 2` · `ayar eşik 15` · `ayar yankı açık` · `aygıtlar` · `dene` |
-| Durum | `durum` (eşler: P2P/TURN, gecikme, kayıp; paylaşım; aktarımlar) |
+| Ayarlar | `ayar` · `ayar mik 2` · `ayar eşik 15` · `ayar yankı açık` · `ayar güncelleme kapalı` · `aygıtlar` · `dene` |
+| Durum, güncelleme | `durum` (eşler: P2P/TURN, gecikme, kayıp; paylaşım; aktarımlar) · `güncelle` |
 
-Konsol, programla Linux'un yerel soketiyle konuşur (soyut ad alanında: dosya oluşmaz); yalnızca aynı
-kullanıcının süreçleri bağlanabilir. Aynı klasördeki program ikinci kez açılmaz.
+İki bölme Linux'un yerel soketiyle konuşur (soyut ad alanında: dosya oluşmaz); yalnızca aynı
+kullanıcının süreçleri bağlanabilir.
 
 - **Gerekenler:** Linux x64 (glibc 2.34+: Ubuntu 22.04, Debian 12, Fedora 35 ve sonrası), PulseAudio ya
   da PipeWire (masaüstü dağıtımlarında hazır). Ekran paylaşımı X11'de doğrudan; Wayland'de masaüstünün
@@ -229,8 +238,8 @@ kullanıcının süreçleri bağlanabilir. Aynı klasördeki program ikinci kez 
   ve wlroots masaüstlerinde hazır).
 - **Bilgisayarın sesini paylaşmak** uygulama uygulama olur: ses sunucusundaki her çalma akışı (oyun,
   müzik, tarayıcı) ayrı yakalanır, Diszort'un kendi çaldıkları (kanaldakilerin sesi) hiç karışmaz;
-  kimse kendi sesini geri duymaz. Belli bir aygıtı paylaşmak için: `/paylaş ses <aygıt>`.
-- **Ekran:** 1920×1080'e kadar (büyüğü küçültülür), 30 kare/sn (`/ayar kare 60`), VP8; bit hızı her
+  kimse kendi sesini geri duymaz. Belli bir aygıtı paylaşmak için: `paylaş ses <aygıt>`.
+- **Ekran:** 1920×1080'e kadar (büyüğü küçültülür), 30 kare/sn (`ayar kare 60`), VP8; bit hızı her
   izleyenin bağlantısına göre ayarlanır, izleyen yokken görüntü kodlanmaz (işlemcinin asıl yükü; X11'de
   ekran yakalanmaz da).
 - **Paylaşılan dosyalar** program açık kaldıkça (sonraki açılışlarda da) sunulur; indirilenler
@@ -261,6 +270,7 @@ ve ekran paylaşımı, iki yönde dosya); bozulan bir şey sürüm çıkmadan k�
 | `SES_ASKI_MS` | 60000 | bağlantısı kopanın sesli kanaldaki yeri bu kadar korunur |
 | `DIS_IP`, `TURN_ADRESI` | kendiliğinden | TURN'ün duyurduğu adres |
 | `TANI` | 1 | ses teşhis satırlarını günlüğe yaz (0: kapalı); bkz. Yönetim |
+| `OTOMATIK_GUNCELLEME` | 1 | açılışta ve saatte bir yeni sürüme bak, sesli kanal boşken güncelle (0: kapalı) |
 
 Tam liste ve açıklamalar: [`.env.example`](.env.example).
 

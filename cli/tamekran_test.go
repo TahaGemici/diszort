@@ -121,10 +121,10 @@ func TestTamEkranYazma(t *testing.T) {
 	if u.aktifKanal != "k1" {
 		t.Fatalf("Alt+1: %s", u.aktifKanal)
 	}
-	// Çıkış iki Ctrl+C ister.
-	e.girdi = nil
+	// Ctrl+C (satırda yazı olsa da) hemen hepsini kapatır.
+	e.girdi, e.imlec = []rune("yarım mesaj"), 11
 	e.tus("ctrl+c")
-	if u.durduruldu || !strings.Contains(renksiz(e.bilgiSatiri()), "yeniden bas") {
-		t.Fatal("ilk Ctrl+C çıkış onayı istemedi")
+	if !u.durduruldu {
+		t.Fatal("Ctrl+C kapatmadı")
 	}
 }

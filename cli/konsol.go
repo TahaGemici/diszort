@@ -17,13 +17,14 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-// Komut konsolu: sohbet tam ekranken komutlar başka bir terminalden verilir (./diszort komut).
+// Komut konsolu: sohbet tam ekranken komutlar tmux'un sağ bölmesinden verilir (./diszort komut;
+// başlatıcı açar, bkz. tmux.go).
 // Ana program yerel bir soket dinler: Linux'un soyut ad alanında (dosya oluşmaz); adı kullanıcı
 // kimliğinden ve ayar dosyasının yolundan türer, yani her kurulumun kendi konsolu olur. İki uç da
 // karşısının aynı kullanıcı olduğunu denetler (SO_PEERCRED). İletiler satır satır JSON:
 //
 //	program → konsol: hos (son satırlar + istem), yaz, istem, sor, sorbitti, tamam, bitti, yeniden
-//	konsol → program: satir, tamamla, tus
+//	konsol → program: satir, tamamla, tus, cik (Ctrl+C: program kapansın)
 
 type konsolIleti struct {
 	T        string   `json:"t"`
@@ -72,6 +73,7 @@ type konsolSunucu struct {
 	dinleyici *net.UnixListener
 	tamamla   func(girdi string) (string, []string)
 	tus       func(ad string)
+	cik       func()
 	// Sayi: bağlı konsol sayısı değişti (dinleyici goroutine'inden).
 	Sayi func(n int)
 
@@ -206,6 +208,10 @@ func (k *konsolSunucu) okuyucu(ist *konsolIstemci) {
 			if (m.S == "alt+m" || m.S == "alt+d") && k.tus != nil {
 				k.tus(m.S)
 			}
+		case "cik":
+			if k.cik != nil {
+				k.cik()
+			}
 		}
 	}
 }
@@ -296,12 +302,15 @@ func (k *konsolSunucu) kapat(neden string) {
 	}
 }
 
-// ---------------------------------------------------------------- konsol tarafı (./diszort komut)
+// ---------------------------------------------------------------- konsol tarafı (sağ bölme)
 
 func konsolIstemcisi(ayarDosyasi string) error {
 	ad := konsolAdi(ayarDosyasi)
 	betik := os.Getenv("DISZORT_BETIK") == "1" || !terminalMi()
 	a := yeniArayuz(betik)
+	// tmux'taki bölme mi (başlatıcı açtı): program giderse bekleyip boşuna açık kalmaz.
+	bolme := os.Getenv("DISZORT_BOLME") == "komut"
+	a.HemenCik = !betik
 
 	var mu sync.Mutex
 	var c *net.UnixConn
@@ -335,7 +344,11 @@ func konsolIstemcisi(ayarDosyasi string) error {
 		switch t {
 		case "alt+m", "alt+d":
 			gonder(konsolIleti{T: "tus", S: t})
-		case "ctrl+c", "ctrl+d", "eof":
+		case "ctrl+c", "ctrl+d":
+			// Hepsi kapanır: program da (o da tmux'u kapatır).
+			gonder(konsolIleti{T: "cik"})
+			cik()
+		case "eof":
 			cik()
 		}
 	}
@@ -367,7 +380,11 @@ func konsolIstemcisi(ayarDosyasi string) error {
 		return err
 	}
 	defer a.Bitir()
-	a.Yaz(a.Kalin("Diszort komut konsolu") + a.Soluk(" · yazdığın komut olarak gider (başına / gerekmez) · yardım: komutlar · Ctrl+C: konsoldan çık"))
+	gecis := "Alt+←"
+	if os.Getenv("DISZORT_TMUX") == "kullanici" {
+		gecis = "Ctrl+B ←"
+	}
+	a.Yaz(a.Kalin("Diszort komutları") + a.Soluk(" · yazdığın komut olarak gider (başına / gerekmez) · yardım: liste · "+gecis+": sohbet · Ctrl+C: hepsini kapat"))
 	a.Istem(a.Soluk("[bağlanıyor…] "))
 
 	// oku: bağlantı kapanana kadar; dönüş: programın söylediği neden ("" = bağlantı koptu).
@@ -414,6 +431,7 @@ func konsolIstemcisi(ayarDosyasi string) error {
 
 	go func() {
 		dendi := false
+		bekleme := time.Now()
 		for {
 			select {
 			case <-cikis:
@@ -422,12 +440,23 @@ func konsolIstemcisi(ayarDosyasi string) error {
 			}
 			cc, err := net.DialUnix("unix", nil, konsolAdresi(ad))
 			if err != nil {
+				if bolme && time.Since(bekleme) > 15*time.Second {
+					// Sohbet bölmesi açılmadı ya da kapandı: tek başına beklemenin anlamı yok.
+					a.Yaz(a.Kirmizi("Diszort açılmadı ya da kapandı; bu bölme kapanıyor."))
+					time.Sleep(2 * time.Second)
+					cik()
+					return
+				}
 				if !dendi {
-					a.Yaz(a.Sari("Diszort açık değil.") + a.Soluk(" Başka bir terminalde ./diszort çalıştırınca buraya kendiliğinden bağlanır (çıkmak: Ctrl+C)."))
-					a.Istem(a.Soluk("[bekleniyor…] "))
+					if bolme {
+						a.Istem(a.Soluk("[Diszort açılıyor…] "))
+					} else {
+						a.Yaz(a.Sari("Diszort açık değil.") + a.Soluk(" ./diszort açılınca buraya kendiliğinden bağlanır (çıkmak: Ctrl+C)."))
+						a.Istem(a.Soluk("[bekleniyor…] "))
+					}
 					dendi = true
 				}
-				time.Sleep(400 * time.Millisecond)
+				time.Sleep(300 * time.Millisecond)
 				continue
 			}
 			if uid, err := karsiKullanici(cc); err != nil || uid != os.Getuid() {
@@ -457,6 +486,7 @@ func konsolIstemcisi(ayarDosyasi string) error {
 			}
 			a.Istem(a.Soluk("[bekleniyor…] "))
 			dendi = true
+			bekleme = time.Now()
 			time.Sleep(200 * time.Millisecond)
 		}
 	}()

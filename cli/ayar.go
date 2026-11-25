@@ -53,6 +53,8 @@ type Ayar struct {
 	Kisiler       map[string]*KisiAyari `json:"kisiler,omitempty"`
 	Paylasilanlar []PaylasilanDosya     `json:"paylasilanlar,omitempty"`
 	EkranIzni     string                `json:"ekranIzni,omitempty"` // Wayland ekran seçiminin hatırlanması
+	// OtoGuncellemeKapali: açılışta kendiliğinden güncellenmesin (öntanımlı: güncellenir).
+	OtoGuncellemeKapali bool `json:"otoGuncellemeKapali,omitempty"`
 
 	yol string
 }

@@ -2,9 +2,9 @@
 // programın yanındaki diszort.json'da. Web istemcisiyle aynı protokolü konuşur: yazılı ve sesli
 // kanallar, RNNoise ve konuşma eşiği, kayıplara karşı yedek (RED), ekran ve ses paylaşımı, P2P
 // dosya, giriş istekleri, beyaz liste, kanal ve sunucu yönetimi. Fare yok; başkalarının ekranı
-// gösterilmez. İki terminal: ./diszort sohbeti tam ekran gösterir (yazılan mesaj olarak gider),
-// ./diszort komut başka bir terminalde komutları alır (--tmux ikisini tek pencerede açar).
-// --satir: eski tek terminallik satır arayüzü (mesajlar ve /komutlar aynı yerde).
+// gösterilmez. ./diszort tmux'ta iki bölme açar: solda sohbet (yazılan mesaj olarak gider), sağda
+// komut konsolu (tmux.go). Açılışta yeni sürüm varsa kendini günceller. Terminal değilken (betik,
+// deneme) satır satır okur ve yazar.
 package main
 
 import (
@@ -41,18 +41,15 @@ func surumYazisi() string {
 
 const yardimMetni = `%s — terminalden Diszort
 
-  ./diszort                      sohbet (tam ekran): ayar dosyasındaki sunucuya bağlanır
-                                 (ilk açılışta adres sorulur); yazdığın mesaj olarak gider
-  ./diszort komut                komut konsolu: başka bir terminalde; açık Diszort'a bağlanır
-  ./diszort --tmux               ikisini tmux'ta tek pencerede açar (üstte sohbet, altta komutlar)
+  ./diszort                      tmux'ta açılır: solda sohbet (yazdığın mesaj olarak gider), sağda
+                                 komutlar; ayar dosyasındaki sunucuya bağlanır (ilk açılışta sorulur)
   ./diszort https://sunucu/…     o sunucuya bağlanır (giriş bağlantısı, #anahtar=… da olur)
-  ./diszort --satir              tek terminal: mesajlar ve /komutlar aynı satırda (eski arayüz)
-  ./diszort --guncelle           son sürüme günceller
+  ./diszort --guncelle           son sürüme günceller (açılışta zaten kendiliğinden güncellenir)
   ./diszort --surum              sürümü yazar
 
-Ayarlar: %s
-Komut konsolunda "yardım" komutların listesini verir. Sohbette: Alt+↑/↓ kanal, ↑/↓ ve PgUp/PgDn
-kaydır, Esc en alta, Alt+M mikrofon, Alt+D sağırlaştır, Ctrl+C iki kez: çık.
+tmux gerekir (sudo apt install tmux). Ayarlar: %s
+Bölmeler arası Alt+←/→. Komut bölmesinde "yardım" komutları listeler. Sohbette: Alt+↑/↓ kanal,
+↑/↓ ve PgUp/PgDn kaydır, Esc en alta, Alt+M mikrofon, Alt+D sağırlaştır. Ctrl+C: hepsini kapatır.
 `
 
 func main() {
@@ -69,14 +66,9 @@ func main() {
 	}
 	ayarDosyasi := ayarYolu()
 	switch {
-	case len(argv) > 0 && (argv[0] == "komut" || argv[0] == "--komut"):
+	case len(argv) > 0 && argv[0] == "komut":
+		// tmux'taki komut bölmesi (başlatıcı açar; elle de açılabilir).
 		if err := konsolIstemcisi(ayarDosyasi); err != nil {
-			fmt.Fprintln(os.Stderr, err)
-			os.Exit(1)
-		}
-		return
-	case bayrak("--tmux"):
-		if err := tmuxAc(argv); err != nil {
 			fmt.Fprintln(os.Stderr, err)
 			os.Exit(1)
 		}
@@ -88,7 +80,7 @@ func main() {
 		fmt.Printf(yardimMetni, surumYazisi(), ayarDosyasi)
 		return
 	case bayrak("--guncelle"):
-		yeni, err := guncelle(func(m string) { fmt.Println(m) })
+		yeni, err := guncelle(nil, func(m string) { fmt.Println(m) })
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "Güncellenemedi:", err)
 			os.Exit(1)
@@ -107,6 +99,15 @@ func main() {
 		fmt.Fprintln(os.Stderr, "Diszort CLI yalnızca Linux'ta çalışır.")
 		os.Exit(1)
 	}
+	betik := os.Getenv("DISZORT_BETIK") == "1" || !terminalMi()
+	if !betik && !bolmede() {
+		// Kullanıcının açtığı ./diszort: tmux'ta iki bölme (başarıda buraya dönülmez).
+		if err := baslat(argv, ayarDosyasi); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		return
+	}
 	// Geliştirme: işlemci profili (DISZORT_PROFIL=dosya).
 	if y := os.Getenv("DISZORT_PROFIL"); y != "" {
 		if f, err := os.Create(y); err == nil {
@@ -114,13 +115,22 @@ func main() {
 			defer pprof.StopCPUProfile()
 		}
 	}
-	err := calistir(argv, ayarDosyasi)
+	err := calistir(argv, ayarDosyasi, betik)
 	if errors.Is(err, errYenidenBaslat) {
 		pprof.StopCPUProfile()
 		err = yenidenBaslat()
 	}
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
+		if bolmede() {
+			// Bölme kapanınca hata görünmez kalmasın.
+			satirOku("\nKapatmak için Enter… ")
+		}
+	}
+	if bolmede() {
+		tmuxKapat()
+	}
+	if err != nil {
 		os.Exit(1)
 	}
 }
@@ -128,7 +138,7 @@ func main() {
 // errYenidenBaslat: /güncelle: program yeni sürümle aynı terminalde yeniden başlar.
 var errYenidenBaslat = errors.New("yeniden başlatılacak")
 
-func calistir(argv []string, ayarDosyasi string) error {
+func calistir(argv []string, ayarDosyasi string, betik bool) error {
 	ayar, err := ayarOku(ayarDosyasi)
 	if err != nil {
 		return fmt.Errorf("ayar dosyası okunamadı (%s): %w", ayarDosyasi, err)
@@ -140,26 +150,18 @@ func calistir(argv []string, ayarDosyasi string) error {
 			break
 		}
 	}
-	betik := os.Getenv("DISZORT_BETIK") == "1" || !terminalMi()
-	tamEkran := !betik && os.Getenv("TERM") != "dumb"
-	for _, a := range argv {
-		if a == "--satir" {
-			tamEkran = false
-		}
-	}
+	tamEkran := !betik
 	// Komut konsolunun soketi: aynı ayar dosyasıyla açık bir Diszort varsa ikincisi açılmaz (ayar
 	// dosyasına da dokunulmaz).
 	dinleyici, err := konsolDinle(konsolAdi(ayarDosyasi))
 	if errors.Is(err, errZatenAcik) {
-		return errors.New("Diszort bu klasörde zaten açık. Komutlar için başka bir terminalde: ./diszort komut")
+		return errors.New("Diszort bu klasörde zaten açık")
 	}
 	if err != nil {
-		dinleyici = nil
 		if tamEkran {
-			// Konsol olmadan tam ekranda komut verilemez: satır arayüzüyle aç.
-			fmt.Fprintln(os.Stderr, "Komut konsolu açılamadı ("+err.Error()+"); tek terminallik arayüzle açılıyor.")
-			tamEkran = false
+			return fmt.Errorf("komut konsolunun soketi açılamadı: %w", err)
 		}
+		dinleyici = nil
 	}
 	sunucu, anahtar := ayar.Sunucu, ""
 	if adresArg != "" {
@@ -208,12 +210,22 @@ type surumBilgisi struct {
 	Sha256 map[string]string `json:"sha256"`
 }
 
-func sonSurum() (*surumBilgisi, error) {
+// indirmeAdresi: son sürümün dosyaları (DISZORT_INDIRME: başka bir yansı ya da deneme sunucusu).
+func indirmeAdresi() string {
+	if a := os.Getenv("DISZORT_INDIRME"); a != "" {
+		return strings.TrimRight(a, "/")
+	}
+	return "https://github.com/" + depo + "/releases/latest/download"
+}
+
+func sonSurum() (*surumBilgisi, error) { return sonSurumSureli(15 * time.Second) }
+
+func sonSurumSureli(sure time.Duration) (*surumBilgisi, error) {
 	if depo == "" || surum == "yerel" {
 		return nil, errors.New("geliştirme kopyası güncellenmez (git pull)")
 	}
-	ist := &http.Client{Timeout: 15 * time.Second}
-	y, err := ist.Get("https://github.com/" + depo + "/releases/latest/download/surum.json")
+	ist := &http.Client{Timeout: sure}
+	y, err := ist.Get(indirmeAdresi() + "/surum.json")
 	if err != nil {
 		return nil, err
 	}
@@ -237,25 +249,17 @@ func varlikAdi() string {
 	return "diszort-linux-x64"
 }
 
-// guncelle: programı son sürümle değiştir. Dönüş: yeni sürümün adı ("" = zaten son sürüm).
-func guncelle(bildir func(string)) (string, error) {
-	s, err := sonSurum()
-	if err != nil {
-		return "", err
+// guncelle: programı son sürümle değiştir (s: önceden alınmış sürüm bilgisi; nil: şimdi sorulur).
+// Dönüş: yeni sürümün adı ("" = zaten son sürüm).
+func guncelle(s *surumBilgisi, bildir func(string)) (string, error) {
+	if s == nil {
+		var err error
+		if s, err = sonSurum(); err != nil {
+			return "", err
+		}
 	}
 	if !yeniMi(s) {
 		return "", nil
-	}
-	ad := varlikAdi()
-	bildir("İndiriliyor: " + s.Surum + "…")
-	ist := &http.Client{Timeout: 10 * time.Minute}
-	y, err := ist.Get("https://github.com/" + depo + "/releases/latest/download/" + ad)
-	if err != nil {
-		return "", err
-	}
-	defer y.Body.Close()
-	if y.StatusCode != 200 {
-		return "", fmt.Errorf("indirilemedi (HTTP %d)", y.StatusCode)
 	}
 	program, err := os.Executable()
 	if err != nil {
@@ -264,36 +268,82 @@ func guncelle(bildir func(string)) (string, error) {
 	if g, err := filepath.EvalSymlinks(program); err == nil {
 		program = g
 	}
+	if err := dosyayiGuncelle(s, program, bildir); err != nil {
+		return "", err
+	}
+	return s.Surum, nil
+}
+
+// dosyayiGuncelle: sürümün dosyasını indir, özetini denetle, program dosyasının yerine koy (yarım
+// kalırsa eski dosya yerinde kalır).
+func dosyayiGuncelle(s *surumBilgisi, program string, bildir func(string)) error {
+	ad := varlikAdi()
+	if s.Sha256[ad] == "" {
+		return errors.New("sürüm bilgisinde dosyanın özeti yok; güncellenmedi")
+	}
+	bildir("İndiriliyor: " + s.Surum + "…")
+	ist := &http.Client{Timeout: 10 * time.Minute}
+	y, err := ist.Get(indirmeAdresi() + "/" + ad)
+	if err != nil {
+		return err
+	}
+	defer y.Body.Close()
+	if y.StatusCode != 200 {
+		return fmt.Errorf("indirilemedi (HTTP %d)", y.StatusCode)
+	}
 	gecici := filepath.Join(filepath.Dir(program), ".diszort.yeni")
 	f, err := os.OpenFile(gecici, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o755)
 	if err != nil {
-		return "", err
+		return err
 	}
 	h := sha256.New()
 	_, err = io.Copy(io.MultiWriter(f, h), y.Body)
 	f.Close()
 	if err != nil {
 		os.Remove(gecici)
-		return "", err
+		return err
 	}
-	if beklenen := s.Sha256[ad]; beklenen != "" && beklenen != hex.EncodeToString(h.Sum(nil)) {
+	if beklenen := s.Sha256[ad]; beklenen != hex.EncodeToString(h.Sum(nil)) {
 		os.Remove(gecici)
-		return "", errors.New("indirilen dosyanın özeti tutmuyor; güncellenmedi")
+		return errors.New("indirilen dosyanın özeti tutmuyor; güncellenmedi")
 	}
 	if err := os.Rename(gecici, program); err != nil {
 		os.Remove(gecici)
-		return "", err
+		return err
 	}
-	return s.Surum, nil
+	return nil
 }
 
-// yenidenBaslat: güncellenen programı aynı terminalde, aynı argümanlarla yeniden başlat.
+// yenidenBaslat: güncellenen programı aynı terminalde, aynı argümanlarla yeniden başlat. Yeni süreç
+// açılışta yeniden güncellemeye bakmaz (bir şey ters giderse döngüye girmesin).
 func yenidenBaslat() error {
 	program, err := os.Executable()
 	if err != nil {
 		return err
 	}
-	return syscall.Exec(program, append([]string{program}, os.Args[1:]...), os.Environ())
+	return syscall.Exec(program, append([]string{program}, os.Args[1:]...), append(os.Environ(), "DISZORT_GUNCELLENDI=1"))
+}
+
+// acilistaGuncelle: başlatıcıda, tmux açılmadan: yeni sürüm yayınlandıysa indirir, özetini denetler,
+// kendini değiştirip yeniden başlar (başarıda geri dönmez). Ağ yoksa ya da bir şey ters giderse eski
+// sürümle açılır. Kapatmak: komut bölmesinde "ayar güncelleme kapalı" (ya da DISZORT_GUNCELLEME=0).
+func acilistaGuncelle(ayar *Ayar) {
+	if surum == "yerel" || depo == "" || os.Getenv("DISZORT_GUNCELLEME") == "0" || os.Getenv("DISZORT_GUNCELLENDI") == "1" ||
+		(ayar != nil && ayar.OtoGuncellemeKapali) {
+		return
+	}
+	s, err := sonSurumSureli(5 * time.Second)
+	if err != nil || !yeniMi(s) {
+		return
+	}
+	fmt.Printf("Diszort güncelleniyor: %s → %s\n", surum, s.Surum)
+	if _, err := guncelle(s, func(m string) { fmt.Println(m) }); err != nil {
+		fmt.Fprintln(os.Stderr, "Güncellenemedi ("+err.Error()+"); bu sürümle açılıyor.")
+		return
+	}
+	if err := yenidenBaslat(); err != nil {
+		fmt.Fprintln(os.Stderr, "Yeniden başlatılamadı:", err)
+	}
 }
 
 // ---------------------------------------------------------------- küçük yardımcılar

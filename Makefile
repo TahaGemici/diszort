@@ -31,6 +31,10 @@ arayuz: node_modules
 yanki:
 	node test/yanki.js
 
+# Sunucunun otomatik güncelleyicisi (kur.sh yazar): betik, systemd birimleri, hangi durumda günceller.
+guncelleyici:
+	sh test/guncelleyici.sh
+
 # Gerçek tarayıcı: CI'da (GitHub Actions) her push'ta çalışır; sunucuda (VPS) çalıştırmak gerekmez.
 tarayici: node_modules
 	npm install --no-save --no-audit --no-fund playwright
@@ -60,4 +64,4 @@ durdur:
 temizle:
 	rm -rf node_modules veri cikti
 
-.PHONY: calistir test arayuz yanki tarayici kayip cli cli-dene docker durdur temizle
+.PHONY: calistir test arayuz yanki guncelleyici tarayici kayip cli cli-dene docker durdur temizle

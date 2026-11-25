@@ -56,10 +56,12 @@ type Arayuz struct {
 	eskiDurum *term.State
 	bitti     bool
 
-	// konsol: yazılanların komut konsollarına (./diszort komut) giden kopyası (ana programda).
+	// konsol: yazılanların komut konsollarına (tmux'un sağ bölmesi) giden kopyası (ana programda).
 	konsol konsolBag
 	// uzak: bu terminalde satır arayüzü yok (tam ekran sohbet açık): çıktı yalnızca konsollara gider.
 	uzak bool
+	// HemenCik: Ctrl+C satırda yazı ya da soru olsa da hemen Tus("ctrl+c") (komut bölmesi: hepsi kapanır).
+	HemenCik bool
 
 	// Satir: Enter (arayüz goroutine'inden).
 	Satir func(string)
@@ -486,6 +488,12 @@ func (a *Arayuz) tus(ad string) {
 		a.gonder()
 		return
 	case "alt+m", "alt+d", "ctrl+c", "ctrl+d", "esc":
+		if ad == "ctrl+c" && a.HemenCik {
+			if a.Tus != nil {
+				a.Tus(ad)
+			}
+			return
+		}
 		if ad == "ctrl+c" || ad == "esc" {
 			a.mu.Lock()
 			bos := len(a.girdi) == 0 && a.soru == nil

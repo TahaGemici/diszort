@@ -91,6 +91,15 @@ func TestKonsolSunucu(t *testing.T) {
 	if m := al(); m.T != "sorbitti" {
 		t.Fatalf("sorbitti: %+v", m)
 	}
+	// Ctrl+C komut bölmesinde: "cik" programı kapatır.
+	cik := make(chan bool, 1)
+	k.cik = func() { cik <- true }
+	gonder(konsolIleti{T: "cik"})
+	select {
+	case <-cik:
+	case <-time.After(2 * time.Second):
+		t.Fatal("cik iletisi programı kapatmadı")
+	}
 	k.kapat("bitti")
 	if m := al(); m.T != "bitti" {
 		t.Fatalf("kapanış: %+v", m)
