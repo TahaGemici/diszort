@@ -180,11 +180,12 @@ func (a *Arayuz) yerelYaz(metin string) {
 		fmt.Println(metin)
 		return
 	}
-	var b strings.Builder
-	b.WriteString("\r\x1b[K")
-	b.WriteString(strings.ReplaceAll(strings.TrimRight(metin, "\n"), "\n", "\r\n\x1b[K"))
-	b.WriteString("\r\n")
-	os.Stdout.WriteString(b.String())
+	// Dar bölmede (tmux) satırlar sözcük arasından bölünsün (terminal sözcüğün ortasından böler).
+	var satirlar []string
+	for _, s := range strings.Split(strings.TrimRight(metin, "\n"), "\n") {
+		satirlar = append(satirlar, sar(s, max(20, a.genislik-1), 2)...)
+	}
+	os.Stdout.WriteString("\r\x1b[K" + strings.Join(satirlar, "\r\n\x1b[K") + "\r\n")
 	a.ciz()
 }
 

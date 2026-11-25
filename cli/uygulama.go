@@ -436,7 +436,12 @@ func (u *Uygulama) ton(tur string) {
 // istemGuncelle: giriş satırının (tam ekranda: komut konsolunun) başı: bağlantı, sesli kanal,
 // açık kanal; satır arayüzünde okunmamışlar ve yazanlar da.
 func (u *Uygulama) istemGuncelle() {
-	p := u.durumParcalari(u.ekran != nil)
+	var p []string
+	if u.ekran != nil {
+		p = u.konsolParcalari()
+	} else {
+		p = u.durumParcalari(false)
+	}
 	kanal := "#" + u.kanalAdi(u.aktifKanal)
 	if u.aktifKanal == "" {
 		kanal = ""
@@ -446,6 +451,27 @@ func (u *Uygulama) istemGuncelle() {
 		ist += " "
 	}
 	u.ui.Istem(ist + u.ui.Kalin(kanal) + "> ")
+}
+
+// konsolParcalari: tam ekranda komut bölmesinin istemi kısa (sesli kanal, paylaşım ve aktarımlar
+// sohbetin durum çubuğunda): bağlantı sorunu, kapıdakiler, mikrofon denemesi.
+func (u *Uygulama) konsolParcalari() []string {
+	var p []string
+	switch {
+	case u.bekleyenIstek:
+		p = append(p, u.ui.Sari("[izin bekleniyor · iptal]"))
+	case !u.bagli && u.oturumVardi:
+		p = append(p, u.ui.Sari("[bağlantı koptu]"))
+	case !u.bagli:
+		p = append(p, u.ui.Soluk("[bağlanıyor…]"))
+	}
+	if len(u.istekler) > 0 {
+		p = append(p, u.ui.Sari(fmt.Sprintf("[kapıda %d]", len(u.istekler))))
+	}
+	if u.denemede {
+		p = append(p, u.denemeIstemi())
+	}
+	return p
 }
 
 // durumParcalari: istemin (ya da tam ekranın durum çubuğunun) parçaları. tam: okunmamışlar ve
